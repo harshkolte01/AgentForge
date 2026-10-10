@@ -1,0 +1,34 @@
+# Local configuration and secrets (examples are safe to commit).
+.env
+.env.*
+!.env.example
+
+# Python environments, build output and caches.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+
+# Web dependencies and generated output.
+node_modules/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+
+# Local runtime artifacts and editor/OS files.
+.local/
+*.log
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

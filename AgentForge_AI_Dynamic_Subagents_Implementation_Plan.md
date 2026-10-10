@@ -2076,7 +2076,7 @@ GitHub Actions job outline:
 | Step | Files/services | Work item | Exit test |
 |---|---|---|---|
 | 1.1 | Git, `.entire/` | Create repo during allowed window; enable Entire | First real coding checkpoint eventually visible |
-| 1.2 | `apps/api/pyproject.toml` | Set Python deps and Pydantic settings | `uv sync` succeeds |
+| 1.2 | `apps/api/pyproject.toml` | Set Python deps and Pydantic settings | **Complete (10 October 2026):** `uv sync` succeeds; settings smoke checks pass. See [phase-status.md](phase-status.md). |
 | 1.3 | `apps/web/` | Scaffold Next.js/Tailwind/shadcn | UI starts |
 | 1.4 | `infra/docker-compose.yml` | Start PostgreSQL | DB connection test |
 | 1.5 | `database/*`, Alembic | Migrate users/projects/tasks/definitions | Clean DB upgrade succeeds |
