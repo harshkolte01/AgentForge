@@ -2113,6 +2113,22 @@ GitHub Actions job outline:
 
 **Objective:** End-to-end durable research run with visible events and real traces.
 
+**Implementation status (10 October 2026):** Steps 3.1–3.8 are implemented and
+source-reviewed, with subsequent user-authorized light local validation. Package
+imports, isolated migrations/schema comparison/checkpoint setup, offline-provider
+parent/child graph execution and focused API/ownership/cancellation/fencing/report
+checks passed, as did frontend lint, route types and production build. The
+disposable database and artifacts were removed; the configured application
+database was not migrated. Live provider/tracing requests, browser interactions,
+valid SSE streaming and concurrent-worker/crash-recovery qualification remain
+outstanding; Gate P3 has not passed. The implemented planner is one bounded registry-selected read-only
+research step. Unknown interrupted paid operations close PARTIAL without replay;
+quote/source checks leave semantic goal coverage explicitly unresolved/PARTIAL.
+Required model, Tavily and Neatlogs settings are present, without provider
+verification. See [Phase 3 handoff](docs/phase-3.md) and
+[status tracker](phase-status.md) for configuration, explicit setup and evidence
+boundaries. These local fixture checks do not qualify live-provider delivery.
+
 | Step | Files/services | Work item | Exit test |
 |---|---|---|---|
 | 3.1 | `orchestration/state.py`, `graph.py` | Planner, choose, spawn, verify, finish graph | Research task reaches COMPLETE/PARTIAL |
@@ -2127,6 +2143,19 @@ GitHub Actions job outline:
 **Gate P3:** A complete research workflow with working dynamic spawn, persisted state, legitimate sources and neatlogs trace. **This is the first demo-quality vertical slice.**
 
 ### Phase 4 — Sandbox coding executor (Oct 11)
+
+**Implementation update (10 October 2026):** Phase 4.1–4.9 source integration is
+implemented with managed E2B, public pinned GitHub reads, durable task-owned
+snapshots/evidence/artifacts and the shared executor/reviewer/verifier runtime.
+Offline focused tests and a disposable PostgreSQL generated-fixture workflow
+passed, including actual failing → repaired → passing exits, rejection of
+unsupported review PASS, at most two repairs and unknown-cleanup stop. Migration
+`0005_phase4_coding` has zero metadata drift. **Gate P4 is not yet passed:** live
+model/GitHub end-to-end orchestration, browser, tracing and concurrent-worker
+recovery qualification are pending. The managed E2B execution boundary passed
+synthetic fixture checks with the restricted template. AWS app
+hosting is deferred; no self-hosted runtime or GitHub writes were added. See
+[phase-status.md](phase-status.md) and [docs/phase-4.md](docs/phase-4.md).
 
 **Objective:** Real repository modifications and tests in isolation.
 

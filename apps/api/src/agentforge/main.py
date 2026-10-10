@@ -7,6 +7,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from agentforge.api.routes_health import router as health_router
+from agentforge.api.routes_tasks import router as tasks_router
+from agentforge.api.routes_events import router as events_router
+from agentforge.api.routes_projects import router as projects_router
+from agentforge.api.routes_artifacts import router as artifacts_router
+from agentforge.api.routes_configuration import router as configuration_router
+from agentforge.auth.routes import router as auth_router
+from agentforge.auth.session import SessionStore
 from agentforge.database.engine import create_db_engine
 from agentforge.settings import Settings, get_settings
 
@@ -40,6 +47,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ],
     )
     app.state.settings = resolved
+    app.state.auth_sessions = SessionStore()
     app.add_middleware(
         CORSMiddleware,
         allow_origins=resolved.allowed_origins,
@@ -48,6 +56,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
     )
     app.include_router(health_router)
+    app.include_router(auth_router)
+    app.include_router(projects_router)
+    app.include_router(tasks_router)
+    app.include_router(events_router)
+    app.include_router(artifacts_router)
+    app.include_router(configuration_router)
+    @app.middleware("http")
+    async def private_response_headers(request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith("/api/v1/") and not request.url.path.startswith("/api/v1/health/"):
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
     return app
 
 

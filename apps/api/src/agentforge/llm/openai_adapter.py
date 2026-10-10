@@ -19,13 +19,19 @@ from .models import (
 class OpenAIAdapter:
     def __init__(self, *, api_key: str, model_id: str, rates: ModelRates,
                  context_window_tokens: int, max_output_tokens: int,
-                 timeout_sec: float = 60) -> None:
+                 timeout_sec: float = 60, reasoning_effort: str | None = None) -> None:
         if not api_key or not model_id or context_window_tokens <= max_output_tokens or max_output_tokens < 1:
             raise ModelConfigurationError("explicit model, API key and valid token limits are required")
         self.model_id = model_id
         self.rates = rates
         self.context_window_tokens = context_window_tokens
         self.max_output_tokens = max_output_tokens
+        self.reasoning_effort = reasoning_effort
+        if model_id.startswith("gpt-6-luna"):
+            if reasoning_effort != "none":
+                raise ModelConfigurationError("gpt-6-luna Chat Completions tool calls require reasoning_effort=none")
+            if context_window_tokens > 262144:
+                raise ModelConfigurationError("gpt-6-luna configured pricing requires short-context cap <=262144")
         # Pin the official origin; user/model data and ambient OPENAI_BASE_URL
         # cannot redirect credentials. No hidden SDK retry may bypass the ledger.
         self._client = AsyncOpenAI(api_key=api_key, base_url="https://api.openai.com/v1",
@@ -43,6 +49,8 @@ class OpenAIAdapter:
             # JSON mode is additionally validated against the specialized schema
             # locally. A schema failure gets at most one formatting-only retry.
             kwargs: dict[str, Any] = {}
+            if self.reasoning_effort is not None:
+                kwargs["reasoning_effort"] = self.reasoning_effort
             if tools:
                 kwargs.update(tools=cast(list[ChatCompletionToolParam], tools),
                               tool_choice="auto", parallel_tool_calls=False)
@@ -50,7 +58,7 @@ class OpenAIAdapter:
                 model=self.model_id,
                 messages=cast(list[ChatCompletionMessageParam], messages),
                 max_completion_tokens=self.max_output_tokens,
-                response_format={"type": "json_object"}, store=False, **kwargs,
+                response_format={"type": "json_object"}, store=False, service_tier="default", **kwargs,
             )
         except Exception:
             # Raw SDK errors may include request data. The caller conservatively

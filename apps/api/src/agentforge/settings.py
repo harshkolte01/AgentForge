@@ -4,6 +4,7 @@ from functools import lru_cache
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Literal
+from uuid import UUID
 
 from pydantic import Field, HttpUrl, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -50,6 +51,30 @@ class Settings(BaseSettings):
     llm_timeout_sec: float = Field(default=60, gt=0, le=120)
     llm_input_usd_per_million: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
     llm_output_usd_per_million: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
+    llm_reasoning_effort: Literal["none", "minimal", "low", "medium", "high", "xhigh"] | None = None
+    worker_lease_sec: int = Field(default=90, ge=30, le=300)
+    worker_heartbeat_sec: int = Field(default=10, ge=2, le=30)
+    worker_poll_sec: float = Field(default=2, ge=0.2, le=30)
+    neatlogs_api_key: SecretStr | None = Field(default=None, repr=False)
+    neatlogs_workflow_name: str = Field(default="agentforge-ai", min_length=1, max_length=100)
+    tavily_api_key: SecretStr | None = Field(default=None, repr=False)
+    tavily_search_max_cost_usd: Decimal = Field(default=Decimal("0.02"), gt=0, allow_inf_nan=False)
+    tavily_usd_per_credit: Decimal | None = Field(default=None, gt=0, allow_inf_nan=False)
+    research_storage_path: Path = REPO_ROOT / ".local" / "artifacts"
+    research_fetch_timeout_sec: float = Field(default=15, gt=0, le=30)
+    research_max_response_bytes: int = Field(default=1_000_000, ge=1024, le=2_000_000)
+    e2b_api_key: SecretStr | None = Field(default=None, repr=False)
+    e2b_template_id: str | None = Field(default=None, min_length=1, max_length=200)
+    e2b_template_qualified: bool = False
+    e2b_command_timeout_sec: float = Field(default=120, gt=0, le=180)
+    e2b_request_timeout_sec: float = Field(default=15, gt=0, le=30)
+    e2b_sandbox_ttl_sec: int = Field(default=300, ge=60, le=600)
+    e2b_max_output_bytes: int = Field(default=65536, ge=1024, le=131072)
+    e2b_execution_max_cost_usd: Decimal = Field(default=Decimal("0.10"), gt=0, le=1, allow_inf_nan=False)
+    auth_mode: Literal["disabled", "local_single_user"] = "disabled"
+    local_user_id: UUID | None = None
+    local_bootstrap_token: SecretStr | None = Field(default=None, repr=False, min_length=32)
+    local_session_ttl_sec: int = Field(default=3600, ge=60, le=86400)
 
     @field_validator("allowed_origins", mode="before")
     @classmethod

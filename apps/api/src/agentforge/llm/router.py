@@ -30,4 +30,5 @@ class ModelRouter:
             rates=ModelRates(settings.llm_input_usd_per_million, settings.llm_output_usd_per_million),
             context_window_tokens=settings.llm_context_window_tokens,
             max_output_tokens=settings.llm_max_output_tokens, timeout_sec=settings.llm_timeout_sec,
+            reasoning_effort=settings.llm_reasoning_effort,
         ))

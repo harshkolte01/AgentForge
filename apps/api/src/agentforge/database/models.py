@@ -116,6 +116,11 @@ class Task(_UUIDTimestampMixin, Base):
     max_cost_usd: Mapped[Decimal] = mapped_column(Numeric(12, 4))
     max_wall_time_sec: Mapped[int] = mapped_column(Integer)
     cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    event_sequence: Mapped[int] = mapped_column(BigInteger, server_default=text("0"))
+    permissions_json: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    final_summary: Mapped[str | None] = mapped_column(Text)
+    final_result: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    error_code: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -223,3 +228,9 @@ class BudgetTransaction(_UUIDTimestampMixin, Base):
     reservation_id: Mapped[UUID] = mapped_column(ForeignKey("budget_reservations.id"))
     kind: Mapped[str] = mapped_column(Text)
     amount_usd: Mapped[Decimal] = mapped_column(Numeric(12, 4))
+
+
+# Register split phase modules in the shared Alembic metadata.
+from .phase3 import TaskEvent, TaskJob, TaskStep  # noqa: E402,F401
+from .research_models import ResearchArtifact, ResearchEvidence, ResearchSource  # noqa: E402,F401
+from .coding import CodingSession, CodingSnapshot, CodingOperation, CodingEvidence, CodingArtifact  # noqa: E402,F401

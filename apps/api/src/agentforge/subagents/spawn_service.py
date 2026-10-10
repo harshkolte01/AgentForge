@@ -8,8 +8,9 @@ import asyncio
 import hashlib
 import json
 from dataclasses import replace
+from collections.abc import Awaitable, Callable
 from decimal import Decimal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from langchain_core.runnables import RunnableConfig
 
@@ -42,9 +43,13 @@ class SpawnService:
         self.runtime = runtime if runtime is not None else ChildRuntime()
 
     async def spawn_subagent(self, request: SpawnRequest, ctx: TaskContext, *,
-                             config: RunnableConfig | None = None) -> SubagentResult:
+                             config: RunnableConfig | None = None,
+                             run_id: UUID | None = None,
+                             authority: Callable[[], Awaitable[None]] | None = None) -> SubagentResult:
         # Reject model_construct/model_copy bypasses at this trust boundary too.
         request = SpawnRequest.model_validate_json(request.model_dump_json())
+        if authority is not None:
+            await authority()
         await self.authorizer.check_context(ctx)
         resolved = await self.registry.resolve_for_task(request.type, request.version, ctx)
         scope = intersect_and_validate(resolved.definition, ctx, request.context_refs)
@@ -54,10 +59,12 @@ class SpawnService:
         async with asyncio.timeout(min(30, scope.budget.max_wall_time_sec)):
             context = await self.resources.load_context(ctx, scope.context_refs)
         model = self.models.choose(resolved.definition.model_profile)
-        run_id = uuid4()
+        run_id = run_id or uuid4()
         amount = Decimal(str(scope.budget.max_llm_cost_usd))
         if request.requested_budget_usd is not None:
             amount = min(amount, Decimal(str(request.requested_budget_usd)))
+        if authority is not None:
+            await authority()
         reservation = self.budgets.reserve(
             task_id=ctx.task_id, run_id=run_id, amount_usd=amount,
             owner_id=ctx.user_id, project_id=ctx.project_id,
@@ -88,6 +95,8 @@ class SpawnService:
             started = True
 
             async def reauthorize() -> None:
+                if authority is not None:
+                    await authority()
                 await self.authorizer.check_context(ctx)
                 current = await self.registry.resolve_for_task(request.type, request.version, ctx)
                 if current.version_id != resolved.version_id or current.sha256 != resolved.sha256:

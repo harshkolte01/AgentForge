@@ -11,7 +11,7 @@ from agentforge.database.engine import ping_database
 
 router = APIRouter(prefix="/api/v1/health", tags=["health"])
 
-CheckStatus = Literal["ok", "error", "not_configured"]
+CheckStatus = Literal["ok", "error", "not_configured", "not_observed"]
 ReadyStatus = Literal["ready", "degraded"]
 
 
@@ -33,7 +33,7 @@ class ReadyChecks(BaseModel):
 class ReadyResponse(BaseModel):
     status: ReadyStatus
     checks: ReadyChecks = Field(
-        description="Database is required in Phase 1. Checkpointer and worker are reported but not required yet."
+        description="Database connectivity only. This probe does not establish worker/checkpointer readiness."
     )
 
 
@@ -49,7 +49,7 @@ def live() -> LiveResponse:
     responses={503: {"model": ReadyResponse}},
 )
 def ready(request: Request) -> JSONResponse:
-    """Ping PostgreSQL. Checkpointer and worker are not configured in Phase 1."""
+    """Ping PostgreSQL; worker/checkpointer liveness is not observed by this process."""
     try:
         ping_database(request.app.state.engine)
         database = CheckResult(status="ok")
@@ -61,8 +61,8 @@ def ready(request: Request) -> JSONResponse:
         status="ready" if database.status == "ok" else "degraded",
         checks=ReadyChecks(
             database=database,
-            checkpointer=CheckResult(status="not_configured"),
-            worker=CheckResult(status="not_configured"),
+            checkpointer=CheckResult(status="not_observed", detail="not_observed_by_api"),
+            worker=CheckResult(status="not_observed", detail="not_observed_by_api"),
         ),
     )
     return JSONResponse(

@@ -11,7 +11,7 @@ from uuid import UUID
 from pydantic import ValidationError
 
 from agentforge.repositories.runs import ToolCallRepository
-from agentforge.security.policies import authorize_tool
+from agentforge.security.policies import PublicURL, authorize_tool
 from agentforge.subagents.budget import BudgetExceeded, BudgetService
 from agentforge.subagents.resources import ResourceResolver
 from agentforge.subagents.scope import EffectiveScope, ScopeDenied, TaskContext
@@ -31,6 +31,9 @@ class ToolExecutionContext:
     operation_key: str
     # The adapter can use this key for external idempotency/reconciliation.
     scope: EffectiveScope
+    authorized_web_url: PublicURL | None = None
+    authorized_web_hosts: tuple[str, ...] = ()
+    authorize_current: Callable[[], Awaitable[None]] | None = None
 
 
 class ToolGateway:
@@ -76,7 +79,16 @@ class ToolGateway:
                 self.budgets.check_active(self.reservation_id)
                 tool = self.catalog.get(name)
                 args = tool.input_model.model_validate_json(raw_args)
-                authorize_tool(name, args, self.ctx, self.scope)
+                if name not in self.scope.allowed_tools:
+                    raise ScopeDenied("tool is not authorized for this run")
+                web_url, web_hosts = None, ()
+                if name in ("fetch_webpage", "browser_public_page"):
+                    resolver = getattr(self.resources, "resolve_web_url", None)
+                    if resolver is None:
+                        raise ScopeDenied("trusted network resource resolver is unavailable")
+                    async with asyncio.timeout(min(15, tool.timeout_sec)):
+                        web_url, web_hosts = await resolver(self.ctx, name, args, self.scope)
+                authorize_tool(name, args, self.ctx, self.scope, resolved_web_url=web_url)
                 await self.resources.verify_tool_inputs(self.ctx, name, args)
                 self.budgets.authorize_operation(self.reservation_id, operation_key,
                                                 tool.max_cost_usd, kind="tool")
@@ -84,7 +96,7 @@ class ToolGateway:
                 entered_adapter = True
                 async with asyncio.timeout(tool.timeout_sec):
                     raw_result = await tool.handler(args, ToolExecutionContext(
-                        self.ctx, self.run_id, operation_key, self.scope))
+                        self.ctx, self.run_id, operation_key, self.scope, web_url, web_hosts, self.reauthorize))
                 # Revalidate model_copy/model_construct output from trusted
                 # adapter code before handing any data or IDs to the child.
                 if not isinstance(raw_result, ToolOutcome):

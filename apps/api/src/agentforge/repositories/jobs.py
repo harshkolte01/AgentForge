@@ -1,0 +1,90 @@
+"""Postgres SKIP LOCKED queue with generation fencing and no long transactions."""
+
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from uuid import UUID
+from sqlalchemy import and_, func, or_, select
+from agentforge.contracts.tasks import TERMINAL_STATUSES
+from agentforge.database.models import Task, TaskJob
+from agentforge.subagents.scope import ScopeDenied
+from .runs import SessionFactory
+
+
+class LeaseLost(ScopeDenied):
+    pass
+
+
+class TaskCancelled(ScopeDenied):
+    pass
+
+
+@dataclass(frozen=True)
+class Lease:
+    job_id: UUID
+    task_id: UUID
+    owner: str
+    generation: int
+    reclaimed: bool
+
+
+def assert_lease(session, task: Task, lease: Lease, *, allow_cancel=False) -> TaskJob:
+    """Task -> job lock order for all parent writes; DB clock is lease authority."""
+    job = session.scalar(select(TaskJob).where(TaskJob.id == lease.job_id).with_for_update())
+    now = session.scalar(select(func.clock_timestamp()))
+    if (job is None or job.task_id != task.id or job.status != "RUNNING"
+        or job.lease_owner != lease.owner or job.lease_generation != lease.generation
+        or job.lease_expires_at is None or job.lease_expires_at <= now):
+        raise LeaseLost("worker_lease_lost")
+    if task.cancel_requested_at is not None and not allow_cancel:
+        raise TaskCancelled("task_cancelled")
+    return job
+
+
+class JobRepository:
+    def __init__(self, session_factory: SessionFactory, *, lease_sec: int = 90):
+        self.session_factory, self.lease_sec = session_factory, lease_sec
+
+    def claim(self, worker_id: str) -> Lease | None:
+        with self.session_factory() as session, session.begin():
+            now = session.scalar(select(func.clock_timestamp()))
+            job = session.scalar(select(TaskJob).where(or_(
+                and_(TaskJob.status == "QUEUED", TaskJob.available_at <= now),
+                and_(TaskJob.status == "RUNNING", TaskJob.lease_expires_at <= now),
+            )).order_by(TaskJob.available_at, TaskJob.id).with_for_update(skip_locked=True).limit(1))
+            if job is None:
+                return None
+            reclaimed = job.status == "RUNNING"
+            job.status, job.lease_owner = "RUNNING", worker_id
+            job.lease_generation += 1
+            job.attempts += 1
+            job.heartbeat_at, job.lease_expires_at = now, now + timedelta(seconds=self.lease_sec)
+            return Lease(job.id, job.task_id, worker_id, job.lease_generation, reclaimed)
+
+    def heartbeat(self, lease: Lease) -> None:
+        with self.session_factory() as session, session.begin():
+            task = session.scalar(select(Task).where(Task.id == lease.task_id).with_for_update())
+            if task is None:
+                raise LeaseLost("task_missing")
+            job = assert_lease(session, task, lease, allow_cancel=True)
+            now = session.scalar(select(func.clock_timestamp()))
+            job.heartbeat_at, job.lease_expires_at = now, now + timedelta(seconds=self.lease_sec)
+
+    async def authority(self, lease: Lease, *, allow_cancel=False) -> None:
+        with self.session_factory() as session, session.begin():
+            task = session.scalar(select(Task).where(Task.id == lease.task_id).with_for_update())
+            if task is None:
+                raise LeaseLost("task_missing")
+            assert_lease(session, task, lease, allow_cancel=allow_cancel)
+            if task.status in TERMINAL_STATUSES:
+                raise LeaseLost("task_already_terminal")
+
+    def complete(self, lease: Lease) -> None:
+        with self.session_factory() as session, session.begin():
+            task = session.scalar(select(Task).where(Task.id == lease.task_id).with_for_update())
+            if task is None:
+                raise LeaseLost("task_missing")
+            job = assert_lease(session, task, lease, allow_cancel=True)
+            if task.status not in TERMINAL_STATUSES:
+                raise ValueError("task_not_terminal")
+            job.status, job.finished_at = "COMPLETED", datetime.now(timezone.utc)
+            job.lease_owner, job.lease_expires_at = None, None

@@ -1,5 +1,90 @@
 # Implementation status
 
+## Phase 4 — Sandbox coding executor
+
+Implemented on 10 October 2026 with managed E2B as the execution boundary; AWS app
+hosting is deferred. The live E2B execution slice is qualified on synthetic
+fixtures. **Gate P4 remains open** for live model/GitHub end-to-end orchestration,
+browser, tracing and worker recovery qualification.
+
+| Step | Work | Status |
+|---|---|---|
+| 4.1 | Provider-neutral E2B execution, bounded snapshots and cleanup | Offline contracts and live restricted-template fixtures passed |
+| 4.2 | Public GitHub issue and pinned commit import | Offline HTTP/archive/submission tests passed |
+| 4.3 | Pinned source reads/search with hashes and line ranges | Focused tests passed |
+| 4.4 | Task workspace text read/CAS writes, binary preservation and trusted diff | Disposable DB/fixture checks passed |
+| 4.5 | Known command profiles, actual exits, bounded logs and durable budget intents | Actual E2B exits/build, overflow, timeout, cancellation and TTL passed |
+| 4.6 | Immutable test/build evidence, baseline-test guards and missing/zero-test denial | Focused qualifier tests passed |
+| 4.7 | General executor v2 through the shared SpawnService/runtime | Disposable DB/generated fixture passed |
+| 4.8 | Independent read-only reviewer and verifier v2 | Both consumed actual diff/source/tests; assertion-only PASS rejected |
+| 4.9 | At most two repairs with failure evidence | Real generated fixture failed then repaired/passed; failure bound and unknown-cleanup stop passed |
+
+All **38 offline focused tests passed**. Migration `0005_phase4_coding` applied to a unique disposable PostgreSQL database
+with zero ORM metadata drift. The full real parent graph/shared child runtime,
+lease checks, budget ledger and private artifact storage ran with injected offline
+model/GitHub/provider adapters. Only exact generated fixture programs executed
+locally inside the fixture adapter: actual exits were 1 then 0; one repair and
+both independent reviews produced a current-revision `COMPLETED` receipt.
+Unsubstantiated reviewer PASS, a task that never repairs, and unconfirmed cleanup
+all produced truthful `PARTIAL` receipts. Cleanup uncertainty stopped further
+execution. CAS replay/stale hashes, traversal, binary edits, cross-task evidence,
+unknown paid-operation replay, cancellation, immutable snapshots and missing-key
+no-call behavior passed. The disposable database and artifacts were removed.
+
+Existing v1 built-ins and research defaults remain unchanged. No GitHub writes,
+AWS provisioning, self-hosted runtime, host execution of real repositories, live
+LLM/tracing calls, authenticated browser qualification, commits or pushes. Live E2B setup used only synthetic fixtures; its selected template is configured in the ignored root `.env`, and final provider inventory had zero active sandboxes.
+See [docs/phase-4.md](docs/phase-4.md) for bounds, template setup and remaining gates.
+
+## Phase 3 — Planning, durable tasks and research
+
+Implemented on 10 October 2026, initially source-reviewed only, then checked with
+user-authorized light local validation. **Gate P3 has not passed:** real-provider,
+trace, browser and recovery qualification remains outstanding.
+
+| Step | Work | Status |
+|---|---|---|
+| 3.1 | Bounded registry-selected research parent graph and persisted plan | Offline model/real DB smoke passed |
+| 3.2 | Atomic sequenced metadata events and authorized cursor SSE | History/cursor denials passed; streaming unverified |
+| 3.3 | SKIP LOCKED queue, leases, heartbeat, fencing and conservative reconciliation | Sequential cancellation/reclaim/fencing passed; concurrency/recovery unverified |
+| 3.4 | Async PostgreSQL parent checkpoints and explicit setup CLI | Disposable DB setup/checkpoint persistence passed; restart unverified |
+| 3.5 | Invocation-bound Neatlogs callbacks, actual nested spans and global export mask | Implemented; no trace produced |
+| 3.6 | Tavily search, pinned public fetch and durable sources | Fixture search/fetch persistence passed; live/network safety unverified |
+| 3.7 | Deterministic citation/quote checks and private report artifact | Fixture quote/report download passed; goal coverage unresolved/PARTIAL |
+| 3.8 | Local authenticated task API, events, status and workspace UI | API smoke/lint/types/build passed; browser interactions unverified |
+
+Light validation passed locked dependency installation, all package imports,
+application migrations through `0004_phase3_research` with zero metadata drift,
+explicit PostgreSQL checkpoint setup and a real DB/real parent+child graph fixture
+run. The API created an authenticated task and atomic queued job/first event;
+three mock model calls and fixture search/fetch produced durable sources, a
+`QUOTE_SUPPORTED` check, a truthful `PARTIAL` receipt, 21 sequential events and an
+owner-only report download. Focused checks also passed validation/ownership
+denials, bounded history replay/SSE cursor rejection, pre-execution cancellation,
+expired lease reclaim/stale generation rejection and logout revocation. A real
+import-time annotation-shadowing error in `TaskRepository` was fixed and rechecked.
+
+The smoke used a unique disposable database, explicit settings without provider
+or telemetry secrets, and injected offline adapters. Its database and artifacts
+were removed; the configured application database was not migrated. The ignored
+smoke harness remains in `.local`. No live model/search/tracing calls, valid SSE
+stream, concurrent-worker/crash-recovery run, commits or pushes were performed.
+Existing ignored environment data and credentials were preserved.
+
+Frontend `pnpm lint`, Next route type generation, `tsc --noEmit` and `pnpm build`
+passed after two task-detail lint fixes. Local read-only HTTP route checks passed;
+these showed session-loading shells, not authenticated browser behavior. Browser
+automation was unavailable, so hydration/auth/task/SSE interactions remain
+unverified. `git diff --check` passed after the code and documentation updates.
+
+[Phase 3 decisions, setup and remaining qualification](docs/phase-3.md) records
+the exact scope and boundaries. Parent checkpoints resume eligible work and reuse
+persisted completed child results. Unknown in-flight paid child operations retain
+upper-bound charges and close PARTIAL, without automatic repeat calls. Broad
+semantic acceptance criteria remain unresolved by quote matching; no false
+COMPLETED research status is claimed. The current private artifact adapter is
+POSIX-only, and local sessions are single-process/in-memory until Phase 5.
+
 ## Step 1.2 — Python API package
 
 Completed on 10 October 2026. Phase 1 as a whole is still incomplete.

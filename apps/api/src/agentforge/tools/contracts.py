@@ -32,6 +32,8 @@ class RepoArgs(ToolArguments):
 class RepoFileArgs(RepoArgs):
     ref: Ref
     path: Path
+    line_start: int = Field(default=1, ge=1, description="One-based first line; resume with next_line from the previous result.")
+    max_lines: int = Field(default=200, ge=1, le=200, description="Complete lines requested; returned content is also capped at 10000 UTF-8 bytes.")
 
 
 class RepoSearchArgs(RepoArgs):
@@ -58,6 +60,11 @@ class SandboxArgs(ToolArguments):
 
 class SandboxFileArgs(SandboxArgs):
     path: Path
+
+
+class SandboxReadArgs(SandboxFileArgs):
+    line_start: int = Field(default=1, ge=1, description="One-based first line; resume with next_line from the previous result.")
+    max_lines: int = Field(default=200, ge=1, le=200, description="Complete lines requested; returned content is also capped at 10000 UTF-8 bytes.")
 
 
 class SandboxWriteArgs(SandboxFileArgs):
@@ -93,7 +100,7 @@ ARGUMENT_MODELS: dict[str, type[ToolArguments]] = {
     "web_search": WebSearchArgs, "fetch_webpage": FetchWebpageArgs,
     "read_repo_file": RepoFileArgs, "search_repo": RepoSearchArgs,
     "get_issue": IssueArgs, "list_repo_files": RepoFilesArgs,
-    "read_sandbox_file": SandboxFileArgs, "write_sandbox_file": SandboxWriteArgs,
+    "read_sandbox_file": SandboxReadArgs, "write_sandbox_file": SandboxWriteArgs,
     "git_diff": GitDiffArgs, "run_sandbox_command": SandboxCommandArgs,
     "run_tests": RunTestsArgs, "get_test_results": TestResultsArgs,
     "get_pr_status": PRStatusArgs, "browser_public_page": BrowserArgs,
@@ -163,7 +170,7 @@ class RepoFilesRequest(_Request):
 
 class SandboxFileRequest(_Request):
     name: Literal["read_sandbox_file"]
-    args: SandboxFileArgs
+    args: SandboxReadArgs
 
 
 class SandboxWriteRequest(_Request):

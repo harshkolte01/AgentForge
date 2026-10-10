@@ -17,7 +17,7 @@ type LiveResponse = {
 };
 
 type CheckResult = {
-  status: "ok" | "error" | "not_configured";
+  status: "ok" | "error" | "not_configured" | "not_observed";
   detail?: string | null;
 };
 
@@ -133,7 +133,7 @@ export function SystemHealth() {
                     state.ready.status === "ready" ? "bg-emerald-500" : "bg-destructive"
                   }`}
                 />
-                {state.ready.status === "ready" ? "Ready" : "Degraded"}
+                {state.ready.status === "ready" ? "Database ready" : "Degraded"}
               </Badge>
             </div>
             <p className="text-sm text-muted-foreground">
@@ -141,7 +141,7 @@ export function SystemHealth() {
               {state.ready.checks.database.detail
                 ? ` (${state.ready.checks.database.detail})`
                 : ""}
-              . Checkpointer and worker are not configured yet. Ready HTTP{" "}
+              . Worker and checkpointer liveness are not observed by this probe. Ready HTTP{" "}
               {state.readyHttp}.
             </p>
           </>

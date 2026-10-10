@@ -31,6 +31,7 @@ class TaskContext:
     parent_budget: Budget
     authorized_context_refs: tuple[str, ...] = ()
     depth: int = 0
+    source_discovery_enabled: bool = False
 
 
 @dataclass(frozen=True)

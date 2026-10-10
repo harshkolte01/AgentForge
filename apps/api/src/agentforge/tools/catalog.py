@@ -78,8 +78,9 @@ class ToolCatalog:
             raise ValueError("tool adapter is already registered")
         if not isinstance(max_cost_usd, Decimal) or not max_cost_usd.is_finite() or max_cost_usd < 0:
             raise ValueError("adapter requires a nonnegative finite cost cap")
-        if not 0 < timeout_sec <= 120:
-            raise ValueError("adapter timeout must be within 120 seconds")
+        limit = 330 if name in {"run_tests", "run_sandbox_command"} else 120
+        if not 0 < timeout_sec <= limit:
+            raise ValueError("adapter timeout exceeds its capability bound")
         self._tools[name] = RegisteredTool(name, handler, max_cost_usd, timeout_sec)
 
     def get(self, name: str) -> RegisteredTool:

@@ -82,6 +82,27 @@ class PublicURL:
 def validate_public_url(
     url: str, allowed_hosts: tuple[str, ...], *, resolved_addresses: tuple[str, ...] | None = None,
 ) -> PublicURL:
+    parsed_url = validate_public_url_syntax(url, allowed_hosts)
+    host = parsed_url.hostname
+    try:
+        literal = ip_address(host)
+    except ValueError:
+        literal = None
+    addresses = resolved_addresses if resolved_addresses is not None else ((str(literal),) if literal else ())
+    if not addresses:
+        raise ScopeDenied("public DNS validation is required before URL use")
+    for address in addresses:
+        try:
+            ip = ip_address(address)
+        except ValueError as exc:
+            raise ScopeDenied("invalid DNS address") from exc
+        if not ip.is_global or ip.is_multicast or ip.is_unspecified or ip.is_reserved or (ip.version == 6 and ip.ipv4_mapped):
+            raise ScopeDenied("private or reserved network destinations are forbidden")
+    return PublicURL(url, host, tuple(addresses))
+
+
+def validate_public_url_syntax(url: str, allowed_hosts: tuple[str, ...]) -> PublicURL:
+    """Lexical policy only; callers MUST resolve all IPs and pin the connection."""
     if len(url) > 4096 or any(ord(c) < 33 for c in url) or "\\" in url:
         raise ScopeDenied("invalid public URL")
     try:
@@ -96,24 +117,15 @@ def validate_public_url(
         raise ScopeDenied("invalid public hostname")
     if host not in allowed_hosts or host in ("localhost", "metadata.google.internal") or host.endswith((".localhost", ".local", ".internal")):
         raise ScopeDenied("public hostname is outside the exact task allowlist")
-    try:
-        literal = ip_address(host)
-    except ValueError:
-        literal = None
-    addresses = resolved_addresses or ((str(literal),) if literal else ())
-    if not addresses:
-        raise ScopeDenied("public DNS validation is required before URL use")
-    for address in addresses:
-        try:
-            ip = ip_address(address)
-        except ValueError as exc:
-            raise ScopeDenied("invalid DNS address") from exc
-        if not ip.is_global or ip.is_multicast or ip.is_unspecified or ip.is_reserved or (ip.version == 6 and ip.ipv4_mapped):
-            raise ScopeDenied("private or reserved network destinations are forbidden")
-    return PublicURL(url, host, tuple(addresses))
+    # Validate DNS label syntax as well; numeric host variants still undergo
+    # the same mandatory all-address resolution/public-IP checks before use.
+    if not all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in host.split(".")):
+        raise ScopeDenied("invalid public hostname")
+    return PublicURL(url, host, ())
 
 
-def authorize_tool(name: str, args: BaseModel | dict[str, Any], ctx: TaskContext, effective: EffectiveScope) -> None:
+def authorize_tool(name: str, args: BaseModel | dict[str, Any], ctx: TaskContext, effective: EffectiveScope,
+                   *, resolved_web_url: PublicURL | None = None) -> None:
     if name not in effective.allowed_tools:
         raise ScopeDenied("tool is not authorized for this run")
     values = args.model_dump() if isinstance(args, BaseModel) else args
@@ -132,7 +144,16 @@ def authorize_tool(name: str, args: BaseModel | dict[str, Any], ctx: TaskContext
     for field in ("command_id", "test_profile"):
         if field in values and values[field] not in (permissions.allowed_command_profiles or ()):
             raise ScopeDenied("execution profile is not authorized")
-    # Web calls remain fail-closed until an adapter performs DNS resolution and
-    # connection pinning. A model cannot supply its own approved DNS answers.
+    # A web URL authorization is constructed only by the trusted resource
+    # resolver. Model arguments cannot inject validated addresses. The adapter
+    # receives this same pinned destination from the gateway.
     if name in ("fetch_webpage", "browser_public_page"):
-        validate_public_url(values.get("source_url", values.get("url", "")), permissions.allowed_web_hosts or ())
+        url = values.get("source_url", values.get("url", ""))
+        if resolved_web_url is None or resolved_web_url.url != url:
+            raise ScopeDenied("trusted resolved URL authorization is required")
+        allowed = permissions.allowed_web_hosts or ()
+        if ctx.source_discovery_enabled and name == "fetch_webpage" and not allowed:
+            # Discovery must also have been approved by the resource resolver,
+            # which checks exact URLs against immutable task-owned sources.
+            allowed = (resolved_web_url.hostname,)
+        validate_public_url(url, allowed, resolved_addresses=resolved_web_url.addresses)
