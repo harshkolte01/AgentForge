@@ -96,3 +96,39 @@ Local verification (PowerShell; enter your local password when prompted):
 ```
 
 No blockers remain for Step 1.4. Application migrations belong to Step 1.5; the API health endpoint and its database check belong to Step 1.6.
+
+## Step 1.5 — Alembic migrations
+
+Completed on 10 October 2026. Phase 1 as a whole is still incomplete.
+
+Implemented:
+
+- `apps/api/alembic.ini`, `alembic/env.py`, `alembic/script.py.mako` and migration usage documentation. Alembic reads `DATABASE_URL` from the API's Pydantic Settings, with no credentials in its tracked configuration.
+- `src/agentforge/database/base.py`: SQLAlchemy 2 declarative base with stable constraint names.
+- `src/agentforge/database/models.py`: models for exactly `users`, `projects`, `agent_definitions`, `agent_definition_versions` and `tasks`, following plan section 14.4.
+- One initial revision, `0001_phase1_create_phase_1_tables.py`, including upgrade and reverse-order downgrade.
+- UUID defaults, timezone-aware timestamps, JSONB definitions, foreign keys, version and thread uniqueness, scoped definition indexes, project owner/task lookup indexes, and status/budget checks. Added positive current-version and namespace/project association checks to close the nullable-project uniqueness gap; the representative plan DDL reflects those checks.
+- No later-phase application tables or LangGraph checkpoint tables were created. PostgreSQL supplies the UUID function without an added extension.
+
+Verification:
+
+- First `uv run alembic upgrade head`: exit code 0; applied `0001_phase1` to the existing local `agentforge` database.
+- Second `uv run alembic upgrade head`: exit code 0; no `Running upgrade` operation, already at head.
+- `uv run alembic check`: exit code 0; no new upgrade operations detected.
+- `psql` `\dt`: lists the five requested application tables plus Alembic's internal `alembic_version` table. Its stored revision is `0001_phase1`.
+- Transactional ORM smoke checks: all five models persist, UUID/timestamp defaults load correctly, JSONB round-trips, and foreign-key, namespace, uniqueness, task-status and budget checks reject invalid rows. All smoke-test records were rolled back, and table row counts were unchanged.
+- Real credentials remained in the ignored `.env`; no dependency additions were needed.
+
+Local commands:
+
+```powershell
+cd C:\Coding\AgentForge\apps\api
+uv run alembic upgrade head
+uv run alembic current
+uv run alembic check
+& "C:\Program Files\PostgreSQL\17\bin\psql.exe" -h localhost -U postgres -d agentforge -c "\dt"
+```
+
+The equivalent `py -3.12 -m uv run alembic ...` commands were used for the verified upgrades because existing shells may not have refreshed the uv PATH entry. Both invoke the same installed uv tool.
+
+No blockers remain for Step 1.5. FastAPI bootstrap/health routes and CI remain for Steps 1.6 and 1.7.

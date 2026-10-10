@@ -1166,9 +1166,13 @@ CREATE TABLE agent_definitions (
     project_id uuid REFERENCES projects(id),
     namespace text NOT NULL CHECK (namespace IN ('builtin', 'project')),
     agent_key text NOT NULL,
-    current_version integer NOT NULL DEFAULT 1,
+    current_version integer NOT NULL DEFAULT 1 CHECK (current_version >= 1),
     disabled_at timestamptz,
-    created_at timestamptz NOT NULL DEFAULT now()
+    created_at timestamptz NOT NULL DEFAULT now(),
+    CHECK (
+        (namespace = 'builtin' AND project_id IS NULL) OR
+        (namespace = 'project' AND project_id IS NOT NULL)
+    )
 );
 CREATE UNIQUE INDEX agent_defs_builtin_unique
     ON agent_definitions(agent_key) WHERE namespace = 'builtin';
@@ -2079,7 +2083,7 @@ GitHub Actions job outline:
 | 1.2 | `apps/api/pyproject.toml` | Set Python deps and Pydantic settings | **Complete (10 October 2026):** `uv sync` succeeds; settings smoke checks pass. See [phase-status.md](phase-status.md). |
 | 1.3 | `apps/web/` | Scaffold Next.js/Tailwind/shadcn | **Complete (10 October 2026):** `http://localhost:3000` returns HTTP 200; install, lint, production build and API rewrite checks pass. See [phase-status.md](phase-status.md). |
 | 1.4 | Local PostgreSQL, `.env`, `infra/README.md` (Docker Compose skipped) | Create `agentforge` on the existing local PostgreSQL service and configure both database URLs | **Complete (10 October 2026):** `psql` and API SQLAlchemy/psycopg connections return `1` for `SELECT 1`; native checkpoint URL verified. See [phase-status.md](phase-status.md). |
-| 1.5 | `database/*`, Alembic | Migrate users/projects/tasks/definitions | Clean DB upgrade succeeds |
+| 1.5 | `database/*`, Alembic | Migrate only users/projects/tasks/definitions and definition versions | **Complete (10 October 2026):** revision `0001_phase1` creates the five Phase 1 tables; `psql` lists them, repeat upgrade is a no-op, and `alembic check` reports no drift. See [phase-status.md](phase-status.md). |
 | 1.6 | `main.py`, `/health` | FastAPI bootstrap, CORS/proxy | Health status and OpenAPI reachable |
 | 1.7 | `.github/workflows/ci.yml` | Lint/test/typecheck placeholders become real jobs | CI green for implemented tests |
 
