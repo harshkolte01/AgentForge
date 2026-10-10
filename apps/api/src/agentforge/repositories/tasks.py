@@ -38,32 +38,66 @@ class TaskRepository:
                 raise TaskNotFound("project_not_found")
 
     def create(self, owner_id: UUID, request: TaskCreate) -> TaskView:
+        with self.session_factory() as session, session.begin():
+            return self.create_in_session(session, owner_id, request)
+
+    def create_in_session(self, session, owner_id: UUID, request: TaskCreate, *, context: dict | None = None) -> TaskView:
         request = TaskCreate.model_validate_json(request.model_dump_json())
         if request.coding is not None:
             import re
             if not re.fullmatch(r"[0-9a-f]{40}", request.coding.repository.ref):
                 raise TaskConflict("github_immutable_commit_required")
+        from agentforge.repositories.admission import admit_task
+        admit_task(session, owner_id, request.max_cost_usd)
+        project = session.scalar(select(Project).where(Project.id == request.project_id,
+            Project.owner_id == owner_id).with_for_update())
+        if project is None:
+            raise TaskNotFound("project_not_found")
+        if request.agent_key:
+            from agentforge.database.models import AgentDefinition, AgentDefinitionVersion
+            from agentforge.subagents.registry import canonical_snapshot
+            from agentforge.contracts.agent_definition import AgentDefinition as DefinitionContract
+            import json
+            prefix = f"project/{project.id}/"
+            if not request.agent_key.startswith(prefix):
+                raise TaskConflict("agent_not_authorized")
+            definition = session.scalar(select(AgentDefinition).where(AgentDefinition.project_id == project.id,
+                AgentDefinition.namespace == "project", AgentDefinition.agent_key == request.agent_key[len(prefix):],
+                AgentDefinition.disabled_at.is_(None)))
+            version = session.scalar(select(AgentDefinitionVersion).where(
+                AgentDefinitionVersion.definition_id == definition.id,
+                AgentDefinitionVersion.version == request.agent_version)) if definition else None
+            if version is None:
+                raise TaskConflict("agent_version_not_available")
+            parsed = DefinitionContract.model_validate_json(json.dumps(version.definition_json))
+            snapshot, digest = canonical_snapshot(parsed)
+            if digest != version.sha256 or snapshot != version.definition_json or parsed.output_schema_id != "research_result_v1":
+                raise TaskConflict("agent_definition_not_research_compatible")
+        continuation = None
+        if request.continue_from_task_id:
+            from agentforge.repositories.coding_continuation import capture_continuation
+            from agentforge.subagents.scope import ScopeDenied
+            try:
+                continuation = capture_continuation(session, owner_id, project.id, request.continue_from_task_id, request.coding.repository)
+            except ScopeDenied as exc:
+                raise TaskConflict(str(exc)) from None
         task_id = uuid4()
-        with self.session_factory() as session, session.begin():
-            from agentforge.repositories.admission import admit_task
-            admit_task(session, owner_id, request.max_cost_usd)
-            project = session.scalar(select(Project).where(Project.id == request.project_id,
-                Project.owner_id == owner_id).with_for_update())
-            if project is None:
-                raise TaskNotFound("project_not_found")
-            row = Task(id=task_id, created_by=owner_id, project_id=project.id,
-                goal=request.goal, status="CREATED", thread_id=str(task_id),
-                max_cost_usd=request.max_cost_usd, max_wall_time_sec=request.max_wall_time_sec,
-                event_sequence=0, permissions_json={"kind": request.kind, "web": request.kind == "research",
-                    "allowed_web_hosts": list(request.allowed_web_hosts),
-                    **({"coding": request.coding.model_dump(mode="json")} if request.coding else {})})
-            session.add(row)
-            session.flush()
-            session.add(TaskJob(task_id=row.id))
-            append_event(session, row, "task.created", {"status": "CREATED"})
-            session.flush()
-            result = TaskView.model_validate(row)
-        return result
+        row = Task(id=task_id, created_by=owner_id, project_id=project.id,
+            goal=request.goal, status="CREATED", thread_id=str(task_id),
+            max_cost_usd=request.max_cost_usd, max_wall_time_sec=request.max_wall_time_sec,
+            event_sequence=0, permissions_json={"kind": request.kind, "web": request.kind in {"research", "general"},
+                "allowed_web_hosts": list(request.allowed_web_hosts),
+                "attachments": [item.model_dump() for item in request.attachments],
+                **({"agent_key": request.agent_key, "agent_version": request.agent_version} if request.agent_key else {}),
+                **({"session_context": context} if context else {}),
+                **({"continuation": continuation} if continuation else {}),
+                **({"coding": request.coding.model_dump(mode="json")} if request.coding else {})})
+        session.add(row)
+        session.flush()
+        session.add(TaskJob(task_id=row.id))
+        append_event(session, row, "task.created", {"status": "CREATED"})
+        session.flush()
+        return TaskView.model_validate(row)
 
     def get(self, task_id: UUID, owner_id: UUID) -> TaskView:
         with self.session_factory() as session:
@@ -94,6 +128,9 @@ class TaskRepository:
                 "finished_at": row.finished_at, "reserved_cost_usd": row.reserved_cost_usd,
                 "measured_cost_usd": row.measured_cost_usd, "error_code": row.error_code,
                 "definition_version_id": row.definition_version_id,
+                "agent_type": row.definition_snapshot.get("name"),
+                "definition_version": row.definition_snapshot.get("version"),
+                "parent_task_id": row.task_id, "budget": row.effective_budget_json,
                 "effective_tool_names": row.effective_permissions_json.get("available_tools", [])}
                 for row in session.scalars(select(AgentRun).where(AgentRun.task_id == task_id)
                     .order_by(AgentRun.started_at).limit(100))]

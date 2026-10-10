@@ -74,6 +74,8 @@ class DefinitionRepository:
             self.session.flush()
         elif definition.disabled_at is not None or version != definition.current_version + 1:
             raise ValueError("definition_version_conflict")
+        elif definition.current_version >= 100:
+            raise ValueError("agent_version_limit_reached")
         snapshot = AgentDefinitionVersion(definition_id=definition.id, version=version,
             definition_json=definition_json, sha256=sha256, created_by=created_by)
         self.session.add(snapshot)

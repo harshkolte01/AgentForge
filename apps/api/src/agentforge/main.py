@@ -16,6 +16,8 @@ from agentforge.auth.routes import router as auth_router
 from agentforge.auth.session import SessionStore
 from agentforge.api.routes_github import router as github_router
 from agentforge.api.routes_approvals import router as approvals_router
+from agentforge.api.routes_sessions import router as sessions_router
+from agentforge.api.routes_agents import router as agents_router
 from agentforge.database.engine import create_db_engine
 from agentforge.settings import Settings, get_settings
 from agentforge.security.request_limits import RequestBodyLimitMiddleware
@@ -68,6 +70,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(configuration_router)
     app.include_router(github_router)
     app.include_router(approvals_router)
+    app.include_router(sessions_router)
+    app.include_router(agents_router)
     @app.middleware("http")
     async def private_response_headers(request, call_next):
         response = await call_next(request)

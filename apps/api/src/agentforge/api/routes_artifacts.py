@@ -66,8 +66,8 @@ def download(task_id: UUID, artifact_id: UUID, request: Request,
     # response-header content or executable HTML through an authorized download.
     coding_filenames = {"diff": "coding.patch", "test": "test-log.txt", "build": "build-log.txt",
                         "review": "code-review.md", "verification": "verification-report.md"}
-    filename = coding_filenames.get(artifact["kind"], "coding-report.txt") if task.kind == "coding" else "research-report.md"
-    return Response(data, media_type="text/plain; charset=utf-8" if task.kind == "coding" else "text/markdown; charset=utf-8", headers={
+    filename = coding_filenames.get(artifact["kind"], "coding-report.txt") if task.kind == "coding" else {"general_text": "general-output.txt", "general_markdown": "general-report.md", "general_csv": "general-table.csv"}.get(artifact["kind"], "research-report.md")
+    return Response(data, media_type="text/plain; charset=utf-8", headers={
         "Content-Disposition": f'attachment; filename="{filename}"',
         "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
         "ETag": f'"{artifact["sha256"]}"',

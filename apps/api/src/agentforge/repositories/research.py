@@ -173,7 +173,7 @@ class ResearchRepository:
             rows = session.scalars(select(AgentRun).where(AgentRun.task_id == ctx.task_id,
                 AgentRun.result_json.is_not(None)).order_by(AgentRun.started_at, AgentRun.id).limit(100))
             return [row.result_json for row in rows if row.result_json and
-                    row.definition_snapshot.get("output_schema_id") == "research_result_v1"]
+                    row.definition_snapshot.get("output_schema_id") in {"research_result_v1", "general_result_v1"}]
 
     def goal(self, ctx: TaskContext) -> str:
         with self.session_factory() as session:
@@ -202,13 +202,22 @@ class ResearchRepository:
             return self._artifact(row, internal=True) if row else None
 
     def add_artifact(self, ctx: TaskContext, *, artifact_id: UUID, operation_key: str,
-                     storage_key: str, sha256: str, byte_size: int, metadata: dict[str, Any]) -> dict[str, Any]:
+                     storage_key: str, sha256: str, byte_size: int, metadata: dict[str, Any],
+                     kind: str = "research_report", filename: str = "research-report.md",
+                     mime_type: str = "text/markdown; charset=utf-8") -> dict[str, Any]:
         if not storage_key.startswith(f"{ctx.task_id}/"):
             raise ScopeDenied("artifact storage key is outside the task")
         with self.session_factory() as session, session.begin():
-            self._writable(self._owned(session, **self._scope(ctx)))
+            task = self._owned(session, **self._scope(ctx))
+            session.scalar(select(Task).where(Task.id == task.id).with_for_update())
+            self._writable(task)
+            if kind.startswith("general_"):
+                count, total = session.execute(select(func.count(ResearchArtifact.id), func.coalesce(func.sum(ResearchArtifact.byte_size), 0)).where(
+                    ResearchArtifact.task_id == ctx.task_id, ResearchArtifact.kind.like("general_%"))).one()
+                if count >= 20 or total + byte_size > 1_000_000:
+                    raise ScopeDenied("general artifact aggregate limit exceeded")
             row = ResearchArtifact(id=artifact_id, task_id=ctx.task_id, operation_key=operation_key,
-                kind="research_report", filename="research-report.md", mime_type="text/markdown; charset=utf-8",
+                kind=kind, filename=filename, mime_type=mime_type,
                 storage_key=storage_key, sha256=sha256, byte_size=byte_size, metadata_json=metadata)
             session.add(row)
             session.flush()

@@ -80,8 +80,8 @@ export function TaskWorkspace() {
     const numericCost = Number(cost);
     const numericSeconds = Number(seconds);
     const allowedHosts = (kind === "research" ? hosts : "").split(/[\s,]+/).map((host) => host.trim().toLowerCase()).filter(Boolean);
-    if (!projectId || goal.trim().length < 20 || goal.trim().length > 8000 || !Number.isFinite(numericCost) || numericCost <= 0 || numericCost > 5 || !Number.isInteger(numericSeconds) || numericSeconds < 30 || numericSeconds > 1200 || allowedHosts.length > 20) {
-      setSubmitError("Choose a project, write at least 20 characters, and keep the limits within the ranges shown.");
+    if (!projectId || goal.trim().length < 1 || goal.trim().length > 8000 || !Number.isFinite(numericCost) || numericCost <= 0 || numericCost > 5 || !Number.isInteger(numericSeconds) || numericSeconds < 30 || numericSeconds > 1200 || allowedHosts.length > 20) {
+      setSubmitError("Choose a project, write a clear, nonempty message, and keep the limits within the ranges shown.");
       return;
     }
     if (kind === "coding" && (!/^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/.test(repository.trim()) || !repositoryRef.trim() || (issueNumber && (!/^\d+$/.test(issueNumber) || Number(issueNumber) < 1 || Number(issueNumber) > 2147483647)))) {
@@ -167,8 +167,8 @@ export function TaskWorkspace() {
           </fieldset> : null}
           <div className="space-y-2">
             <label htmlFor="goal" className="text-sm font-medium">{kind === "coding" ? "Change request" : "Research question"}</label>
-            <textarea id="goal" className={`${inputClass} min-h-44 resize-y leading-relaxed`} placeholder={kind === "coding" ? "Describe the change, expected behavior, and acceptance criteria." : "Describe the question, the evidence you need, and what a useful answer should include."} minLength={20} maxLength={8000} required value={goal} onChange={(event) => setGoal(event.target.value)} disabled={submitting || loading} aria-describedby="goal-help" />
-            <p id="goal-help" className="text-xs text-muted-foreground">20–8,000 characters. Be specific about the desired outcome.</p>
+            <textarea id="goal" className={`${inputClass} min-h-44 resize-y leading-relaxed`} placeholder={kind === "coding" ? "Describe the change, expected behavior, and acceptance criteria." : "Describe the question, the evidence you need, and what a useful answer should include."} minLength={1} maxLength={8000} required value={goal} onChange={(event) => setGoal(event.target.value)} disabled={submitting || loading} aria-describedby="goal-help" />
+            <p id="goal-help" className="text-xs text-muted-foreground">1–8,000 characters. Be specific about the desired outcome.</p>
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2"><label htmlFor="cost" className="text-sm font-medium">Maximum cost (USD)</label><input id="cost" className={`${inputClass} tabular-nums`} type="number" min="0.0001" max="5" step="0.0001" required value={cost} onChange={(event) => setCost(event.target.value)} disabled={submitting} aria-describedby="cost-help" /><p id="cost-help" className="text-xs text-muted-foreground">Up to $5 per task</p></div>
@@ -188,7 +188,7 @@ export function TaskWorkspace() {
       <section aria-labelledby="recent-title" className="min-w-0 border-t pt-7 lg:border-t-0 lg:pt-0">
         <div className="mb-5 flex items-center justify-between gap-3"><h2 id="recent-title" className="text-lg font-semibold">Recent tasks</h2><Button variant="ghost" size="sm" onClick={() => setRefresh((value) => value + 1)} disabled={loading}><RefreshCw aria-hidden="true" />Refresh</Button></div>
         {loading ? <div aria-label="Loading tasks" className="space-y-3">{[0, 1, 2].map((item) => <div key={item} className="h-20 rounded-lg bg-muted" />)}</div> : !tasks.length ? <div className="border-y py-10"><p className="text-sm font-medium">{offset ? "No more tasks" : "Your work starts here"}</p><p className="mt-2 text-sm leading-relaxed text-muted-foreground">{offset ? "Return to the previous page to see earlier results." : "Create a task to see its plan, agent runs, and evidence in this workspace."}</p></div> : <ul className="divide-y border-y">{tasks.map((task) => <li key={task.id}><Link href={`/tasks/${task.id}`} className="block space-y-2 py-5 outline-none hover:bg-muted/30 focus-visible:ring-2 focus-visible:ring-ring"><div className="flex flex-wrap items-center justify-between gap-2"><Badge variant={task.status === "FAILED" ? "destructive" : "secondary"}>{statusLabel(task.status)}</Badge><time dateTime={task.created_at} className="text-xs text-muted-foreground">{formatDate(task.created_at)}</time></div><p className="line-clamp-2 text-sm font-medium leading-relaxed">{task.goal}</p><p className="text-xs text-muted-foreground">{projects.find((project) => project.id === task.project_id)?.name ?? "Project"} · ${task.max_cost_usd} limit</p></Link></li>)}</ul>}
-        {offset || tasks.length === 20 ? <div className="mt-4 flex justify-between gap-3"><Button variant="outline" size="sm" disabled={!offset} onClick={() => { setLoading(true); setOffset((value) => Math.max(0, value - 20)); }}>Previous</Button><Button variant="outline" size="sm" disabled={tasks.length < 20 || offset >= 9980} onClick={() => { setLoading(true); setOffset((value) => value + 20); }}>Next</Button></div> : null}
+        {offset || tasks.length === 20 ? <div className="mt-4 flex justify-between gap-3"><Button variant="outline" size="sm" disabled={!offset} onClick={() => { setLoading(true); setOffset((value) => Math.max(0, value - 20)); }}>Previous</Button><Button variant="outline" size="sm" disabled={tasks.length < 1 || offset >= 9980} onClick={() => { setLoading(true); setOffset((value) => value + 20); }}>Next</Button></div> : null}
       </section>
     </div>
   );

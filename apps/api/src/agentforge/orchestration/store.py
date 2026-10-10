@@ -39,18 +39,32 @@ class WorkflowStore:
             previous, task.status = task.status, status
             append_event(session, task, "task.status", {"status": status, "previous_status": previous})
 
-    def ensure_research_plan(self, key: str, version: int):
+    def ensure_research_plan(self, key: str, version: int, *, objectives=None):
         with self.sessions() as session, session.begin():
             task = self.locked_task(session)
             existing = session.scalar(select(TaskStep).where(TaskStep.task_id == task.id).limit(1))
             if existing is not None:
                 return
-            session.add(TaskStep(task_id=task.id, step_key="research", agent_type=key,
-                definition_version=version, objective=task.goal, depends_on=[],
-                acceptance_criteria=["Use task-owned fetched public sources for cited claims.",
-                    "Label unsupported or uncertain claims explicitly.",
-                    "Report limitations; do not equate citation existence with truth."], status="PENDING"))
+            for index, objective in enumerate(objectives or [task.goal]):
+                session.add(TaskStep(task_id=task.id, step_key=f"research-{index + 1}", agent_type=key,
+                    definition_version=version, objective=objective, depends_on=[],
+                    acceptance_criteria=["Cover the complete original user goal and its explicit constraints.",
+                        "Support all factual claims and clearly distinguish quotations, inference and uncertainty.",
+                        "Assess conflicts across consulted evidence; do not equate citation existence with truth."], status="PENDING"))
             append_event(session, task, "task.plan.created", {"type": key, "version": version})
+
+    def ensure_verification_step(self, criteria):
+        with self.sessions() as session, session.begin():
+            task = self.locked_task(session)
+            step = session.scalar(select(TaskStep).where(TaskStep.task_id == task.id, TaskStep.step_key == "verification"))
+            if step is None:
+                step = TaskStep(task_id=task.id, step_key="verification", agent_type="builtin/verifier",
+                    definition_version=3, objective="Independently inspect all owned inputs, sources and deliverables.",
+                    depends_on=[], acceptance_criteria=list(criteria), status="PENDING")
+                session.add(step)
+                session.flush()
+            session.expunge(step)
+            return step
 
     def steps(self):
         with self.sessions() as session:
@@ -113,6 +127,8 @@ class WorkflowStore:
             task.status, task.final_summary = status, summary[:8000]
             task.final_result, task.error_code = result, error_code
             append_event(session, task, "task.finished", {"status": status, "error_code": error_code})
+            from agentforge.repositories.sessions import complete_task_conversation
+            complete_task_conversation(session, task.id)
 
     def verified(self, verification: dict, research: dict):
         with self.sessions() as session, session.begin():

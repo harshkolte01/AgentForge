@@ -75,8 +75,38 @@ class ReviewResult(SubagentResult):
     acceptance_checks: TextItems = ()
 
 
+class CriterionAssessment(StrictContract):
+    criterion_index: int = Field(ge=0, le=99)
+    status: Literal["SATISFIED", "UNRESOLVED", "FAILED"]
+    reason: str = Field(min_length=20, max_length=2000)
+    evidence_ids: Ids = ()
+
+
+class ClaimAssessment(StrictContract):
+    claim_index: int = Field(ge=0, le=99)
+    status: Literal["SUPPORTED", "UNRESOLVED", "CONTRADICTED"]
+    reason: str = Field(min_length=20, max_length=2000)
+    source_ids: Ids
+
+
+class IssueAssessment(StrictContract):
+    issue_index: int = Field(ge=0, le=99)
+    status: Literal["RESOLVED", "UNRESOLVED"]
+    reason: str = Field(min_length=20, max_length=2000)
+    evidence_ids: Ids = ()
+
+
+class AssessmentResult(SubagentResult):
+    issue_checks: Annotated[tuple[IssueAssessment, ...], Field(strict=False, max_length=100)] = ()
+    criterion_checks: Annotated[tuple[CriterionAssessment, ...], Field(strict=False, max_length=100)] = ()
+    claim_checks: Annotated[tuple[ClaimAssessment, ...], Field(strict=False, max_length=100)] = ()
+    conflict_status: Literal["NO_CONFLICT_FOUND", "RESOLVED", "UNRESOLVED"] = "UNRESOLVED"
+    conflict_source_ids: Ids = ()
+    conflict_reason: str = Field(default="Conflict assessment unavailable.", min_length=20, max_length=2000)
+
+
 RESULT_MODELS: dict[str, type[SubagentResult]] = {
-    "research_result_v1": ResearchResult,
+    "research_result_v1": ResearchResult, "general_result_v1": ResearchResult, "assessment_result_v1": AssessmentResult,
     "execution_result_v1": ExecutionResult,
     "review_result_v1": ReviewResult,
 }

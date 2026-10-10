@@ -13,23 +13,50 @@ TaskStatus = Literal["CREATED", "PLANNING", "RUNNING", "VERIFYING", "RETRYING", 
 TERMINAL_STATUSES = frozenset({"COMPLETED", "PARTIAL", "FAILED", "CANCELLED"})
 
 
+class TextAttachment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=120)
+    content: str = Field(min_length=1, max_length=8000)
+
+
 class TaskCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     project_id: UUID
-    kind: Literal["research", "coding"] = "research"
+    kind: Literal["research", "general", "coding"] = "research"
     coding: CodingTaskSpec | None = None
-    goal: str = Field(min_length=20, max_length=8000)
+    continue_from_task_id: UUID | None = None
+    goal: str = Field(min_length=1, max_length=8000)
     max_cost_usd: Decimal = Field(default=Decimal("0.50"), gt=0, le=5, decimal_places=4, allow_inf_nan=False)
     max_wall_time_sec: int = Field(default=300, ge=30, le=1200)
     allowed_web_hosts: tuple[str, ...] = Field(default=(), max_length=20)
 
+    attachments: tuple[TextAttachment, ...] = Field(default=(), max_length=4)
+    agent_key: str | None = Field(default=None, max_length=160, pattern=r"^project/[0-9a-f-]{36}/[a-z][a-z0-9-]+$")
+    agent_version: int | None = Field(default=None, ge=1)
+
     @model_validator(mode="after")
     def validate_kind(self):
+        if self.continue_from_task_id is not None and self.kind != "coding":
+            raise ValueError("workspace continuation is available only for coding")
         if (self.kind == "coding") != (self.coding is not None):
             raise ValueError("coding specification is required only for coding tasks")
+        if sum(len(item.content.encode()) for item in self.attachments) > 16000:
+            raise ValueError("combined attachments exceed 16000 bytes")
+        if (self.agent_key is None) != (self.agent_version is None):
+            raise ValueError("agent key and immutable version are required together")
+        if self.kind == "coding" and (self.attachments or self.agent_key):
+            raise ValueError("coding tasks do not accept research attachments or agents")
         if self.kind == "coding" and self.allowed_web_hosts:
             raise ValueError("coding tasks do not accept web permissions")
         return self
+
+    @field_validator("goal")
+    @classmethod
+    def clean_goal(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("goal must contain non-whitespace text")
+        return value
 
     @field_validator("allowed_web_hosts")
     @classmethod
@@ -54,8 +81,9 @@ class TaskView(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
     project_id: UUID
-    kind: Literal["research", "coding"] = "research"
+    kind: Literal["research", "general", "coding"] = "research"
     coding: CodingTaskSpec | None = None
+    continue_from_task_id: UUID | None = None
     goal: str
     status: TaskStatus
     thread_id: str
@@ -77,6 +105,7 @@ class TaskView(BaseModel):
             result = {name: getattr(value, name) for name in cls.model_fields if hasattr(value, name)}
             result["kind"] = permissions.get("kind", "research")
             result["coding"] = permissions.get("coding")
+            result["continue_from_task_id"] = (permissions.get("continuation") or {}).get("task_id")
             return result
         return value
 

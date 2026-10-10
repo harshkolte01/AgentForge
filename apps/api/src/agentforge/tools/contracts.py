@@ -96,7 +96,33 @@ class BrowserArgs(ToolArguments):
     checks: Annotated[tuple[Literal["title", "screenshot", "links", "accessibility"], ...], Field(strict=False, max_length=4)] = ("title",)
 
 
+class PageArgs(ToolArguments):
+    offset: int = Field(default=0, ge=0, le=2_000_000)
+    max_chars: int = Field(default=6000, ge=1, le=8000)
+
+
+class TaskInputArgs(PageArgs):
+    input_kind: Literal["goal", "attachment", "history"]
+    attachment_index: int = Field(default=0, ge=0, le=3)
+
+
+class ResearchSourceArgs(PageArgs):
+    source_id: ResourceId
+
+
+class TaskArtifactReadArgs(PageArgs):
+    artifact_id: ResourceId
+
+
+class TaskArtifactCreateArgs(ToolArguments):
+    format: Literal["text", "markdown", "csv"]
+    content: str = Field(min_length=1, max_length=60000)
+    title: str = Field(min_length=1, max_length=120)
+
+
 ARGUMENT_MODELS: dict[str, type[ToolArguments]] = {
+    "read_task_input": TaskInputArgs, "read_research_source": ResearchSourceArgs,
+    "read_task_artifact": TaskArtifactReadArgs, "create_task_artifact": TaskArtifactCreateArgs,
     "web_search": WebSearchArgs, "fetch_webpage": FetchWebpageArgs,
     "read_repo_file": RepoFileArgs, "search_repo": RepoSearchArgs,
     "get_issue": IssueArgs, "list_repo_files": RepoFilesArgs,
@@ -208,10 +234,31 @@ class BrowserRequest(_Request):
     args: BrowserArgs
 
 
+class TaskInputRequest(_Request):
+    name: Literal["read_task_input"]
+    args: TaskInputArgs
+
+
+class ResearchSourceRequest(_Request):
+    name: Literal["read_research_source"]
+    args: ResearchSourceArgs
+
+
+class TaskArtifactReadRequest(_Request):
+    name: Literal["read_task_artifact"]
+    args: TaskArtifactReadArgs
+
+
+class TaskArtifactCreateRequest(_Request):
+    name: Literal["create_task_artifact"]
+    args: TaskArtifactCreateArgs
+
+
 ToolRequest = Annotated[
     WebSearchRequest | FetchRequest | RepoFileRequest | RepoSearchRequest |
     IssueRequest | RepoFilesRequest | SandboxFileRequest | SandboxWriteRequest |
     DiffRequest | CommandRequest | TestsRequest | TestResultsRequest |
-    PRStatusRequest | BrowserRequest,
+    PRStatusRequest | BrowserRequest | TaskInputRequest | ResearchSourceRequest |
+    TaskArtifactReadRequest | TaskArtifactCreateRequest,
     Field(discriminator="name"),
 ]

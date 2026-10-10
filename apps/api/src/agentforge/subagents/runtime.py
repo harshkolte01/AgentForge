@@ -44,7 +44,7 @@ async def validate_result(raw: str, definition: AgentDefinition, ctx: TaskContex
     if isinstance(result, ResearchResult):
         for claim in result.claims:
             evidence.update(claim.source_ids)
-        if result.status == "PASS" and not result.claims:
+        if result.status == "PASS" and not result.claims and definition.output_schema_id != "general_result_v1":
             raise ValueError("research PASS requires evidence-linked claims")
     elif isinstance(result, ExecutionResult):
         evidence.update(result.test_evidence_ids)
@@ -59,7 +59,7 @@ async def validate_result(raw: str, definition: AgentDefinition, ctx: TaskContex
                 validate_relative_path(finding.path)
         if result.status == "PASS" and not result.acceptance_checks:
             raise ValueError("review PASS requires identified acceptance checks")
-    if result.status == "PASS" and not evidence:
+    if result.status == "PASS" and not (evidence or artifacts):
         raise ValueError("PASS requires external or deterministic evidence")
     await resources.verify_references(ctx, evidence_ids=tuple(sorted(evidence)), artifact_ids=tuple(sorted(artifacts)))
     # Preserve every specialized reference in the common envelope delivered to

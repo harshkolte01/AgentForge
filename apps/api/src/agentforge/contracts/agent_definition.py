@@ -13,9 +13,9 @@ ToolName = Literal[
     "web_search", "fetch_webpage", "read_repo_file", "search_repo", "get_issue",
     "list_repo_files", "read_sandbox_file", "write_sandbox_file", "git_diff",
     "run_sandbox_command", "run_tests", "get_test_results", "get_pr_status",
-    "browser_public_page",
+    "browser_public_page", "read_task_input", "read_research_source", "read_task_artifact", "create_task_artifact",
 ]
-OutputSchemaId = Literal["research_result_v1", "execution_result_v1", "review_result_v1"]
+OutputSchemaId = Literal["research_result_v1", "execution_result_v1", "review_result_v1", "assessment_result_v1", "general_result_v1"]
 ResourceIds = Annotated[tuple[Annotated[str, Field(min_length=1, max_length=256)], ...], Field(strict=False, max_length=200)]
 
 
@@ -62,6 +62,7 @@ TOOL_CAPABILITIES: dict[str, tuple[str, ...]] = {
     "write_sandbox_file": ("sandbox_write",),
     "run_sandbox_command": ("sandbox_exec",), "run_tests": ("sandbox_exec",),
     "get_test_results": (), "browser_public_page": ("web", "browser"),
+    "read_task_input": (), "read_research_source": (), "read_task_artifact": (), "create_task_artifact": (),
 }
 
 

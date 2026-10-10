@@ -18,6 +18,7 @@ from sqlalchemy import create_engine,select,text
 from sqlalchemy.engine import make_url,URL
 from sqlalchemy.orm import sessionmaker
 from agentforge.settings import Settings
+from _disposable_db import admin_engine
 import agentforge.settings as settings_module
 ROOT=Path(__file__).resolve().parents[3]
 DB_NAME='agentforge_p4_smoke_'+uuid4().hex[:16]
@@ -54,7 +55,7 @@ async def run(settings):
     sessions=sessionmaker(engine,expire_on_commit=False)
     user,project=uuid4(),uuid4()
     with sessions.begin() as s:
-        s.add(User(id=user,github_user_id=4001,display_name='Fixture'));s.flush();s.add(Project(id=project,owner_id=user,name='Offline phase4'))
+        s.add(User(id=user,github_user_id=-4001,display_name='Fixture'));s.flush();s.add(Project(id=project,owner_id=user,name='Offline phase4'))
     from agentforge.contracts.tasks import TaskCreate
     from agentforge.contracts.coding import CodingTaskSpec,RepoSelection
     from agentforge.repositories.tasks import TaskRepository
@@ -219,21 +220,10 @@ try:
     configured = Settings()
     source = make_url(configured.database_url)
     check(source.host in ("localhost", "127.0.0.1", "::1"), "configured DB is not loopback; refusing")
-    admin = create_engine(source.set(database="postgres"), isolation_level="AUTOCOMMIT")
-    try:
-        with admin.connect() as connection:
-            connection.execute(text('CREATE DATABASE "' + DB_NAME + '"'))
-    except Exception as error:
-        if getattr(getattr(error, "orig", None), "sqlstate", None) != "42501":
-            raise
-        import getpass
-        admin.dispose()
-        admin = create_engine(URL.create("postgresql+psycopg", username=getpass.getuser(),
-            port=source.port, database="postgres"), isolation_level="AUTOCOMMIT")
-        with admin.connect() as connection:
-            owner = connection.dialect.identifier_preparer.quote_identifier(source.username)
-            connection.execute(text('CREATE DATABASE "' + DB_NAME + '" OWNER ' + owner))
-        ok("local OS-user administrator created disposable DB owned by configured application role")
+    admin = admin_engine(source)
+    with admin.connect() as connection:
+        owner = connection.dialect.identifier_preparer.quote_identifier(source.username)
+        connection.execute(text('CREATE DATABASE "' + DB_NAME + '" OWNER ' + owner))
     created = True
     safe = Settings(_env_file=None, database_url=source.set(database=DB_NAME).render_as_string(hide_password=False),
         langgraph_checkpoint_db_url=source.set(drivername="postgresql", database=DB_NAME).render_as_string(hide_password=False),

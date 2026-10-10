@@ -22,12 +22,16 @@ def configuration(request: Request, user: User = Depends(current_user)) -> dict:
         "TAVILY_API_KEY": bool(settings.tavily_api_key),
     }
     missing = [name for name, present in required.items() if not present]
+    general_missing = [name for name, present in required.items() if name != "TAVILY_API_KEY" and not present]
     coding_required = {name: present for name, present in required.items() if name != "TAVILY_API_KEY"}
     coding_required["E2B_API_KEY"] = bool(getattr(settings, "e2b_api_key", None))
     coding_required["E2B_TEMPLATE_ID"] = bool(getattr(settings, "e2b_template_id", None))
     coding_required["E2B_TEMPLATE_QUALIFIED=true"] = bool(getattr(settings, "e2b_template_qualified", False))
     coding_missing = [name for name, present in coding_required.items() if not present]
     return {"research_configured": not missing, "missing_settings": missing,
+            "general_configured": not general_missing, "general_missing_settings": general_missing,
+            "general_capabilities": ["bounded_text_attachment_reads", "task_owned_text_artifacts", "independent_evidence_verification"] + (["source_backed_research"] if settings.tavily_api_key else []),
+            "general_execution": "bounded_text_only", "general_sandbox_execution": "unsupported",
             "configured_model": settings.llm_model or None, "configured_provider": getattr(settings, "llm_provider", "openai"),
             "per_task_cost_limit_usd": str(5 if user.github_user_id < 0 else min(getattr(settings, "public_max_task_cost_usd", 1), 5)),
             "coding_configured": not coding_missing, "coding_missing_settings": coding_missing,

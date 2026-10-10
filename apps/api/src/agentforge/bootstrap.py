@@ -62,6 +62,8 @@ def compose_runtime(settings, sessions, telemetry, store) -> Runtime:
         coding = SimpleNamespace(repository=repository, execution=execution, github=github)
     else:
         resources = register_research(base_catalog, sessions, settings)
+        from agentforge.tools.general import register_general
+        register_general(base_catalog, sessions, settings)
     catalog = ToolCatalog()
     for tool in base_catalog.available(DESCRIPTIONS):
         catalog.register(tool.name, observed_tool(tool, telemetry, store),
