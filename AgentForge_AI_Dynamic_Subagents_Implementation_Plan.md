@@ -2105,7 +2105,7 @@ GitHub Actions job outline:
 | 2.8 | `agent_runs`, `tool_calls` migrations | Persist definition version, calls and results | DB history present |
 | 2.9 | `budget.py` | Reserve, settle, enforce max steps/depth/time | Over-budget and nested spawn denied |
 
-**Implementation status (10 October 2026):** Steps 2.1–2.9 are implemented and source-reviewed only; the exit tests above were deliberately not run. See [Phase 2 implementation and handoff](docs/phase-2.md) and [phase status](phase-status.md). Migration `0002_phase2` is authored but unapplied. No tests, builds or live provider calls were executed; Gate P2 remains empirically unverified.
+**Current implementation status (10 October 2026):** Steps 2.1–2.9 are implemented. Subsequent offline tests and disposable parent/child workflows qualified grants, budget intents, immutable definitions and shared runtime behavior. The configured local database reached `0007_sessions_agents` after the authorized, privately backed-up idle-runtime handoff. The final unit suite passed 67 checks; the frozen release receipt passed 65 unit checks and five disposable workflows, with source hashes unchanged during the checks. No live LLM child/hosted trace qualification is claimed, so Gate P2's real-provider requirement remains open. See [phase status](phase-status.md) and [Phase7](docs/phase-7.md).
 
 **Gate P2:** `spawn_subagent` runs a real LLM child with **only its authorized tools** and validated return schema, while forbidden calls demonstrably fail. No GitHub write is necessary yet.
 
@@ -2121,9 +2121,7 @@ checks passed, as did frontend lint, route types and production build. The
 disposable database and artifacts were removed; the configured application
 database was not migrated. Live provider/tracing requests, browser interactions,
 valid SSE streaming and concurrent-worker/crash-recovery qualification remain
-outstanding; Gate P3 has not passed. The implemented planner is one bounded registry-selected read-only
-research step. Unknown interrupted paid operations close PARTIAL without replay;
-quote/source checks leave semantic goal coverage explicitly unresolved/PARTIAL.
+outstanding; Gate P3 has not passed. The current bounded research/general parent uses registry-selected work and independent verification stages. Research adds hash/quote gates plus evidence-grounded goal/attribution/conflict review; general completion requires actual independent reads of bounded inputs and output. Model PASS alone is insufficient. Unknown interrupted paid operations close PARTIAL without replay. Live semantic/provider qualification remains open.
 Required model, Tavily and Neatlogs settings are present, without provider
 verification. See [Phase 3 handoff](docs/phase-3.md) and
 [status tracker](phase-status.md) for configuration, explicit setup and evidence
@@ -2175,6 +2173,8 @@ hosting is deferred; no self-hosted runtime or GitHub writes were added. See
 
 ### Phase 5 — GitHub connection, approval and draft PR (Oct 11)
 
+**Implementation/publication status (10 October 2026):** Published as `8c5dfed` with remote SHA verified. Durable identity, scoped App/user authorization, exact approvals, operation-ledger reconciliation and UI are implemented. Offline tests and disposable mocked-GitHub workflows passed; actual OAuth/install/draft-PR delivery and authenticated browser evidence remain open. See [Phase5](docs/phase-5.md).
+
 **Objective:** Deliver result through real GitHub with user control.
 
 | Step | Files/services | Work item | Exit test |
@@ -2192,6 +2192,8 @@ hosting is deferred; no self-hosted runtime or GitHub writes were added. See
 
 ### Phase 6 — Custom agents, optional parallelism and UI polish (Oct 12)
 
+**Implementation status (10 October 2026):** Persistent sessions/turns, bounded history, general tasks, source-research custom agents with immutable versions, coding continuation and the workspace UI were published as `cb7bbfa` with isolated checks and remote SHA verification. Disposable workflows passed; live custom-agent traces, forced-process recovery and browser interactions remain open. Additional user-requested conversation/general scope is detailed in [Phase6](docs/phase-6.md). Optional parallel/browser work remains stretch scope.
+
 **Objective:** Prove extensibility and make results easy to judge.
 
 | Step | Files/services | Work item | Exit test |
@@ -2207,6 +2209,8 @@ hosting is deferred; no self-hosted runtime or GitHub writes were added. See
 **Gate P6:** One saved custom sub-agent is created, loaded from registry, run through **the same** spawn engine, and observed in traces. Skip optional concurrency/browser if doing so protects the core gates.
 
 ### Phase 7 — Evaluation, partner evidence and release (Oct 12)
+
+**Implementation status (10 October 2026):** Release CI/configuration, isolated evaluation receipts, nonroot single-EC2 app containers, TLS/SSE proxy, least-privilege runtime DB roles, private persistent artifacts, operational/cost inspection, backup/restore guidance, README and evidence/demo templates are authored. Local unit/disposable workflows and config/syntax checks passed. The existing development DB was backed up privately and upgraded to 0007, then loopback services restarted and authenticated HTTP routes checked without paid tasks. Hosted CI, container execution, AWS deployment, restore drill and partner/submission evidence remain unqualified. **Gate P7 is not complete.** See [Phase7](docs/phase-7.md), [deployment](infra/deploy/README.md) and [hackathon evidence](docs/hackathon.md).
 
 **Objective:** Meet official rules; show valid results with reproducible evidence.
 

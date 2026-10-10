@@ -1,5 +1,45 @@
 # Implementation status
 
+## Current release work — Phases 5–7
+
+Updated 10 October 2026. Phase5 identity/GitHub delivery was published as
+`8c5dfed1b389eaebe1cf5e93d1f82f4b4e45b389`, with remote SHA verified. Phase6
+conversation/custom-agent/general/research and continuation code plus its UI were
+published as `cb7bbfa7fb8c2f6a3aab4a20610d7841a9b0c633`, with remote SHA verified.
+The Phase5 security follow-up is `93dd311`. Phase7 release
+configuration, CI, evaluation runner and runbooks are implemented. **External
+gates P5, P6 and P7 remain open.**
+
+The final unit suite passed 67 checks; the frozen release runner passed 65 unit
+checks plus five disposable PostgreSQL
+workflows: actual generated coding failure/repair, mocked identity/GitHub delivery
+including lost-response reconciliation, sessions/custom versions/continuations,
+research/general verification and read-only operational/aggregate reporting.
+The frozen release receipt records `93dd311` plus the working inputs, with no source
+changes during checks. Two later negative operational-error tests also passed.
+Phase6 isolated publication checks passed 63 core tests, the coding/session/
+nine-mode research-general fixtures, and frontend lint/types/build. Compose quiet validation, shell syntax and Python compilation passed.
+Backup mocks preserve the originally running service set on success and failure.
+
+After final code freeze and an idle-queue check, the authorized local handoff
+created a readable mode-0600 PostgreSQL backup under ignored `.local/backups/`,
+applied additive migrations `0006_identity_github` and `0007_sessions_agents` to
+the configured development DB, and restarted the same loopback API8000, worker and
+web3000 commands. Existing checkpoint tables were retained; a private mode-0700
+artifact directory was created. API live/ready, programmatic local login/logout,
+owner projects/sessions/agents/configuration, web routes and the web API proxy
+passed HTTP checks. No task was submitted and no paid provider was called.
+This is local HTTP evidence, not authenticated browser interaction or AWS hosting.
+No AWS account or server, new public deployment, live GitHub authorization/publication, hosted trace,
+Entire evidence, cfo.ai export, video or public submission is claimed. Container
+build/start, authenticated browser/SSE and backup/restore qualification remain
+open. See [Phase6](docs/phase-6.md), [Phase7](docs/phase-7.md),
+[deployment](infra/deploy/README.md) and [remaining gates](docs/remaining-phases.md).
+
+The older entries below describe their original implementation-time checks;
+later receipts above supersede their statements about unrun local tests or
+unapplied early migrations.
+
 ## Phase 4 — Sandbox coding executor
 
 Implemented on 10 October 2026 with managed E2B as the execution boundary; AWS app
