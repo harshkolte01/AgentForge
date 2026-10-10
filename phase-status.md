@@ -68,3 +68,31 @@ pnpm dev
 Open `http://localhost:3000`. The verified dev server was left running in a hidden background process; its ignored logs are in `apps/web/.local/`. Stop the existing dev server before launching another one on port 3000.
 
 No blockers remain for Step 1.3. PostgreSQL infrastructure, migrations, FastAPI bootstrap/health routes and CI remain for later Phase 1 steps.
+
+## Step 1.4 — Local PostgreSQL (no Docker)
+
+Completed on 10 October 2026. Phase 1 as a whole is still incomplete.
+
+Implemented:
+
+- Used the existing, running Windows PostgreSQL 17.4 service at `localhost:5432`.
+- Created the `agentforge` database using the existing local `postgres` account. No dedicated role was needed.
+- Created the ignored root `.env` with the real local credentials in `DATABASE_URL` (SQLAlchemy psycopg dialect) and `LANGGRAPH_CHECKPOINT_DB_URL` (native PostgreSQL URI). Credentials are not recorded in tracked files.
+- Added the checkpoint URL placeholder to `.env.example` and the corresponding typed field to API settings. Both database URLs are excluded from the settings representation.
+- Added `infra/README.md` noting that local PostgreSQL is used. Docker Compose is skipped for local development, and the plan's repository tree, local-start instructions and Step 1.4 row reflect that choice.
+
+Verification:
+
+- PostgreSQL `psql -h localhost -p 5432 -U postgres -d agentforge -c "SELECT 1;"`: exit code 0; returned `1`.
+- API virtual environment loaded root `.env` through Pydantic Settings. SQLAlchemy with psycopg connected to `agentforge`; `SELECT 1` returned `1`, and the account has CREATE permission on the public schema for the next migration step.
+- Direct psycopg connection using the native checkpoint URL: `SELECT 1` returned `1`. No LangGraph checkpoint tables were initialized.
+- `.env.example` still loads successfully without containing the real local credentials.
+- `git check-ignore -v .env`: matched root `.gitignore`; `git ls-files -- .env`: empty. The real `.env` remains untracked.
+
+Local verification (PowerShell; enter your local password when prompted):
+
+```powershell
+& "C:\Program Files\PostgreSQL\17\bin\psql.exe" -h localhost -p 5432 -U postgres -d agentforge -c "SELECT 1;"
+```
+
+No blockers remain for Step 1.4. Application migrations belong to Step 1.5; the API health endpoint and its database check belong to Step 1.6.

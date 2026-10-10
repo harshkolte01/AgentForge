@@ -437,7 +437,7 @@ agentforge-ai/
 ├── packages/
 │   └── contracts/                    # optional generated JSON Schema/TS types
 ├── infra/
-│   ├── docker-compose.yml            # local PostgreSQL (and app services if useful)
+│   ├── README.md                     # existing local PostgreSQL; Docker Compose skipped
 │   ├── api.Dockerfile
 │   ├── worker.Dockerfile
 │   └── deployment-notes.md
@@ -1981,8 +1981,8 @@ entire status
 # Create apps as implementation begins
 mkdir -p apps/api apps/web infra docs evidence
 
-# Start local DB using final infra/docker-compose.yml
-docker compose -f infra/docker-compose.yml up -d db
+# Use the existing local PostgreSQL service; configure credentials in ignored .env
+psql -h localhost -U postgres -d agentforge -c "SELECT 1;"
 
 # Python backend (after pyproject.toml exists)
 cd apps/api
@@ -2078,7 +2078,7 @@ GitHub Actions job outline:
 | 1.1 | Git, `.entire/` | Create repo during allowed window; enable Entire | First real coding checkpoint eventually visible |
 | 1.2 | `apps/api/pyproject.toml` | Set Python deps and Pydantic settings | **Complete (10 October 2026):** `uv sync` succeeds; settings smoke checks pass. See [phase-status.md](phase-status.md). |
 | 1.3 | `apps/web/` | Scaffold Next.js/Tailwind/shadcn | **Complete (10 October 2026):** `http://localhost:3000` returns HTTP 200; install, lint, production build and API rewrite checks pass. See [phase-status.md](phase-status.md). |
-| 1.4 | `infra/docker-compose.yml` | Start PostgreSQL | DB connection test |
+| 1.4 | Local PostgreSQL, `.env`, `infra/README.md` (Docker Compose skipped) | Create `agentforge` on the existing local PostgreSQL service and configure both database URLs | **Complete (10 October 2026):** `psql` and API SQLAlchemy/psycopg connections return `1` for `SELECT 1`; native checkpoint URL verified. See [phase-status.md](phase-status.md). |
 | 1.5 | `database/*`, Alembic | Migrate users/projects/tasks/definitions | Clean DB upgrade succeeds |
 | 1.6 | `main.py`, `/health` | FastAPI bootstrap, CORS/proxy | Health status and OpenAPI reachable |
 | 1.7 | `.github/workflows/ci.yml` | Lint/test/typecheck placeholders become real jobs | CI green for implemented tests |

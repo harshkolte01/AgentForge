@@ -31,6 +31,11 @@ class Settings(BaseSettings):
         min_length=1,
         repr=False,
     )
+    langgraph_checkpoint_db_url: str = Field(
+        default="postgresql://agentforge:change-me@localhost:5432/agentforge",
+        min_length=1,
+        repr=False,
+    )
 
     @field_validator("allowed_origins", mode="before")
     @classmethod
