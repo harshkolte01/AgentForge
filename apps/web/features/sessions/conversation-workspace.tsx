@@ -1,8 +1,9 @@
 "use client";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Menu, PanelLeftClose, Settings, SquarePen } from "lucide-react";
-import { AccountControl } from "@/components/session-boundary";
+import { Menu, PanelLeftClose, SquarePen } from "lucide-react";
+import { SidebarAccountMenu } from "@/features/sessions/sidebar-account-menu";
+import { ResizableSidebar } from "@/features/sessions/resizable-sidebar";
 import { Button } from "@/components/ui/button";
 import { SessionHistory } from "@/features/sessions/session-history";
 import { ConversationComposer } from "@/features/sessions/conversation-composer";
@@ -34,7 +35,7 @@ export function ConversationWorkspace() {
     const close = (event: KeyboardEvent) => {
       if (event.key === "Escape") { setSidebar(false); navigationTrigger.current?.focus(); }
       if (event.key !== "Tab" || window.matchMedia("(min-width: 1024px)").matches) return;
-      const controls = navigation.current?.querySelectorAll<HTMLElement>('a[href], button:not(:disabled), input:not(:disabled), summary');
+      const controls = Array.from(navigation.current?.querySelectorAll<HTMLElement>('a[href], button:not(:disabled), input:not(:disabled), summary') ?? []).filter((control) => control.tabIndex >= 0 && control.getClientRects().length > 0);
       if (!controls?.length) return;
       const first = controls[0], last = controls[controls.length - 1];
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
@@ -97,12 +98,12 @@ export function ConversationWorkspace() {
   const composer = <ConversationComposer menuSide={selected ? "top" : "bottom"} key={selected?.id ?? `new-${draftSequence}`} previousTaskId={selected?.continuation_task_id ?? null} repository={selected ? selected.repository : draftRepository} onRepositoryChange={changeRepository} config={config} disabled={loading || busy || !!selected?.active_task_id} archived={selected?.archived ?? false} onSend={send} />;
   return <div className="flex h-svh min-h-0 overflow-hidden bg-background selection:bg-foreground/15">
     {sidebar ? <button className="fixed inset-0 z-30 bg-foreground/20 lg:hidden" aria-label="Close navigation" onClick={() => setSidebar(false)} /> : null}
-    <aside ref={navigation} id="workspace-navigation" className={`fixed inset-y-0 left-0 z-40 flex w-60 shrink-0 flex-col border-r bg-sidebar px-3 pb-3 pt-3 transition-transform motion-reduce:transition-none lg:static lg:translate-x-0 ${sidebar ? "translate-x-0" : "-translate-x-full max-lg:invisible"} ${collapsed ? "lg:hidden" : ""}`} aria-label="Workspace navigation" role={sidebar ? "dialog" : undefined} aria-modal={sidebar || undefined}>
+    <ResizableSidebar collapsed={collapsed} ref={navigation} id="workspace-navigation" className={`fixed inset-y-0 left-0 z-40 flex shrink-0 flex-col border-r bg-sidebar px-3 pb-3 pt-3 transition-transform motion-reduce:transition-none lg:translate-x-0 ${sidebar ? "translate-x-0" : "-translate-x-full max-lg:invisible"} ${collapsed ? "lg:hidden" : ""}`} aria-label="Workspace navigation" role={sidebar ? "dialog" : undefined} aria-modal={sidebar || undefined}>
       <div className="mb-5 flex min-h-9 items-center justify-between px-1"><Link href="/workspace" className="inline-flex items-center gap-2 rounded text-[13px] font-semibold focus-visible:outline-2"><span className="flex size-6 items-center justify-center rounded-md bg-primary text-[11px] text-primary-foreground" aria-hidden="true">A</span>AgentForge</Link><Button variant="ghost" size="icon-sm" className="size-11 sm:size-8" aria-label="Collapse sidebar" onClick={() => { setSidebar(false); setCollapsed(true); }}><PanelLeftClose className="size-3.5" /></Button></div>
       <Button variant="ghost" className="mb-3 min-h-11 justify-start gap-2 px-2 text-[13px] sm:min-h-9" onClick={newChat} disabled={busy}><SquarePen className="size-4" />New conversation</Button>
       <SessionHistory sessions={sessions} selectedId={selected?.id ?? null} loading={loading} disabled={busy} onSelect={select} onChange={updateSession} />
-      <div className="space-y-3 border-t px-1 pt-2"><Link href="/settings" className="flex min-h-11 items-center gap-2 rounded-md px-2 text-xs text-muted-foreground hover:bg-sidebar-accent hover:text-foreground focus-visible:outline-2 sm:min-h-8"><Settings className="size-3.5" aria-hidden="true" />Settings</Link><AccountControl /></div>
-    </aside>
+      <div className="border-t pt-2"><SidebarAccountMenu /></div>
+    </ResizableSidebar>
     <div inert={sidebar} className="flex min-w-0 flex-1 flex-col">
       <header className="flex min-h-14 shrink-0 items-center gap-2 px-4 sm:px-6"><Button ref={navigationTrigger} variant="ghost" size="icon" aria-label="Open navigation" aria-expanded={sidebar} aria-controls="workspace-navigation" className={`size-11 sm:size-8 ${collapsed ? "" : "lg:hidden"}`} onClick={() => { setCollapsed(false); setSidebar(!window.matchMedia("(min-width: 1024px)").matches); }}><Menu className="size-4" /></Button><p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{selected?.title ?? "New conversation"}</p>{selected?.archived ? <span className="text-xs text-muted-foreground">Archived</span> : null}</header>
       {error ? <div role="alert" className="mx-5 mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border px-3 py-2 text-xs text-destructive"><p>{error}</p><Button variant="outline" size="sm" onClick={() => setRefresh((value) => value + 1)}>Retry</Button></div> : null}
