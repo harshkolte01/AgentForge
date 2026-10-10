@@ -6,7 +6,7 @@ from unittest import TestCase
 from pydantic import TypeAdapter
 
 from agentforge.contracts.agent_definition import TOOL_CAPABILITIES
-from agentforge.subagents.context import RESULT_PREFIX, compact_messages, conversation_bytes
+from agentforge.subagents.context import RESULT_PREFIX, compact_messages, conversation_tokens, latest_batch, pinned_results
 from agentforge.tools.catalog import (
     BINDABLE_FIELDS, DESCRIPTIONS, EFFECT_TOOLS, GENERIC_ERROR_GUIDANCE, ToolCatalog, error_guidance, safe_arguments,
 )
@@ -144,9 +144,9 @@ class CompactionTests(TestCase):
 
     def test_oldest_results_are_stubbed_first_with_ids_kept_and_the_recent_ones_whole(self):
         messages = self.conversation(8)
-        limit = 12000
+        limit = 4000
         compacted = compact_messages(messages, limit)
-        self.assertLessEqual(conversation_bytes(compacted), limit)
+        self.assertLessEqual(conversation_tokens(compacted), limit)
         results = [m for m in compacted if m["role"] == "tool"]
         flags = ["compacted" in m["content"] for m in results]
         self.assertEqual(flags, sorted(flags, reverse=True))  # oldest compacted, newest whole
@@ -157,21 +157,63 @@ class CompactionTests(TestCase):
 
     def test_structure_is_preserved_so_every_tool_call_keeps_its_reply(self):
         messages = self.conversation(8)
-        compacted = compact_messages(messages, 5000)
+        compacted = compact_messages(messages, 1500)
         self.assertEqual([m["role"] for m in compacted], [m["role"] for m in messages])
         self.assertEqual([m.get("tool_call_id") for m in compacted], [m.get("tool_call_id") for m in messages])
 
     def test_the_stored_conversation_is_never_modified(self):
         messages = self.conversation(8)
         before = json.dumps(messages)
-        compact_messages(messages, 5000)
+        compact_messages(messages, 1500)
         self.assertEqual(json.dumps(messages), before)
 
     def test_only_what_is_needed_is_compacted(self):
         messages = self.conversation(8)
-        total = conversation_bytes(messages)
-        compacted = compact_messages(messages, total - 1500)
+        total = conversation_tokens(messages)
+        compacted = compact_messages(messages, total - 500)
         self.assertEqual(sum("compacted" in m.get("content", "") for m in compacted if m["role"] == "tool"), 1)
+
+    def test_the_unread_latest_batch_is_never_stubbed_however_hard_the_squeeze(self):
+        messages = self.conversation(6)
+        messages.append({"role": "assistant", "content": None, "tool_calls": [{"id": "a"}, {"id": "b"}]})
+        messages += [result_message("fresh-a", 2000, ids=("fa",)), result_message("fresh-b", 2000, ids=("fb",))]
+        fresh = sorted(latest_batch(messages))
+        self.assertEqual(len(fresh), 2)
+        squeezed = compact_messages(messages, 1, keep_recent=0)  # as hard as it goes
+        for index in fresh:
+            self.assertIs(squeezed[index], messages[index])
+        older = [m for i, m in enumerate(squeezed) if m["role"] == "tool" and i not in fresh]
+        self.assertTrue(all("compacted" in m["content"] for m in older))
+
+    def test_keep_recent_zero_stubs_everything_already_read_while_the_default_keeps_four(self):
+        messages = self.conversation(8)
+        messages.append({"role": "assistant", "content": "thinking"})  # nothing unread: every result was read
+        default = compact_messages(messages, 1)
+        zero = compact_messages(messages, 1, keep_recent=0)
+        count = lambda items: sum("compacted" in m.get("content", "") for m in items if m["role"] == "tool")
+        self.assertEqual((count(default), count(zero)), (4, 8))
+
+    def test_the_assignment_reads_are_pinned_and_never_stubbed(self):
+        # The failure seen live: the goal and history reads were condensed and the model forgot its question.
+        def call(name, ident):
+            return {"role": "assistant", "content": None, "tool_calls": [{"id": ident, "type": "function", "function": {"name": name, "arguments": "{}"}}]}
+        def result(ident, size):
+            return {"role": "tool", "tool_call_id": ident, "content": RESULT_PREFIX + json.dumps(
+                {"tool": "x", "status": "ok", "data": {"content": "x" * size}, "evidence_ids": [ident], "artifact_ids": []})}
+        messages = [{"role": "developer", "content": "rules"}, {"role": "user", "content": "brief"}]
+        for name, ident in (("read_task_input", "goal"), ("read_task_input", "history"), ("read_research_source", "s1"),
+                            ("web_search", "s2"), ("read_research_source", "s3"), ("read_research_source", "s4"),
+                            ("read_research_source", "s5"), ("read_research_source", "s6")):
+            messages += [call(name, ident), result(ident, 3000)]
+        messages.append({"role": "assistant", "content": "thinking"})
+        self.assertEqual({messages[i]["tool_call_id"] for i in pinned_results(messages)}, {"goal", "history"})
+        for keep in (4, 1, 0):
+            squeezed = compact_messages(messages, 1, keep_recent=keep)
+            by_id = {m["tool_call_id"]: m for m in squeezed if m["role"] == "tool"}
+            self.assertNotIn("compacted", by_id["goal"]["content"], keep)
+            self.assertNotIn("compacted", by_id["history"]["content"], keep)
+            self.assertEqual(len(by_id["goal"]["content"]), len(result("goal", 3000)["content"]))
+        self.assertTrue("compacted" in {m["tool_call_id"]: m for m in compact_messages(messages, 1, keep_recent=0) if m["role"] == "tool"}["s1"]["content"])
 
     def test_small_or_foreign_tool_messages_are_left_alone(self):
         messages = self.conversation(6, size=10)

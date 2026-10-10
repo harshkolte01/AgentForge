@@ -17,6 +17,7 @@ How a child works, and why it behaves predictably:
 
 import asyncio
 import json
+from decimal import Decimal
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any, TypedDict
@@ -29,14 +30,14 @@ from agentforge.contracts.agent_definition import AgentDefinition
 from agentforge.contracts.subagent import (
     RESULT_MODELS, ExecutionResult, ResearchResult, ReviewResult, SubagentResult, parse_result,
 )
-from agentforge.llm.models import SUBMIT_RESULT, ModelProviderError, ToolCallingModel
+from agentforge.llm.models import SUBMIT_RESULT, ModelContextLimit, ModelProviderError, ToolCallingModel, conservative_input_tokens
 from agentforge.security.policies import validate_relative_path
 from agentforge.tools.catalog import clean_schema, error_guidance
 from agentforge.tools.errors import render_issues, validation_issues
 from agentforge.tools.gateway import MAX_CONSECUTIVE_ERRORS, ToolGateway
 
 from .budget import BudgetExceeded, BudgetService, Reservation
-from .context import RESULT_PREFIX, compact_messages
+from .context import KEEP_RECENT_RESULTS, RESULT_PREFIX, compact_messages
 from .resources import ResourceResolver
 from .scope import EffectiveScope, ScopeDenied, TaskContext
 
@@ -45,6 +46,9 @@ RESULT_PREVIEW_BYTES = 16000
 # When this little wall-clock time remains, the next turn is the forced final answer.
 WRAP_UP_SECONDS = 20
 LOW_RESOURCE = 2
+# A rendered tool result is capped near 16 KB, which is about this many tokens. A turn may only request as
+# many results as fit in the room left in the window, and when not even one fits the run wraps up.
+RESULT_TOKENS = 5400
 
 SUBMIT_DESCRIPTION = (
     "Finish the assignment by submitting your final typed result. Call it once, by itself, when you have what you "
@@ -56,6 +60,8 @@ LIMIT_NOTICES = {
     "tool_calls": "TOOL CALL LIMIT REACHED. You have no further tool calls.",
     "time": "TIME LIMIT NEARLY REACHED. There is no time for further work.",
     "errors": "TOOLS KEEP FAILING. Repeating them will not help.",
+    "context": "THE CONTEXT WINDOW IS FULL. There is no room to read anything further.",
+    "budget": "THE BUDGET IS NEARLY SPENT. There is not enough left for further tool calls.",
 }
 LIMIT_INSTRUCTION = (" Call submit_result now with the best honest result from what you have gathered. Use status PARTIAL "
                      "(or BLOCKED) if the assignment is not fully done, and say exactly what is missing.")
@@ -149,8 +155,10 @@ class ChildRuntime:
                   config: RunnableConfig | None = None, stream=None) -> SubagentResult:
         submit = submit_tool(definition)
         schemas = [*gateway.schemas(), submit]
-        context_budget = getattr(model, "context_budget_bytes", None)
+        context_budget = getattr(model, "context_budget_tokens", None)
+        max_input = getattr(model, "max_input_tokens", None)
         max_steps = scope.budget.max_steps
+        last_bound = {"cost": Decimal(0)}
 
         def limit_reason(steps: int) -> str | None:
             if steps >= max_steps - 1:
@@ -159,8 +167,29 @@ class ChildRuntime:
                 return "tool_calls"
             if getattr(gateway, "consecutive_errors", 0) >= MAX_CONSECUTIVE_ERRORS:
                 return "errors"
+            remaining = getattr(budgets, "remaining_usd", None)
+            if getattr(gateway, "budget_exhausted", False) or (remaining and last_bound["cost"] and
+                    remaining(reservation.id) < 2 * last_bound["cost"] + getattr(gateway, "max_tool_cost", Decimal(0))):
+                # Keep enough for the forced final answer (one model call, plus a margin) before the money is gone.
+                return "budget"
             if (reservation.deadline - datetime.now(timezone.utc)).total_seconds() < min(WRAP_UP_SECONDS, scope.budget.max_wall_time_sec / 4):
                 return "time"
+            return None
+
+        def room_left(conversation: list[dict[str, Any]], tools: list[dict[str, Any]]) -> int | None:
+            """Input tokens still free once every result the model has already read is stubbed out."""
+            if not max_input:
+                return None
+            return max_input - conservative_input_tokens(compact_messages(conversation, 1, 0), tools)
+
+        def fit(conversation: list[dict[str, Any]], tools: list[dict[str, Any]]):
+            """The messages to send and their cost bound: compact gently, then harder, until the request fits."""
+            for keep in (KEEP_RECENT_RESULTS, 1, 0):
+                sent = compact_messages(conversation, context_budget if keep == KEEP_RECENT_RESULTS else 1, keep)
+                try:
+                    return sent, model.maximum_request_cost(sent, tools)
+                except ModelContextLimit:
+                    continue
             return None
 
         async def call_model(state: ChildState) -> dict[str, Any]:
@@ -172,6 +201,10 @@ class ChildRuntime:
             conversation = state["messages"]
             forced = state["forced"]
             reason = None if forced else limit_reason(steps)
+            if reason is None and not forced:
+                room = room_left(conversation, schemas)
+                if room is not None and room < RESULT_TOKENS:
+                    reason = "context"
             if reason is not None:
                 forced = True
                 conversation = [*conversation, {"role": "user", "content": LIMIT_NOTICES[reason] + LIMIT_INSTRUCTION}]
@@ -181,12 +214,17 @@ class ChildRuntime:
                 extra["tool_choice"] = {"type": "function", "function": {"name": SUBMIT_RESULT}}
             if stream is not None:
                 extra["on_text"] = stream.feed
-            sent = compact_messages(conversation, context_budget)
+            fitted = fit(conversation, tools)
+            if fitted is None:
+                # Even with every old result stubbed the instructions and brief alone fill the window.
+                return {"result": _partial("This request needs more room than the model's context window allows, so it could not be answered."),
+                        "pending": [], "steps": steps + 1}
+            sent, bound = fitted
+            last_bound["cost"] = bound
             stubbed = [kept.get("tool_call_id") for original, kept in zip(conversation, sent) if original is not kept]
             if stubbed:
                 # A result that was stubbed out can be fetched again; an identical call is no longer a repeat.
                 getattr(gateway, "forget", lambda _ids: None)(stubbed)
-            bound = model.maximum_request_cost(sent, tools)
             operation_key = f"{reservation.run_id}:model:{steps}"
             budgets.authorize_operation(reservation.id, operation_key, bound, kind="model")
             if stream is not None:
@@ -247,6 +285,14 @@ class ChildRuntime:
                 rendered = json.dumps(payload, ensure_ascii=False, allow_nan=False)
             return {"role": "tool", "tool_call_id": call["id"], "content": RESULT_PREFIX + rendered}
 
+        def deferred(call: dict[str, Any], allowed: int, steps_left: int) -> dict[str, Any]:
+            detail = (f"Not run: this turn's results would not all fit in the context window. Request at most {allowed} per turn and ask "
+                      "for this one in a later turn." if allowed else
+                      "Not run: the context window has no room left for more results. Call submit_result with what you have.")
+            payload = {"tool": call["function"]["name"], "status": "error", "error_code": "DEFERRED", "detail": detail,
+                       "guidance": error_guidance("DEFERRED"), "limits": {"steps_left": steps_left}}
+            return {"role": "tool", "tool_call_id": call["id"], "content": RESULT_PREFIX + json.dumps(payload, ensure_ascii=False)}
+
         def reply(call: dict[str, Any], text: str) -> dict[str, Any]:
             return {"role": "tool", "tool_call_id": call["id"], "content": text}
 
@@ -264,7 +310,15 @@ class ChildRuntime:
             submits = [call for call in calls if call["function"]["name"] == SUBMIT_RESULT]
             steps_left = max(0, max_steps - state["steps"])
             replies: dict[str, dict[str, Any]] = {}
-            if len(worked) > 1 and all(getattr(gateway, "is_read_only", lambda _n: False)(call["function"]["name"]) for call in worked):
+            # Results the model has not read can never be stubbed, so a turn may only run as many calls as
+            # will fit in the room left. The rest are answered as deferred, not run, so nothing counts as read
+            # that the model never saw.
+            room = room_left(state["messages"], schemas)
+            allowed = len(worked) if room is None else min(len(worked), max(0, room // RESULT_TOKENS))
+            for call in worked[allowed:]:
+                replies[call["id"]] = deferred(call, allowed, steps_left)
+            worked = worked[:allowed]
+            if len(worked) > 1 and all(getattr(gateway, "is_parallel_safe", lambda _n: False)(call["function"]["name"]) for call in worked):
                 tasks = [asyncio.ensure_future(run_tool(call)) for call in worked]
                 try:
                     outcomes = list(await asyncio.gather(*tasks))

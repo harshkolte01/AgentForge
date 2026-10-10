@@ -30,6 +30,8 @@ from .errors import ToolError, render_issues, validation_issues
 READ_CONCURRENCY = 4
 MAX_CONSECUTIVE_ERRORS = 5
 REPEATED_FAILURE_NOTICE = 3
+# Authorization refusals that mean "this run cannot afford the call" rather than "the run is over".
+SOFT_BUDGET_CODES = frozenset({"child_budget_exceeded", "tool_limit_exceeded"})
 
 
 class UnknownToolOutcome(RuntimeError):
@@ -68,6 +70,8 @@ class ToolGateway:
         self._by_call: dict[str, tuple[str, str, int]] = {}
         self.consecutive_errors = 0
         self.failures: dict[str, int] = {}
+        # Set when a tool call was refused for lack of budget; the runtime then wraps the run up.
+        self.budget_exhausted = False
 
     # --- what the model sees --------------------------------------------------------------
     def bindings(self, name: str) -> dict[str, str]:
@@ -91,8 +95,21 @@ class ToolGateway:
         return [tool.provider_schema(hide=frozenset(self.bindings(tool.name)), strict=self.strict_tools)
                 for tool in self.catalog.available(self.scope.allowed_tools)]
 
-    def is_read_only(self, name: str) -> bool:
-        return name in self.scope.allowed_tools and name not in EFFECT_TOOLS
+    def _is_paid(self, name: str) -> bool:
+        try:
+            return self.catalog.get(name).max_cost_usd > 0
+        except ToolUnavailable:
+            return False
+
+    def is_parallel_safe(self, name: str) -> bool:
+        """Read-only and free. A paid call holds its full cost cap against the run's budget while it is in
+        flight, so several at once can overdraw a budget that the same calls made one by one would not."""
+        return name in self.scope.allowed_tools and name not in EFFECT_TOOLS and not self._is_paid(name)
+
+    @property
+    def max_tool_cost(self) -> Decimal:
+        """The largest cost cap among the tools this run may call."""
+        return max((tool.max_cost_usd for tool in self.catalog.available(self.scope.allowed_tools)), default=Decimal(0))
 
     @property
     def calls_left(self) -> int:
@@ -136,12 +153,13 @@ class ToolGateway:
 
     # --- execution --------------------------------------------------------------------------
     async def execute(self, name: str, raw_args: str, provider_call_id: str) -> ToolOutcome:
-        if name in EFFECT_TOOLS:
+        if name in EFFECT_TOOLS or self._is_paid(name):
             async with self._lock:
                 try:
                     return await self._run(name, raw_args, provider_call_id)
                 finally:
-                    self._epoch += 1  # whatever a write or run touched, earlier reads are stale
+                    if name in EFFECT_TOOLS:
+                        self._epoch += 1  # whatever a write or run touched, earlier reads are stale
         async with self._reads:
             return await self._run(name, raw_args, provider_call_id)
 
@@ -264,7 +282,11 @@ class ToolGateway:
                 error_code=code,
                 result_json={"attempt": attempt, "arguments": arguments, "issues": issues or [],
                              "duration_ms": int((time.monotonic() - started) * 1000)})
-            if not isinstance(exc, Exception) or isinstance(exc, (BudgetExceeded, UnknownToolOutcome)):
+            soft_budget = isinstance(exc, BudgetExceeded) and str(exc) in SOFT_BUDGET_CODES and not entered_adapter
+            if soft_budget:
+                self.budget_exhausted = True
+                detail = "This run's remaining budget cannot cover the call. Submit what you have."
+            elif not isinstance(exc, Exception) or isinstance(exc, (BudgetExceeded, UnknownToolOutcome)):
                 raise
             if unknown:
                 raise UnknownToolOutcome(code) from None

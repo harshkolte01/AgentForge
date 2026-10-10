@@ -107,6 +107,8 @@ ERROR_GUIDANCE = {
     "EDIT_AMBIGUOUS": "old_string matches more than one place. Add surrounding lines to make it unique, or set replace_all if every match should change.",
     "PROFILE_MISMATCH": "That profile does not belong to this tool. Use run_tests for test profiles and run_sandbox_command for build profiles.",
     "DUPLICATE_CALL": "You already made this exact call and it succeeded; its result is earlier in this conversation. Use it, or change the arguments.",
+    "BUDGET_EXCEEDED": "The budget left for this run cannot cover that call. Do not retry it: call submit_result now with what you have.",
+    "DEFERRED": "That call was not run because its result would not fit in the context window with this turn's other results. Ask for it again in a later turn, a few at a time.",
     "INVALID_ARGUMENT": "A value is not acceptable for this tool. Read the detail, correct the arguments, and retry once.",
 }
 GENERIC_ERROR_GUIDANCE = "The call did not succeed. Do not repeat it unchanged; adjust the arguments, try another approach, or record the gap."

@@ -266,3 +266,58 @@ class GatewayTests(IsolatedAsyncioTestCase):
         self.assertEqual(recorded["arguments"]["path"], "src/a.py")
         self.assertEqual(recorded["arguments"]["line_start"], 5)
         self.assertIn("duration_ms", recorded)
+
+
+class PaidToolBudgetTests(IsolatedAsyncioTestCase):
+    """The stress-test failure: six paid searches requested at once overdrew a stage's slice and aborted the run."""
+
+    def setUp(self):
+        patcher = patch("agentforge.tools.gateway.authorize_tool")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def paid_gateway(self, handler, budgets=None):
+        gateway, calls, fake = make({"read_repo_file": handler})
+        gateway.catalog._tools["read_repo_file"] = type(gateway.catalog._tools["read_repo_file"])(
+            "read_repo_file", handler, Decimal("0.02"), 5)
+        if budgets is not None:
+            gateway.budgets = budgets
+        return gateway, calls
+
+    async def test_paid_calls_run_one_at_a_time_and_are_not_parallel_safe(self):
+        running = {"now": 0, "peak": 0}
+        async def slow(args, ctx):
+            running["now"] += 1
+            running["peak"] = max(running["peak"], running["now"])
+            await asyncio.sleep(0.03)
+            running["now"] -= 1
+            return ok()
+        gateway, _ = self.paid_gateway(slow)
+        self.assertFalse(gateway.is_parallel_safe("read_repo_file"))  # paid
+        self.assertTrue(gateway.is_parallel_safe("list_repo_files"))  # free read
+        self.assertFalse(gateway.is_parallel_safe("write_sandbox_file"))  # effect
+        self.assertEqual(gateway.max_tool_cost, Decimal("0.02"))
+        await asyncio.gather(*(gateway.execute("read_repo_file", args(path=f"{i}.py"), f"p{i}") for i in range(4)))
+        self.assertEqual(running["peak"], 1)
+
+    async def test_running_out_of_budget_is_an_outcome_the_model_can_act_on_not_an_abort(self):
+        from agentforge.subagents.budget import BudgetExceeded
+        class Refusing(FakeBudgets):
+            def authorize_operation(self, *a, **k):
+                raise BudgetExceeded("child_budget_exceeded")
+        gateway, calls = self.paid_gateway(lambda *a: None, budgets=Refusing())
+        outcome = await gateway.execute("read_repo_file", args(path="a.py"), "c1")
+        self.assertEqual((outcome.status, outcome.error_code), ("error", "BUDGET_EXCEEDED"))
+        self.assertIn("Submit what you have", outcome.error_detail)
+        self.assertTrue(gateway.budget_exhausted)
+        self.assertEqual(calls.last()["status"], "BLOCKED")
+
+    async def test_a_finished_or_cancelled_run_still_aborts(self):
+        from agentforge.subagents.budget import BudgetExceeded
+        class Settled(FakeBudgets):
+            def check_active(self, reservation_id):
+                raise BudgetExceeded("reservation_settled")
+        gateway, _ = self.paid_gateway(lambda *a: None, budgets=Settled())
+        with self.assertRaises(BudgetExceeded):
+            await gateway.execute("read_repo_file", args(path="a.py"), "c1")
+        self.assertFalse(gateway.budget_exhausted)

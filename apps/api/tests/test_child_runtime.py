@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 from agentforge.contracts.agent_definition import Budget
-from agentforge.llm.models import SUBMIT_RESULT, ModelResponse, ModelUsage
+from agentforge.llm.models import SUBMIT_RESULT, ModelContextLimit, ModelResponse, ModelUsage
 from agentforge.subagents.context import RESULT_PREFIX
 from agentforge.subagents.registry import load_builtin
 from agentforge.subagents.runtime import ChildRuntime
@@ -40,9 +40,9 @@ def text(content):
 class ScriptedModel:
     model_id = "scripted"
 
-    def __init__(self, turns, context_budget_bytes=None):
+    def __init__(self, turns, context_budget_tokens=None, max_input_tokens=None):
         self.turns, self.seen = list(turns), []
-        self.context_budget_bytes = context_budget_bytes
+        self.context_budget_tokens, self.max_input_tokens = context_budget_tokens, max_input_tokens
 
     def maximum_request_cost(self, messages, tools):
         return Decimal("0.001")
@@ -73,7 +73,7 @@ class FakeGateway:
     def calls_left(self):
         return max(0, self.max_tool_calls - self.used)
 
-    def is_read_only(self, name):
+    def is_parallel_safe(self, name):
         return True
 
     def repeated_failure_notice(self, name):
@@ -90,10 +90,11 @@ def evidence_outcome(*ids, data=None):
     return ToolOutcome(status="ok", data=data or {"text": "x"}, evidence_ids=ids, cost_usd=Decimal(0))
 
 
-async def run(model, gateway, *, max_steps=8, max_tool_calls=40, wall=120, remaining=None, stream=None, definition=None):
+async def run(model, gateway, *, max_steps=8, max_tool_calls=40, wall=120, remaining=None, stream=None, definition=None, money=None):
     budget = Budget(max_steps=max_steps, max_tool_calls=max_tool_calls, max_llm_cost_usd=1.0, max_wall_time_sec=wall)
     reservation = NS(id=uuid4(), run_id=uuid4(), deadline=datetime.now(timezone.utc) + timedelta(seconds=remaining or wall))
-    budgets = NS(check_active=lambda _id: None, authorize_operation=lambda *a, **k: None, record_usage=lambda *a, **k: None)
+    budgets = NS(check_active=lambda _id: None, authorize_operation=lambda *a, **k: None, record_usage=lambda *a, **k: None,
+                 **({"remaining_usd": money} if money else {}))
     return await ChildRuntime().run(
         definition=definition or load_builtin("general-executor", 5), ctx=NS(task_id=uuid4()),
         scope=NS(budget=budget, allowed_tools=("read_repo_file",)), model=model, gateway=gateway, budgets=budgets,
@@ -285,7 +286,7 @@ class ToolTurnTests(IsolatedAsyncioTestCase):
 
     async def test_effectful_calls_in_one_turn_run_in_the_order_requested(self):
         gateway = FakeGateway()
-        gateway.is_read_only = lambda name: name != "write_sandbox_file"
+        gateway.is_parallel_safe = lambda name: name != "write_sandbox_file"
         order = []
         gateway.outcome = lambda name, raw: (order.append(name), ok())[1]
         turn = calls(("read_repo_file", {"path": "a"}), ("write_sandbox_file", {}), ("read_repo_file", {"path": "b"}))
@@ -298,7 +299,7 @@ class CompactionTests(IsolatedAsyncioTestCase):
     async def test_old_results_are_stubbed_but_keep_their_ids_while_recent_ones_stay_whole(self):
         big = {"content": "x" * 3000}
         turns = [calls(("read_repo_file", {"path": f"{i}.py"})) for i in range(7)] + [submit(PASS)]
-        model = ScriptedModel(turns, context_budget_bytes=9000)
+        model = ScriptedModel(turns, context_budget_tokens=3000)
         gateway = FakeGateway(outcome=lambda n, r: evidence_outcome("e1", data=big))
         result = await run(model, gateway, max_steps=20)
         self.assertEqual(result.status, "PASS")
@@ -314,3 +315,107 @@ class CompactionTests(IsolatedAsyncioTestCase):
             self.assertLess(len(stub["content"]), 600)
         # Nothing is compacted while the conversation fits.
         self.assertFalse([m for m in model.seen[0]["messages"] if '"compacted"' in str(m.get("content"))])
+
+
+class LimitedModel(ScriptedModel):
+    """A model whose own guard refuses any request over `limit` characters, like the real window check."""
+
+    def __init__(self, turns, limit, **kwargs):
+        super().__init__(turns, **kwargs)
+        self.limit = limit
+
+    def maximum_request_cost(self, messages, tools):
+        if len(json.dumps(messages)) > self.limit:
+            raise ModelContextLimit("bounded model context is exhausted")
+        return Decimal("0.001")
+
+
+def sized(*ids, chars=3000):
+    return ToolOutcome(status="ok", data={"content": "x" * chars}, evidence_ids=ids, cost_usd=Decimal(0))
+
+
+class SmallWindowTests(IsolatedAsyncioTestCase):
+    """The failure seen with a 32K window: ten large reads requested in one turn overflowed the request."""
+
+    async def test_a_big_parallel_batch_runs_only_what_fits_and_defers_the_rest(self):
+        batch = calls(*(("read_repo_file", {"path": f"{i}.py"}) for i in range(5)))
+        model = ScriptedModel([batch, submit({"status": "PARTIAL", "summary": "read what fit"})], max_input_tokens=9000)
+        gateway = FakeGateway(outcome=lambda n, r: sized("e1"))
+        result = await run(model, gateway)
+        self.assertEqual(result.status, "PARTIAL")
+        self.assertEqual(len(gateway.executed), 1)  # room for one result, not five
+        replies = {m["tool_call_id"]: json.loads(m["content"][len(RESULT_PREFIX):]) for m in model.seen[1]["messages"] if m["role"] == "tool"}
+        self.assertEqual(set(replies), {call["id"] for call in batch["tool_calls"]})  # every call is answered
+        deferred = [r for r in replies.values() if r.get("error_code") == "DEFERRED"]
+        self.assertEqual(len(deferred), 4)
+        self.assertIn("at most 1 per turn", deferred[0]["detail"])
+        self.assertIn("later turn", deferred[0]["guidance"])
+
+    async def test_a_large_window_runs_the_whole_batch(self):
+        batch = calls(*(("read_repo_file", {"path": f"{i}.py"}) for i in range(5)))
+        model = ScriptedModel([batch, submit({"status": "PARTIAL", "summary": "read all"})], max_input_tokens=262_144)
+        gateway = FakeGateway(outcome=lambda n, r: sized("e1"))
+        await run(model, gateway)
+        self.assertEqual(len(gateway.executed), 5)
+
+    async def test_with_no_room_for_even_one_result_the_run_wraps_up_instead_of_failing(self):
+        model = ScriptedModel([submit({"status": "PARTIAL", "summary": "Window too small to read more."})], max_input_tokens=3000)
+        gateway = FakeGateway()
+        result = await run(model, gateway)
+        self.assertEqual(result.status, "PARTIAL")
+        self.assertEqual(gateway.executed, [])
+        self.assertEqual(model.seen[0]["tools"], [SUBMIT_RESULT])
+        self.assertIn("CONTEXT WINDOW IS FULL", model.seen[0]["messages"][-1]["content"])
+
+    async def test_a_request_over_the_window_is_compacted_harder_rather_than_aborting_the_run(self):
+        turns = [calls(("read_repo_file", {"path": f"{i}.py"})) for i in range(5)] + [submit(PASS)]
+        model = LimitedModel(turns, limit=12_000)  # no gentle compaction budget set: only the hard pass can save it
+        gateway = FakeGateway(outcome=lambda n, r: sized("e1"))
+        result = await run(model, gateway, max_steps=20)
+        self.assertEqual(result.status, "PASS")
+        last = [m for m in model.seen[-1]["messages"] if m["role"] == "tool"]
+        self.assertTrue(any('"compacted": true' in m["content"] for m in last))
+        self.assertNotIn('"compacted"', last[-1]["content"])  # the newest result, not yet read, stays whole
+
+    async def test_a_conversation_that_can_never_fit_ends_partial_with_a_plain_explanation(self):
+        model = LimitedModel([], limit=10)
+        result = await run(model, FakeGateway())
+        self.assertEqual(result.status, "PARTIAL")
+        self.assertIn("more room", result.summary)
+        self.assertEqual(model.seen, [])  # nothing was sent to the provider
+
+
+class BudgetWrapUpTests(IsolatedAsyncioTestCase):
+    async def test_a_nearly_spent_budget_forces_the_final_answer_while_one_call_is_still_affordable(self):
+        gateway = FakeGateway()
+        gateway.max_tool_cost = Decimal("0.02")
+        turns = [calls(("read_repo_file", {"path": "a"})), submit({"status": "PARTIAL", "summary": "Budget spent."})]
+        model = ScriptedModel(turns)
+        # The model bound is 0.001, so the reserve is 2 x 0.001 + the 0.02 tool cap: 0.02 left is under it, 0.5 is not.
+        left = iter([Decimal("0.02")])
+        result = await run(model, gateway, money=lambda _id: next(left))
+        self.assertEqual(result.status, "PARTIAL")
+        self.assertEqual(model.seen[1]["tools"], [SUBMIT_RESULT])
+        self.assertIn("BUDGET IS NEARLY SPENT", model.seen[1]["messages"][-1]["content"])
+
+    async def test_a_refused_tool_call_for_lack_of_budget_wraps_the_run_up(self):
+        gateway = FakeGateway()
+        turns = [calls(("read_repo_file", {"path": "a"})), submit({"status": "PARTIAL", "summary": "Out of budget."})]
+        refused = ToolOutcome(status="error", cost_usd=Decimal(0), error_code="BUDGET_EXCEEDED", error_detail="cannot cover")
+        def outcome(name, raw):
+            gateway.budget_exhausted = True
+            return refused
+        gateway.outcome = outcome
+        model = ScriptedModel(turns)
+        result = await run(model, gateway)
+        self.assertEqual(result.status, "PARTIAL")
+        self.assertEqual(model.seen[1]["tools"], [SUBMIT_RESULT])
+        self.assertIn("BUDGET IS NEARLY SPENT", model.seen[1]["messages"][-1]["content"])
+
+    async def test_with_plenty_of_budget_nothing_is_forced(self):
+        gateway = FakeGateway()
+        gateway.max_tool_cost = Decimal("0.02")
+        model = ScriptedModel([calls(("read_repo_file", {"path": "a"})), submit(PASS)])
+        result = await run(model, gateway, money=lambda _id: Decimal("0.5"))
+        self.assertEqual(result.status, "PASS")
+        self.assertEqual(model.seen[1]["tools"], ["read_repo_file", SUBMIT_RESULT])

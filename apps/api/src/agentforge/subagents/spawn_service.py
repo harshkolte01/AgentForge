@@ -31,6 +31,21 @@ from .runtime import ChildRuntime
 from .scope import ScopeDenied, TaskContext, intersect_and_validate
 
 
+# What a person is told when a child run stops early. The error code stays in the run record.
+STOPPED_SUMMARIES = {
+    "MODEL_CONTEXT_LIMIT": "This request needed more room than the model's context window allows. Try a narrower question, or start a new conversation.",
+    "RATE_LIMIT": "The model provider is limiting requests right now. Please try again in a moment.",
+    "MODEL_PROVIDER_ERROR": "The model provider returned an error, so this could not be completed. Please try again.",
+    "MODEL_QUOTA_EXCEEDED": "The model provider account has run out of quota. Check its billing, then try again.",
+    "AUTH_ERROR": "The model provider rejected the configured credentials. Check the model connection in Settings.",
+    "BUDGET_EXCEEDED": "This run used up its budget before it could finish. Try a narrower request.",
+    "TOOL_TIMEOUT": "This run ran out of time before it could finish. Try a narrower request.",
+    "SCOPE_DENIED": "This run stopped because it needed access it was not granted.",
+    "UNKNOWN_REMOTE_OUTCOME": "This run stopped because an action's outcome could not be confirmed. Nothing was repeated automatically.",
+}
+GENERIC_STOPPED_SUMMARY = "This run stopped before it could finish. Please try again."
+
+
 class SpawnService:
     def __init__(self, *, registry: AgentRegistry, authorizer: AuthorizationService,
                  budgets: BudgetService, runs: AgentRunRepository,
@@ -137,7 +152,7 @@ class SpawnService:
             else:
                 error_code = "MODEL_PROVIDER_ERROR"
             terminal_status = "BLOCKED"
-            result = SubagentResult(status="BLOCKED", summary=f"Child invocation stopped: {error_code}.")
+            result = SubagentResult(status="BLOCKED", summary=STOPPED_SUMMARIES.get(error_code, GENERIC_STOPPED_SUMMARY))
         except Exception:
             error_code, terminal_status = "CHILD_RUNTIME_ERROR", "FAILED"
             result = SubagentResult(status="FAIL", summary="Child invocation failed before a verified handoff.")

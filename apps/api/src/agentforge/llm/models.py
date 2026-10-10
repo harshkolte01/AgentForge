@@ -79,12 +79,28 @@ class ModelRates:
         return (self.input_per_million * input_tokens + self.output_per_million * output_tokens) / Decimal(1_000_000)
 
 
-def conservative_input_tokens(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> int:
-    """Bound by UTF-8 bytes plus protocol overhead instead of undercounting chars.
+# English prose and code average 3.5-4 bytes per token (measured here: about 3.5 on real runs). Three keeps
+# a margin; characters outside ASCII (CJK, emoji) cost far more per byte, so each is charged two tokens.
+ASCII_CHARS_PER_TOKEN = 3
+NON_ASCII_TOKENS_PER_CHAR = 2
+PROTOCOL_OVERHEAD_TOKENS = 1500
+PER_MESSAGE_OVERHEAD_TOKENS = 32
 
-    This deliberately overestimates typical BPE input. The operator's context
-    window and output cap still bound every request; actual provider usage is
-    accounted separately. No tool output is silently dropped from conversation.
+
+def estimate_tokens(text: str) -> int:
+    """A deliberately high estimate of the tokens in `text`, never a count."""
+    if text.isascii():
+        return -(-len(text) // ASCII_CHARS_PER_TOKEN)
+    ascii_chars = sum(1 for char in text if char < "")
+    return -(-ascii_chars // ASCII_CHARS_PER_TOKEN) + NON_ASCII_TOKENS_PER_CHAR * (len(text) - ascii_chars)
+
+
+def conservative_input_tokens(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> int:
+    """An upper-biased estimate of a request's input tokens, used to bound its cost and to fit the window.
+
+    It leans high on purpose: the operator's window and output cap bound every request, and real usage is
+    accounted separately from the provider's own report. It was once one token per byte, which overstated
+    real usage about 3.5 times and made small windows unusable.
     """
     payload = json.dumps({"messages": messages, "tools": tools}, ensure_ascii=False, allow_nan=False)
-    return len(payload.encode("utf-8")) + 4096 + 256 * len(messages)
+    return estimate_tokens(payload) + PROTOCOL_OVERHEAD_TOKENS + PER_MESSAGE_OVERHEAD_TOKENS * len(messages)

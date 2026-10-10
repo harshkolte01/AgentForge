@@ -47,14 +47,15 @@ class ObservedModelTests(IsolatedAsyncioTestCase):
         seen = []
         class Inner:
             model_id = "m"
-            context_budget_bytes = 1234
+            context_budget_tokens = 1234
+            max_input_tokens = 5678
             strict_tools = True
             def maximum_request_cost(self, messages, tools): return Decimal(0)
             async def complete(self, messages, tools, **kwargs):
                 seen.append(kwargs)
                 return ModelResponse({"role": "assistant", "content": ""}, ModelUsage(1, 1, Decimal(0)), "m", "stop")
         model = ObservedModel(Inner(), telemetry, store)
-        self.assertEqual((model.context_budget_bytes, model.strict_tools), (1234, True))
+        self.assertEqual((model.context_budget_tokens, model.max_input_tokens, model.strict_tools), (1234, 5678, True))
         await model.complete([], [])
         await model.complete([], [], on_text=print, tool_choice={"type": "function"})
         self.assertEqual(seen, [{}, {"on_text": print, "tool_choice": {"type": "function"}}])

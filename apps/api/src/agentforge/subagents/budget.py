@@ -152,6 +152,12 @@ class BudgetService:
                 raise BudgetExceeded("child_budget_exceeded")
             return self._value(row)
 
+    def remaining_usd(self, reservation_id: UUID) -> Decimal:
+        """What the run may still spend, counting every in-flight operation at its authorized cap."""
+        with self.session_factory() as session, session.begin():
+            _, row = self._locked(session, reservation_id)
+            return row.amount_usd - self._consumed(session, row.id)
+
     def authorize_operation(self, reservation_id: UUID, operation_key: str,
                             max_cost_usd: Decimal, kind: str = "model") -> None:
         cost = _money(max_cost_usd)

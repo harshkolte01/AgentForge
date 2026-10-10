@@ -7,7 +7,8 @@ class ObservedModel:
         self.model, self.telemetry, self.store = model, telemetry, store
         self.model_id = model.model_id
         # Harness hints some models expose; absent on fixture models.
-        self.context_budget_bytes = getattr(model, 'context_budget_bytes', None)
+        self.context_budget_tokens = getattr(model, 'context_budget_tokens', None)
+        self.max_input_tokens = getattr(model, 'max_input_tokens', None)
         self.strict_tools = bool(getattr(model, 'strict_tools', False))
 
     def maximum_request_cost(self, messages, tools):

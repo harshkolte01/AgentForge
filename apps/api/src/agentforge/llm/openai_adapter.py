@@ -57,10 +57,15 @@ class OpenAIAdapter:
                                    timeout=timeout_sec, max_retries=0)
 
     @property
-    def context_budget_bytes(self) -> int:
-        """Conversation size, in the same conservative units as maximum_request_cost, above which the
-        runtime compacts old tool results. Half the usable window leaves room for the reply."""
-        return max(0, self.context_window_tokens - self.max_output_tokens) // 2
+    def max_input_tokens(self) -> int:
+        """The most input a request may carry once room for the reply is set aside."""
+        return max(0, self.context_window_tokens - self.max_output_tokens)
+
+    @property
+    def context_budget_tokens(self) -> int:
+        """Estimated conversation size above which the runtime compacts old tool results: half of the
+        usable window, which leaves room for what the next turn adds."""
+        return self.max_input_tokens // 2
 
     def maximum_request_cost(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]):
         count = conservative_input_tokens(messages, tools)

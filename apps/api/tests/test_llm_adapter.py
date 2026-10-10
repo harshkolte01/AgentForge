@@ -74,9 +74,10 @@ class RequestShapeTests(IsolatedAsyncioTestCase):
         self.assertEqual(response.message, {"role": "assistant", "content": "ok"})
         self.assertEqual(response.usage.cost_usd, Decimal("0.00002"))
 
-    def test_the_context_budget_is_half_of_the_usable_window(self):
+    def test_the_context_budget_is_half_of_the_usable_window_in_estimated_tokens(self):
         model, _, _ = adapter([])
-        self.assertEqual(model.context_budget_bytes, (100_000 - 4096) // 2)
+        self.assertEqual(model.max_input_tokens, 100_000 - 4096)
+        self.assertEqual(model.context_budget_tokens, (100_000 - 4096) // 2)
 
 
 class RetryTests(IsolatedAsyncioTestCase):
