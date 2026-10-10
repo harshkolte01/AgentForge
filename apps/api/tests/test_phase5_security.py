@@ -188,7 +188,7 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         with patch("agentforge.auth.routes.GitHubIdentityService", return_value=identity), patch("agentforge.auth.routes.sessions", return_value=None), patch("agentforge.auth.routes.durable_sessions", return_value=store):
             response = await github_callback(request, code="code", state="state")
         self.assertEqual(response.status_code, 303)
-        self.assertEqual(response.headers["location"], "https://workspace.example/workspace")
+        self.assertEqual(response.headers["location"], "https://workspace.example/chat")
         cookie = next(value for key, value in response.raw_headers if key == b"set-cookie" and PUBLIC_COOKIE_NAME.encode() in value)
         self.assertIn(b"HttpOnly", cookie)
         self.assertIn(b"Secure", cookie)

@@ -88,7 +88,7 @@ class WorkflowStore:
             step = session.scalar(select(TaskStep).where(TaskStep.task_id == task.id, TaskStep.step_key == "verification"))
             if step is None:
                 step = TaskStep(task_id=task.id, step_key="verification", agent_type="builtin/verifier",
-                    definition_version=3, objective="Independently inspect all owned inputs, sources and deliverables.",
+                    definition_version=4, objective="Independently inspect all owned inputs, sources and deliverables.",
                     depends_on=[], acceptance_criteria=list(criteria), status="PENDING")
                 session.add(step)
                 session.flush()
@@ -158,6 +158,13 @@ class WorkflowStore:
             append_event(session, task, "task.finished", {"status": status, "error_code": error_code})
             from agentforge.repositories.sessions import complete_task_conversation
             complete_task_conversation(session, task.id)
+        from .stream import clear_stream
+        clear_stream(self.sessions, self.lease.task_id)
+
+    def reply_stream(self, field: str):
+        """Live copy of the person-facing reply being written (see orchestration/stream.py)."""
+        from .stream import ReplyStream
+        return ReplyStream(self.sessions, self.lease.task_id, field)
 
     def verified(self, verification: dict, research: dict):
         with self.sessions() as session, session.begin():
@@ -174,18 +181,18 @@ class WorkflowStore:
             task = self.locked_task(session)
             append_event(session, task, event_type, payload)
 
-    def ensure_coding_step(self, key, agent_type, *, objective, depends_on=()):
+    def ensure_coding_step(self, key, agent_type, *, objective, depends_on=(), version=2):
         with self.sessions() as session, session.begin():
             task = self.locked_task(session)
             step = session.scalar(select(TaskStep).where(TaskStep.task_id == task.id, TaskStep.step_key == key))
             if step is None:
                 step = TaskStep(task_id=task.id, step_key=key, agent_type=agent_type,
-                    definition_version=2, objective=objective[:8000], depends_on=list(depends_on),
+                    definition_version=version, objective=objective[:8000], depends_on=list(depends_on),
                     acceptance_criteria=["Preserve repository scope and baseline tests/configuration.",
                         "Require actual fresh revision-matching test execution and independent review."], status="PENDING")
                 session.add(step)
                 session.flush()
-                append_event(session, task, "task.plan.created", {"step_key": key, "type": agent_type, "version": 2})
+                append_event(session, task, "task.plan.created", {"step_key": key, "type": agent_type, "version": version})
             session.expunge(step)
             return step
 

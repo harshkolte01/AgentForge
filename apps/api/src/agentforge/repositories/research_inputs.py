@@ -33,7 +33,7 @@ class ResearchInputRepository(ResearchRepository):
                          for i, item in enumerate(grants.get("attachments", [])))
             history = grants.get("session_context", {})
             if history:
-                items.append(("history", 0, "Prior conversation", json.dumps(history, ensure_ascii=False)))
+                items.append(("history", 0, "Prior conversation", json.dumps(history, ensure_ascii=False, separators=(",", ":"))))
             return [{"input_kind": kind, "attachment_index": index, "name": name,
                 "id": str(uuid5(NAMESPACE_URL, f"agentforge:{ctx.task_id}:input:{kind}:{index}:" + hashlib.sha256(content.encode()).hexdigest())),
                 "content": content, "content_sha256": hashlib.sha256(content.encode()).hexdigest()}

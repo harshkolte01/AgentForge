@@ -241,7 +241,7 @@ class VerificationService:
             return None, ["Complete handoff exceeds bounded semantic reviewer context; no content was silently omitted."]
         saved = self.repository.run_payload(ctx, run_id)
         if saved is None:
-            await service.spawn_subagent(SpawnRequest(type="builtin/verifier", version=3, prompt=brief,
+            await service.spawn_subagent(SpawnRequest(type="builtin/verifier", version=4, prompt=brief,
                 requested_budget_usd=min(float(ctx.task_budget.max_llm_cost_usd) / 2, 0.8)),
                 ctx, run_id=run_id, authority=authority, config=config)
             saved = self.repository.run_payload(ctx, run_id)

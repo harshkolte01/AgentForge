@@ -45,7 +45,8 @@ class SpawnService:
     async def spawn_subagent(self, request: SpawnRequest, ctx: TaskContext, *,
                              config: RunnableConfig | None = None,
                              run_id: UUID | None = None,
-                             authority: Callable[[], Awaitable[None]] | None = None) -> SubagentResult:
+                             authority: Callable[[], Awaitable[None]] | None = None,
+                             stream=None) -> SubagentResult:
         # Reject model_construct/model_copy bypasses at this trust boundary too.
         request = SpawnRequest.model_validate_json(request.model_dump_json())
         if authority is not None:
@@ -109,6 +110,7 @@ class SpawnService:
                 definition=resolved.definition, ctx=ctx, scope=scope, model=model, gateway=gateway,
                 budgets=self.budgets, reservation=reservation, messages=messages,
                 resources=self.resources, reauthorize=reauthorize, config=config,
+                **({"stream": stream} if stream is not None else {}),
             )
             terminal_status = {"PASS": "COMPLETED", "FAIL": "FAILED", "PARTIAL": "PARTIAL", "BLOCKED": "BLOCKED"}[result.status]
         except asyncio.CancelledError:

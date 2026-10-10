@@ -5,6 +5,27 @@ Settings and the signed-in account. Projects remain an internal ownership bounda
 the interface does not ask users to create or select one. Existing conversation
 history and custom agents keep their original owner and internal scope.
 
+## URLs
+
+The address bar is the source of truth for what the workspace shows, so links can be
+bookmarked, shared with the same account, opened in a new tab and navigated with the
+browser's Back and Forward buttons.
+
+| URL | Shows |
+| --- | --- |
+| `/chat` | A new conversation (empty state and composer) |
+| `/chat/<conversation-id>` | An existing conversation. Unknown, malformed or other-account ids show "Conversation not found" instead of a blank page |
+| `/chat/<conversation-id>/runs/<task-id>` | Run details for one reply, inside the same sidebar shell. "Back to conversation" returns to the thread |
+| `/tasks`, `/tasks/<task-id>` | Standalone task list/detail for work that is not part of a conversation (for example custom-agent tests) |
+| `/settings?section=…` | Settings |
+
+`/workspace` and `/workspace?session=<id>` (the original URLs) redirect to `/chat` and
+`/chat/<id>`; the GitHub sign-in return and `auth_error` flag use `/chat`. The shell lives in
+`app/chat/layout.tsx`, so moving between conversations or opening run details never reloads
+the sidebar, history or in-progress thread. The first message of a new conversation moves the
+URL to its `/chat/<id>`. Browser tab titles follow the conversation title. The REST API is
+unchanged (`/api/v1/sessions…`, `/api/v1/tasks…`); browser URL constants live in `apps/web/lib/routes.ts`.
+
 ## Sending a message
 
 The composer sends a message with `routing: "auto"`, platform-managed bounded
@@ -16,11 +37,12 @@ conversation; switching conversations restores that conversation's selection.
 Clearing it explicitly removes repository context and starts a continuation
 boundary. Repository selection supplies context, never approval to publish.
 
-Whole-message greetings such as `hey` with no attachments receive a short,
-durable reply without creating a task, queue job, child run or paid model request.
-Repeated requests with the same idempotency key return the same receipt. More
-substantial messages use a bounded model-assisted intent router through the shared
-runtime. The router must read the owned inputs; its result cannot invent resource
+Every message, including a greeting, is answered by a real model call through the
+bounded intent router and the shared budget/runtime; there are no canned replies.
+Each turn receives the conversation so far (the most recent turns in full text, older
+turns as short attributed excerpts, within a fixed size budget) so follow-ups resolve
+against what was actually said. Repeated requests with the same idempotency key
+return the same receipt. The router must read the owned inputs; its result cannot invent resource
 grants, repository identifiers or command profiles. Unclear intent produces a
 conversational clarification rather than an unsupported completion claim.
 
@@ -32,8 +54,8 @@ prior patch. Changing repository or choosing No repo breaks that compatibility.
 Publishing still requires separate approval of the exact changes.
 
 Messages remain the primary content. Actual task status, cancellation and run
-details are available beside the corresponding turn. A plain greeting has no
-placeholder task card. Assistant Markdown is rendered as inert text/formatting
+details are available beside the corresponding turn. Run internals stay out of the thread: while a turn runs the conversation shows only a quiet
+"Thinking" indicator, and the finished reply is plain text. Assistant Markdown is rendered as inert text/formatting
 with restricted links; it cannot execute supplied HTML or scripts.
 
 ## Settings

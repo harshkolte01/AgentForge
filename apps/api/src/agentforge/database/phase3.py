@@ -9,6 +9,18 @@ from sqlalchemy.orm import Mapped, mapped_column
 from .base import Base
 
 
+class TaskStream(Base):
+    """Live copy of the reply being written by the model. Ephemeral: the saved message is authoritative.
+
+    epoch changes whenever a new model attempt starts writing, so a stale worker cannot overwrite it.
+    """
+    __tablename__ = "task_streams"
+    task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True)
+    epoch: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    text: Mapped[str] = mapped_column(Text, server_default=text("''"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class TaskStep(Base):
     __tablename__ = "task_steps"
     __table_args__ = (

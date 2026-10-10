@@ -53,20 +53,17 @@ def run(settings):
     natural = repo.create(user, SessionCreate())
     check(natural.project_id == project, "canonical workspace created a duplicate project")
     hello = AutoTurnCreate(routing="auto", idempotency_key=uuid4(), goal="hey")
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        hellos = list(pool.map(lambda _: repo.conversational_turn(natural.id, user, hello, "Hi! What can I help you with?"), range(2)))
-    check(hellos[0].user_message.id == hellos[1].user_message.id and all(item.task is None for item in hellos), "free greeting retry created duplicate receipt/task")
-    check(len(repo.messages(natural.id, user)) == 2 and repo.get(natural.id, user).active_task_id is None, "natural message not durable")
-    with sessions() as db:
-        check(not list(db.scalars(select(Task))), "greeting queued paid task")
-        check(not list(db.scalars(select(TaskJob))), "greeting created worker job")
+    explicit_hello = SessionTurnCreate(**hello.model_dump(exclude={"routing", "repository", "continue_from_task_id"}), kind="general")
     try:
-        repo.conversational_turn(natural.id, outsider, hello, "not owned")
+        repo.turn(natural.id, outsider, explicit_hello, original_digest=repo.request_digest(hello),
+            automatic={"repository": None, "inherit_repository": False, "inherit_continuation": False, "continue_from_task_id": None})
     except TaskNotFound:
         pass
     else:
         raise AssertionError("outsider sent natural message")
-    print("PASS task-free natural receipts, concurrent idempotency and canonical existing workspace", flush=True)
+    with sessions() as db:
+        check(not list(db.scalars(select(Task))), "foreign send created a task")
+    print("PASS canonical existing workspace and owner-only turns", flush=True)
     stage = "turn idempotency"
     conversation = repo.create(user, SessionCreate(project_id=project, mode="general"))
     request = SessionTurnCreate(idempotency_key=uuid4(), kind="general", goal="Research a concrete question with evidence.")
@@ -109,7 +106,7 @@ def run(settings):
     with sessions() as db:
         context = db.get(Task, second.task.id).permissions_json["session_context"]
         check(context["untrusted_history"] is True, "history promoted to trust")
-        check(len(json.dumps(context, ensure_ascii=False)) <= 4500, "history bound exceeded")
+        check(len(json.dumps(context, ensure_ascii=False, separators=(",", ":"))) <= 7500, "history bound exceeded")
         check(context["recent_messages"][0]["message_id"], "provenance missing")
     try:
         repo.patch(conversation.id, user, SessionPatch(archived=True))
@@ -154,9 +151,14 @@ def run(settings):
         fresh_id = fresh.json()["id"]
         greeting = {"routing": "auto", "idempotency_key": str(uuid4()), "goal": "hey", "repository": None}
         reply = client.post(f"/api/v1/sessions/{fresh_id}/turns", json=greeting)
-        check(reply.status_code == 202 and reply.json()["task"] is None and reply.json()["assistant_message"]["content"] == "Hi! What can I help you with?", "automatic HTTP greeting created task/report")
+        # Greetings are answered by the routed model, never by a canned reply.
+        check(reply.status_code == 202 and reply.json()["task"] is not None and reply.json()["assistant_message"] is None, "greeting did not go through the model-routed task path")
         retry = client.post(f"/api/v1/sessions/{fresh_id}/turns", json=greeting)
-        check(retry.json()["replayed"] and retry.json()["user_message"]["id"] == reply.json()["user_message"]["id"], "HTTP greeting retry lost receipt")
+        check(retry.json()["replayed"] and retry.json()["user_message"]["id"] == reply.json()["user_message"]["id"] and retry.json()["task"]["id"] == reply.json()["task"]["id"], "HTTP greeting retry lost receipt")
+        with sessions.begin() as db:
+            greeted = db.get(Task, reply.json()["task"]["id"])
+            greeted.status = "PARTIAL"
+            db.scalar(select(TaskJob).where(TaskJob.task_id == greeted.id)).status = "COMPLETED"
         inherited = {"routing": "auto", "idempotency_key": str(uuid4()), "goal": "Write a useful draft"}
         admitted = client.post(f"/api/v1/sessions/{fresh_id}/turns", json=inherited)
         check(admitted.status_code == 202 and admitted.json()["task"]["kind"] == "general", "semantic routing was not queued through bounded task path")
@@ -167,7 +169,7 @@ def run(settings):
             check(task.permissions_json["automatic"]["repository"] == {"repo_id": "owner/repo", "ref": "main"}, "inherited selected repository missing")
             task.status = "PARTIAL"
             db.scalar(select(TaskJob).where(TaskJob.task_id == task.id)).status = "COMPLETED"
-        print("PASS project-free HTTP sessions, natural reply/replay and inherit-vs-null idempotency", flush=True)
+        print("PASS project-free HTTP sessions, routed greeting replay and inherit-vs-null idempotency", flush=True)
         response = client.post("/api/v1/agents", json={"project_id": str(project), "definition": definition})
         check(response.status_code == 201, "custom agent create failed " + str(response.status_code) + " " + response.text[:400])
         agent_id = response.json()["id"]

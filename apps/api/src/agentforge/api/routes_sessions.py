@@ -66,10 +66,6 @@ async def turn(session_id: UUID, body: AutoTurnCreate | SessionTurnCreate, reque
             return replay
         owned = await run_in_threadpool(repo.get, session_id, user.id)
         if isinstance(body, AutoTurnCreate):
-            from agentforge.orchestration.automatic import greeting_response
-            response = greeting_response(body.goal) if not body.attachments else None
-            if response is not None:
-                return await run_in_threadpool(repo.conversational_turn, session_id, user.id, body, response)
             selection = body.repository if "repository" in body.model_fields_set else owned.repository
             # Selection supplies read context only. A later validated model decision
             # may request coding; profile/sandbox/source grants are resolved by worker.

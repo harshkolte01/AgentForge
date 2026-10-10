@@ -14,14 +14,6 @@ from agentforge.repositories.research_inputs import ResearchInputRepository
 from agentforge.subagents.scope import intersect_and_validate, ScopeDenied
 
 
-def greeting_response(goal):
-    # Whole-message equality only: "hey, fix login" must reach semantic routing.
-    text = re.sub(r"[!.,?\s]+$", "", goal.strip().casefold())
-    if text in {"hi", "hey", "hello", "hiya", "good morning", "good evening", "good afternoon"}:
-        return "Hi! What can I help you with?"
-    return None
-
-
 def infer_profiles(files):
     """Select only shipped argv profiles from concrete manifest/test evidence."""
     package = files.get("package.json")
@@ -63,7 +55,7 @@ async def route_turn(*, store, service, settings, github, authority, config):
     if task.status == "CREATED":
         store.transition("PLANNING")
     ctx = research_context(task)
-    run_id = uuid5(NAMESPACE_URL, f"agentforge:{task.id}:intent-router:1")
+    run_id = uuid5(NAMESPACE_URL, f"agentforge:{task.id}:intent-router:3")
     saved = store.completed_run(run_id)
     allowed_agents = {}
     # Bounded authorized metadata only. Resolve again before persisting selection.
@@ -83,23 +75,25 @@ async def route_turn(*, store, service, settings, github, authority, config):
     allowed_agents = dict(list(allowed_agents.items())[:20])
     if saved is None:
         manifest = ResearchInputRepository(store.sessions).input_manifest(ctx)
-        brief = json.dumps({"instruction": "Understand the full user message and conversation. Read all inputs before routing. Select a custom agent only when its description closely matches a research goal; otherwise leave agent_key/agent_version null. Never select a key/version outside this catalog.",
+        capabilities = {"public_web_search": bool(settings.tavily_api_key),
+            "repository_selected": bool(automatic.get("repository")),
+            "coding_sandbox": bool(settings.e2b_api_key and settings.e2b_template_id and settings.e2b_template_qualified)}
+        brief = json.dumps({"instruction": "Handle this turn as your role instructions describe. Read every input listed under inputs (and only those), then answer directly or choose the work to run. Use a catalog agent only when its description clearly matches a research request; never use a key or version outside this catalog.",
             "selected_repository": automatic.get("repository"),
             "inputs": [{key: item[key] for key in ("input_kind", "attachment_index", "name")} for item in manifest],
-            "available_capabilities": {"public_web_search": bool(settings.tavily_api_key),
-                "repository_selected": bool(automatic.get("repository")),
-                "coding_sandbox": bool(settings.e2b_api_key and settings.e2b_template_id and settings.e2b_template_qualified)},
+            "available_capabilities": capabilities,
             "agents": [{"key": entry.key, "version": entry.version, "name": entry.name,
                 "description": entry.description, "tools": entry.allowed_tools} for entry in list(allowed_agents.values())[:20]]}, ensure_ascii=False)
         # The catalog is optional; never truncate goal/history to fit it.
         if len(brief) > 7800:
-            brief = json.dumps({"instruction": "Read all complete owned inputs and route this message. Agent catalog omitted because its bounded metadata exceeded the limit; choose no custom agent.",
-                "selected_repository": automatic.get("repository"),
+            brief = json.dumps({"instruction": "Handle this turn as your role instructions describe. Read every input listed under inputs (and only those), then answer directly or choose the work to run. The agent catalog was omitted because it was too large; use no custom agent.",
+                "selected_repository": automatic.get("repository"), "available_capabilities": capabilities,
                 "inputs": [{key: item[key] for key in ("input_kind", "attachment_index", "name")} for item in manifest]}, ensure_ascii=False)
             allowed_agents = {}
-        await service.spawn_subagent(SpawnRequest(type="builtin/intent-router", version=1,
+        await service.spawn_subagent(SpawnRequest(type="builtin/intent-router", version=3,
             prompt=brief, requested_budget_usd=min(float(task.max_cost_usd) / 4, 0.12)),
-            ctx, config=config, run_id=run_id, authority=authority)
+            ctx, config=config, run_id=run_id, authority=authority,
+            **({"stream": store.reply_stream("response")} if hasattr(store, "reply_stream") else {}))
         saved = store.completed_run(run_id)
     try:
         result = RoutingResult.model_validate_json(json.dumps(saved))

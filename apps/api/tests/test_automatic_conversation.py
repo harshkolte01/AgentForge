@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 from agentforge.contracts.sessions import AutoTurnCreate, SessionTurnCreate
-from agentforge.orchestration.automatic import greeting_response, infer_profiles, route_turn
+from agentforge.orchestration import automatic
+from agentforge.orchestration.automatic import infer_profiles, route_turn
 from agentforge.orchestration.context import research_context
 from agentforge.repositories.sessions import SessionRepository
 from agentforge.subagents.scope import intersect_and_validate
@@ -14,12 +15,17 @@ from agentforge.subagents.registry import load_builtin
 
 
 class ContractTests(TestCase):
-    def test_clear_greetings_only_and_explicit_api_still_research(self):
-        for text in ("hey", "Hello!", "good morning"):
-            self.assertEqual(greeting_response(text), "Hi! What can I help you with?")
-        for text in ("hey fix login", "hello? investigate current prices", "Hi\nResearch this", "write a Python function"):
-            self.assertIsNone(greeting_response(text))
+    def test_every_message_reaches_the_model_and_explicit_api_still_research(self):
+        # No canned replies: greetings are answered by the same routed, budgeted model call.
+        self.assertFalse(hasattr(automatic, "greeting_response"))
+        self.assertFalse(hasattr(SessionRepository, "conversational_turn"))
         self.assertEqual(SessionTurnCreate(goal="hi", idempotency_key=uuid4()).kind, "research")
+
+    def test_router_definition_is_current_immutable_version(self):
+        definition = load_builtin("intent-router", 2)
+        self.assertEqual(definition.allowed_tools, ("read_task_input",))
+        self.assertIn("history", definition.system_prompt)
+        self.assertEqual(load_builtin("intent-router", 1).version, 1)
 
     def test_inheritance_is_distinct_from_explicit_no_repository(self):
         request = AutoTurnCreate(routing="auto", goal="Explain this", idempotency_key=uuid4())
@@ -136,3 +142,42 @@ class RoutingTests(IsolatedAsyncioTestCase):
         self.assertFalse(scope.permissions.sandbox_exec)
         self.assertFalse(scope.permissions.github_write)
         self.assertEqual(scope.permissions.allowed_repo_ids, ("owner/repo",))
+
+
+class ConversationContextTests(TestCase):
+    @staticmethod
+    def context(messages):
+        from agentforge.repositories.sessions import bounded_context
+        rows = [SimpleNamespace(id=uuid4(), sequence=index + 1, role=role, content=text) for index, (role, text) in enumerate(messages)]
+        db = SimpleNamespace(scalars=lambda _query: iter(list(reversed(rows))[:40]))
+        conversation = SimpleNamespace(id=uuid4(), summary_json=None)
+        return bounded_context(db, conversation), conversation
+
+    def test_recent_turns_are_replayed_in_order_with_their_real_text(self):
+        reply = "A" * 1200
+        context, _ = self.context([("user", "What is a monad?"), ("assistant", reply), ("user", "give an example")])
+        self.assertEqual([item["role"] for item in context["recent_messages"]], ["user", "assistant", "user"])
+        self.assertEqual(context["recent_messages"][1]["text"], reply)
+        self.assertEqual(context["summary"]["excerpts"], [])
+
+    def test_history_stays_bounded_and_keeps_newest_first_priority(self):
+        messages = [("user" if index % 2 == 0 else "assistant", f"turn {index} " + "x" * 900) for index in range(40)]
+        context, conversation = self.context(messages)
+        self.assertLessEqual(len(json.dumps(context, ensure_ascii=False, separators=(",", ":"))), 7500)
+        self.assertTrue(context["recent_messages"][-1]["text"].startswith("turn 39"))
+        sequences = [item["sequence"] for item in context["recent_messages"]]
+        self.assertEqual(sequences, sorted(sequences))
+        excerpts = context["summary"]["excerpts"]
+        self.assertTrue(excerpts)
+        self.assertLess(max(item["sequence"] for item in excerpts), min(sequences))
+        self.assertTrue(all(len(item["text"]) <= 160 for item in excerpts))
+        self.assertIs(conversation.summary_json, context["summary"])
+
+    def test_single_oversized_message_is_trimmed_not_dropped(self):
+        context, _ = self.context([("assistant", "z" * 20000)])
+        self.assertEqual(len(context["recent_messages"]), 1)
+        self.assertLessEqual(len(json.dumps(context, ensure_ascii=False, separators=(",", ":"))), 7500)
+
+    def test_empty_conversation_has_no_history(self):
+        context, _ = self.context([])
+        self.assertEqual(context["recent_messages"], [])

@@ -20,7 +20,7 @@ export default function Home() {
         </header>
 
         <SystemHealth />
-        <Link href="/workspace" className="inline-flex rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground outline-none hover:bg-primary/80 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">Open workspace</Link>
+        <Link href="/chat" className="inline-flex rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground outline-none hover:bg-primary/80 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">Open workspace</Link>
       </div>
     </main>
   );

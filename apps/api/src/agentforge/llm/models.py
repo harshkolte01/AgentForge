@@ -1,6 +1,7 @@
 """Bounded model protocol shared by real and explicitly injected fixture models."""
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Protocol
@@ -38,7 +39,10 @@ class ToolCallingModel(Protocol):
 
     def maximum_request_cost(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> Decimal: ...
 
-    async def complete(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> ModelResponse: ...
+    async def complete(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
+                       on_text: Callable[[str], None] | None = None) -> ModelResponse:
+        """on_text, when given, receives content tokens as they stream; implementations may ignore it."""
+        ...
 
 
 @dataclass(frozen=True)

@@ -4,9 +4,9 @@ import json
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 from sqlalchemy import select
-from agentforge.contracts.sessions import AutoTurnCreate, MessageView, SessionCreate, SessionPatch, SessionView, SessionTurnCreate, TurnView
+from agentforge.contracts.sessions import AutoTurnCreate, MessageView, SessionCreate, StepView, SessionPatch, SessionView, SessionTurnCreate, TurnView
 from agentforge.contracts.tasks import TaskCreate, TaskView, TERMINAL_STATUSES
-from agentforge.database.models import Project, Task, User
+from agentforge.database.models import Project, Task, ToolCall, User
 from agentforge.database.sessions import Conversation, ConversationMessage, SessionTurn
 from agentforge.database.coding import CodingSession
 from .tasks import TaskConflict, TaskNotFound, TaskRepository
@@ -49,30 +49,84 @@ def complete_task_conversation(session, task_id):
         settle_conversation(session, conversation)
 
 
-def bounded_context(session, conversation):
-    """Extractive older excerpts with provenance plus recent messages, <= 4500 chars.
+STEP_LIMIT = 40
 
-    No text is promoted to platform authority. Full originals remain paginated.
+
+def tool_steps(session, task_ids):
+    """Finished tool calls per task in the order they ran, for rendering a reply's work step by step."""
+    steps = {task_id: [] for task_id in task_ids}
+    if not steps:
+        return steps
+    rows = session.execute(select(ToolCall.task_id, ToolCall.tool_name, ToolCall.status).where(
+        ToolCall.task_id.in_(list(steps)), ToolCall.status.in_(("SUCCEEDED", "FAILED", "BLOCKED", "UNKNOWN")),
+        ToolCall.tool_name != "unknown").order_by(ToolCall.started_at, ToolCall.id))
+    for task_id, tool, status in rows:
+        if len(steps[task_id]) < STEP_LIMIT:
+            steps[task_id].append(StepView(tool=tool, status="done" if status == "SUCCEEDED" else "failed"))
+    return steps
+
+
+CONTEXT_BUDGET = 7500        # serialized characters; one history read stays within a page or two
+RECENT_MESSAGE_CAP = 1500    # per recent message; long replies keep their opening, which carries the answer
+EXCERPT_CAP = 160            # older turns are reduced to a short, attributed excerpt
+EXCERPT_LIMIT = 12
+RECENT_COUNT = 12
+
+
+def clip(text, cap):
+    text = text.strip()
+    return text if len(text) <= cap else text[:cap - 1].rstrip() + "\u2026"
+
+
+def bounded_context(session, conversation):
+    """Newest-first extractive history: full recent turns, then short excerpts, <= CONTEXT_BUDGET chars.
+
+    The conversation is replayed to the model as faithfully as the budget allows so follow-ups
+    resolve against what was actually said. No text is promoted to platform authority, every item
+    carries its message id and sequence, and full originals remain paginated.
     """
-    recent = list(session.scalars(select(ConversationMessage).where(
-        ConversationMessage.session_id == conversation.id).order_by(ConversationMessage.sequence.desc()).limit(6)))
+    rows = list(session.scalars(select(ConversationMessage).where(
+        ConversationMessage.session_id == conversation.id).order_by(ConversationMessage.sequence.desc()).limit(40)))
+
+    def item(row, cap):
+        return {"message_id": str(row.id), "sequence": row.sequence, "role": row.role, "text": clip(row.content, cap)}
+
+    def size(value):
+        return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+
+    recent, excerpts = [], []
+    used = 200  # envelope and key overhead
+    for row in rows:  # newest to oldest
+        full = len(recent) < RECENT_COUNT and not excerpts
+        entry = item(row, RECENT_MESSAGE_CAP if full else EXCERPT_CAP)
+        cost = size(entry) + 1
+        if used + cost > CONTEXT_BUDGET:
+            if full and not recent:
+                # The newest message always survives, trimmed to what the budget allows.
+                entry = item(row, max(200, CONTEXT_BUDGET - used - 300))
+                cost = size(entry) + 1
+            elif full:
+                # Full-text budget is spent: older turns continue as short excerpts.
+                full = False
+                entry = item(row, EXCERPT_CAP)
+                cost = size(entry) + 1
+                if used + cost > CONTEXT_BUDGET:
+                    break
+            else:
+                break
+        if full:
+            recent.append(entry)
+        elif len(excerpts) < EXCERPT_LIMIT:
+            excerpts.append(entry)
+        else:
+            break
+        used += cost
     recent.reverse()
-    cutoff = recent[0].sequence if recent else 0
-    prior = list(session.scalars(select(ConversationMessage).where(ConversationMessage.session_id == conversation.id,
-        ConversationMessage.sequence < cutoff).order_by(ConversationMessage.sequence.desc()).limit(8)))
-    prior.reverse()
-    summary = {"method": "bounded_extractive_v1", "untrusted": True,
-        "through_sequence": max((row.sequence for row in prior), default=0),
-        "excerpts": [{"message_id": str(row.id), "sequence": row.sequence, "role": row.role,
-            "text": row.content[:120]} for row in prior]}
+    excerpts.reverse()
+    summary = {"method": "bounded_extractive_v2", "untrusted": True,
+        "through_sequence": max((row["sequence"] for row in excerpts), default=0), "excerpts": excerpts}
     conversation.summary_json = summary
-    context = {"untrusted_history": True, "summary": summary,
-        "recent_messages": [{"message_id": str(row.id), "sequence": row.sequence,
-            "role": row.role, "text": row.content[:300]} for row in recent]}
-    # JSON overhead and multibyte text are included, fail closed if bounds drift.
-    while len(json.dumps(context, ensure_ascii=False)) > 4500 and context["recent_messages"]:
-        context["recent_messages"].pop(0)
-    return context
+    return {"untrusted_history": True, "summary": summary, "recent_messages": recent}
 
 
 class SessionRepository:
@@ -173,9 +227,12 @@ class SessionRepository:
         with self.session_factory() as session, session.begin():
             row = self.owned(session, session_id, owner_id)
             settle_conversation(session, row)
-            return [MessageView.model_validate(item) for item in session.scalars(select(ConversationMessage).where(
+            items = list(session.scalars(select(ConversationMessage).where(
                 ConversationMessage.session_id == row.id, ConversationMessage.sequence > after_sequence)
-                .order_by(ConversationMessage.sequence).limit(limit))]
+                .order_by(ConversationMessage.sequence).limit(limit)))
+            steps = tool_steps(session, {item.task_id for item in items if item.role == "assistant" and item.task_id})
+            return [MessageView.model_validate(item).model_copy(update={"steps": steps.get(item.task_id, []) if item.role == "assistant" else []})
+                for item in items]
 
     @staticmethod
     def request_digest(request):
@@ -207,34 +264,6 @@ class SessionRepository:
         return TurnView(session_id=session_id, user_message=MessageView.model_validate(message),
             task=TaskView.model_validate(task) if task else None,
             assistant_message=MessageView.model_validate(assistant) if assistant else None, replayed=replayed)
-
-    def conversational_turn(self, session_id, owner_id, request: AutoTurnCreate, response):
-        """Atomic free greeting/clarification, with the same fencing and retry rules."""
-        digest = self.request_digest(request)
-        with self.session_factory() as session, session.begin():
-            row = self.owned(session, session_id, owner_id)
-            prior = session.scalar(select(SessionTurn).where(SessionTurn.session_id == row.id,
-                SessionTurn.idempotency_key == request.idempotency_key))
-            if prior:
-                if prior.request_sha256 != digest:
-                    raise TaskConflict("turn_idempotency_conflict")
-                return self.receipt(session, row.id, prior, replayed=True)
-            settle_conversation(session, row)
-            self.check_available(row)
-            message = ConversationMessage(session_id=row.id, sequence=row.last_sequence + 1,
-                role="user", content=request.goal, task_id=None)
-            assistant = ConversationMessage(session_id=row.id, sequence=row.last_sequence + 2,
-                role="assistant", content=response[:8000], task_id=None)
-            session.add_all([message, assistant])
-            session.flush()
-            session.add(SessionTurn(session_id=row.id, idempotency_key=request.idempotency_key,
-                request_sha256=digest, task_id=None, user_message_id=message.id))
-            self.update_title(row, request.goal)
-            row.last_sequence += 2
-            row.updated_at = datetime.now(timezone.utc)
-            session.flush()
-            return TurnView(session_id=row.id, user_message=MessageView.model_validate(message),
-                assistant_message=MessageView.model_validate(assistant), task=None)
 
     @staticmethod
     def check_available(row):

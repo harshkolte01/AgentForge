@@ -103,7 +103,7 @@ async def github_callback(request: Request, code: str = "", state: str = ""):
     if not github_configured(settings):
         raise HTTPException(503, "github_auth_not_configured")
     require_public_transport(request)
-    target = str(settings.app_base_url).rstrip("/") + "/workspace"
+    target = str(settings.app_base_url).rstrip("/") + "/chat"
     try:
         service = GitHubIdentityService(sessions(request), settings)
         verifier = service.consume(state, request.cookies.get(OAUTH_COOKIE_NAME))

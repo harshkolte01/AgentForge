@@ -127,3 +127,64 @@
     @apply font-sans;
     }
 }
+
+@keyframes thinking-orb {
+  0%, 100% { opacity: 0.35; transform: scale(0.7); }
+  50% { opacity: 1; transform: scale(1.05); }
+}
+/* A band of full-contrast light travels left to right across dimmed text. */
+@keyframes thinking-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: 0% 0; }
+}
+@keyframes thinking-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+@keyframes thinking-fade {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 0.85; }
+}
+@keyframes message-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+.thinking-orb {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 9999px;
+  background: var(--foreground);
+  animation: thinking-orb 1.6s ease-in-out infinite;
+}
+.thinking-shimmer {
+  --shimmer-base: color-mix(in oklch, var(--foreground) 30%, transparent);
+  --shimmer-peak: var(--foreground);
+  background-image: linear-gradient(100deg, var(--shimmer-base) 36%, var(--shimmer-peak) 50%, var(--shimmer-base) 64%);
+  background-size: 250% 100%;
+  background-repeat: no-repeat;
+  background-position: 100% 0;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: thinking-shimmer 1.7s linear infinite;
+}
+.message-in { animation: message-in 0.24s ease-out both; }
+/* Reduced motion keeps the indicator alive with a gentle fade instead of scaling. */
+@media (prefers-reduced-motion: reduce) {
+  .thinking-orb { animation: thinking-fade 2s ease-in-out infinite; }
+  .thinking-shimmer {
+  --shimmer-base: color-mix(in oklch, var(--foreground) 30%, transparent);
+  --shimmer-peak: var(--foreground);
+  background-image: linear-gradient(100deg, var(--shimmer-base) 36%, var(--shimmer-peak) 50%, var(--shimmer-base) 64%);
+  background-size: 250% 100%;
+  background-repeat: no-repeat;
+  background-position: 100% 0;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: thinking-shimmer 1.7s linear infinite;
+}
+.message-in { animation: none; }
+}

@@ -34,6 +34,12 @@ class SessionView(BaseModel):
     repository: RepoSelection | None = None
     continuation_task_id: UUID | None = None
 
+class StepView(BaseModel):
+    """One tool call made while producing a reply: the tool's name and how it ended, never its content."""
+    tool: str
+    status: Literal["done", "failed"]
+
+
 class MessageView(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
@@ -43,6 +49,7 @@ class MessageView(BaseModel):
     content: str
     task_id: UUID | None
     created_at: datetime
+    steps: list[StepView] = []
 
 class SessionTurnCreate(TaskCreate):
     # Project is derived from the owned session, never selected by this caller.

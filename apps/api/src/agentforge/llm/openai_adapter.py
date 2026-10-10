@@ -5,6 +5,7 @@ https://developers.openai.com/api/reference/python
 https://developers.openai.com/api/reference/python/resources/chat/subresources/completions/methods/create
 """
 
+from collections.abc import Callable
 from typing import Any, cast
 
 from openai import AsyncOpenAI
@@ -43,8 +44,13 @@ class OpenAIAdapter:
             raise ModelContextLimit("bounded model context is exhausted")
         return self.rates.cost(count, self.max_output_tokens)
 
-    async def complete(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> ModelResponse:
+    async def complete(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
+                       on_text: Callable[[str], None] | None = None) -> ModelResponse:
+        """One completion. With on_text, content tokens are delivered as they arrive; the returned
+        response (message, usage, finish reason) is identical to the non-streaming path."""
         self.maximum_request_cost(messages, tools)
+        if on_text is not None:
+            return await self._complete_streaming(messages, tools, on_text)
         try:
             # JSON mode is additionally validated against the specialized schema
             # locally. A schema failure gets at most one formatting-only retry.
@@ -78,6 +84,75 @@ class OpenAIAdapter:
             measured = ModelUsage(usage.prompt_tokens, usage.completion_tokens,
                                   self.rates.cost(usage.prompt_tokens, usage.completion_tokens))
         return ModelResponse(message, measured, response.model, choice.finish_reason)
+
+    async def _complete_streaming(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
+                                  on_text: Callable[[str], None]) -> ModelResponse:
+        parts: list[str] = []
+        calls: dict[int, dict[str, Any]] = {}
+        finish_reason: str | None = None
+        usage = None
+        reported_model = self.model_id
+        stream = None
+        try:
+            kwargs: dict[str, Any] = {}
+            if self.reasoning_effort is not None:
+                kwargs["reasoning_effort"] = self.reasoning_effort
+            if tools:
+                kwargs.update(tools=cast(list[ChatCompletionToolParam], tools),
+                              tool_choice="auto", parallel_tool_calls=False)
+            stream = await self._client.chat.completions.create(
+                model=self.model_id,
+                messages=cast(list[ChatCompletionMessageParam], messages),
+                max_completion_tokens=self.max_output_tokens,
+                response_format={"type": "json_object"}, store=False, service_tier="default",
+                stream=True, stream_options={"include_usage": True}, **kwargs,
+            )
+            async for chunk in stream:
+                if getattr(chunk, "usage", None) is not None:
+                    usage = chunk.usage
+                if getattr(chunk, "model", None):
+                    reported_model = chunk.model
+                if not chunk.choices:
+                    continue
+                choice = chunk.choices[0]
+                delta = choice.delta
+                if delta is not None and delta.content:
+                    parts.append(delta.content)
+                    try:
+                        on_text(delta.content)
+                    except Exception:
+                        pass  # Showing progress must never fail the model call.
+                for call in (delta.tool_calls or []) if delta is not None else []:
+                    slot = calls.setdefault(call.index, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+                    if call.id:
+                        slot["id"] = call.id
+                    if call.function is not None:
+                        slot["function"]["name"] += call.function.name or ""
+                        slot["function"]["arguments"] += call.function.arguments or ""
+                if choice.finish_reason:
+                    finish_reason = choice.finish_reason
+        except Exception:
+            raise ModelProviderError("model provider request failed") from None
+        finally:
+            if stream is not None:
+                try:
+                    await stream.close()
+                except Exception:
+                    pass
+        if finish_reason is None:
+            raise ModelProviderError("model provider returned no completion")
+        content = "".join(parts)
+        message: dict[str, Any] = {"role": "assistant"}
+        if content or not calls:
+            message["content"] = content
+        if calls:
+            message["tool_calls"] = [calls[index] for index in sorted(calls)]
+        if usage is None:
+            measured = ModelUsage(0, 0, None)
+        else:
+            measured = ModelUsage(usage.prompt_tokens, usage.completion_tokens,
+                                  self.rates.cost(usage.prompt_tokens, usage.completion_tokens))
+        return ModelResponse(message, measured, reported_model, finish_reason)
 
     async def aclose(self) -> None:
         await self._client.close()

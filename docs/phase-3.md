@@ -170,7 +170,7 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-Open `http://localhost:3000/workspace`, unlock with the local bootstrap token,
+Open `http://localhost:3000/chat`, unlock with the local bootstrap token,
 then submit a bounded research task. Starting the worker with queued tasks can
 incur real configured provider costs. The worker never applies migrations or
 sets up framework tables automatically. Manual task resume returns 409 because

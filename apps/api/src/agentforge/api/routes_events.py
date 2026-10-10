@@ -1,6 +1,8 @@
 """Bounded durable event replay and owner-reauthorized SSE connections."""
 
 import asyncio
+import json
+import time
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -55,7 +57,8 @@ async def events(task_id: UUID, request: Request, user: User = Depends(current_u
     async def stream():
         nonlocal cursor
         yield "retry: 3000\n\n"
-        idle_cycles = 0
+        sent_epoch, sent_length = None, 0
+        last_output = time.monotonic()
         try:
             while not await request.is_disconnected():
                 # Check cookie expiry/revocation, current DB identity and task ownership
@@ -65,24 +68,36 @@ async def events(task_id: UUID, request: Request, user: User = Depends(current_u
                     return
                 page = await run_in_threadpool(event_repository.list_after,
                     task_id=task_id, owner_id=user.id, after_sequence=cursor, limit=100)
+                for event in page:
+                    if await request.is_disconnected():
+                        return
+                    cursor = event.sequence
+                    # model_dump_json escapes line breaks; event types are persisted
+                    # server constants, never model-authored content.
+                    event_type = event.event_type.replace("\n", "").replace("\r", "")
+                    yield f"id: {cursor}\nevent: {event_type}\ndata: {event.model_dump_json()}\n\n"
+                    last_output = time.monotonic()
+                # The reply being written, as increments. Not part of the durable event log (no id),
+                # so reconnects simply start again from offset 0; the saved message stays authoritative.
+                snapshot = await run_in_threadpool(event_repository.stream_snapshot, task_id, user.id)
+                if snapshot is not None:
+                    epoch, text = snapshot
+                    if epoch != sent_epoch or len(text) > sent_length:
+                        if epoch != sent_epoch:
+                            sent_epoch, sent_length = epoch, 0
+                        payload = json.dumps({"task_id": str(task_id), "epoch": epoch, "offset": sent_length, "text": text[sent_length:]})
+                        yield f"event: message.delta\ndata: {payload}\n\n"
+                        sent_length = len(text)
+                        last_output = time.monotonic()
                 if page:
-                    idle_cycles = 0
-                    for event in page:
-                        if await request.is_disconnected():
-                            return
-                        cursor = event.sequence
-                        # model_dump_json escapes line breaks; event types are persisted
-                        # server constants, never model-authored content.
-                        event_type = event.event_type.replace("\n", "").replace("\r", "")
-                        yield f"id: {cursor}\nevent: {event_type}\ndata: {event.model_dump_json()}\n\n"
                     # Yield to cancellation/backpressure between each bounded page.
                     await asyncio.sleep(0)
-                else:
-                    idle_cycles += 1
-                    if idle_cycles >= 5:
-                        yield ": keepalive\n\n"
-                        idle_cycles = 0
-                    await asyncio.sleep(2)
+                    continue
+                if time.monotonic() - last_output >= 10:
+                    yield ": keepalive\n\n"
+                    last_output = time.monotonic()
+                # Poll quickly only while a reply is being written.
+                await asyncio.sleep(0.15 if snapshot is not None else 0.5)
         except (HTTPException, TaskNotFound):
             # The response has started: close without disclosing revoked task data.
             yield "event: session.closed\ndata: {}\n\n"
@@ -90,6 +105,7 @@ async def events(task_id: UUID, request: Request, user: User = Depends(current_u
             return
 
     return StreamingResponse(stream(), media_type="text/event-stream", headers={
-        "Cache-Control": "no-cache, no-store", "X-Accel-Buffering": "no",
+        # no-transform keeps intermediaries (including the web app's proxy) from compressing and buffering the stream.
+        "Cache-Control": "no-cache, no-store, no-transform", "X-Accel-Buffering": "no",
         "X-Content-Type-Options": "nosniff",
     })

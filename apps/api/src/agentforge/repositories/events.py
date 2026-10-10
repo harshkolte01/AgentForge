@@ -6,9 +6,10 @@ from uuid import UUID
 from sqlalchemy import select
 from agentforge.contracts.events import TaskEventView
 from agentforge.database.models import Project, Task, TaskEvent
+from agentforge.database.phase3 import TaskStream
 from .runs import SessionFactory
 
-_KEYS = {"status", "previous_status", "step_id", "step_key", "spawn_id", "type", "version", "error_code", "attempt", "lease_generation", "evidence_ids", "artifact_ids", "checks", "reason", "tool", "model", "input_tokens", "output_tokens", "sandbox_id", "base_sha", "revision", "profile_id", "exit_code", "qualified", "failure_evidence_ids", "approval_id", "action_type", "state", "commit_sha", "pr_number", "pr_url", "head_branch", "base_branch", "repo_id", "delivery_kind", "branch_url"}
+_KEYS = {"status", "previous_status", "step_id", "step_key", "spawn_id", "type", "version", "error_code", "attempt", "lease_generation", "evidence_ids", "artifact_ids", "checks", "reason", "tool", "detail", "model", "input_tokens", "output_tokens", "sandbox_id", "base_sha", "revision", "profile_id", "exit_code", "qualified", "failure_evidence_ids", "approval_id", "action_type", "state", "commit_sha", "pr_number", "pr_url", "head_branch", "base_branch", "repo_id", "delivery_kind", "branch_url"}
 
 
 def append_event(session, task: Task, event_type: str, payload: dict[str, Any]) -> None:
@@ -25,6 +26,16 @@ def append_event(session, task: Task, event_type: str, payload: dict[str, Any]) 
 class EventRepository:
     def __init__(self, session_factory: SessionFactory):
         self.session_factory = session_factory
+
+    def stream_snapshot(self, task_id: UUID, owner_id: UUID):
+        """(epoch, text) of the reply currently being written, or None. Never raises: streaming is best effort."""
+        try:
+            with self.session_factory() as session:
+                row = session.execute(select(TaskStream.epoch, TaskStream.text).join(Task, Task.id == TaskStream.task_id)
+                    .where(TaskStream.task_id == task_id, Task.created_by == owner_id)).first()
+            return (row.epoch, row.text) if row else None
+        except Exception:
+            return None
 
     def list_after(self, task_id: UUID, owner_id: UUID, after_sequence: int = 0,
                    limit: int = 100) -> list[TaskEventView]:

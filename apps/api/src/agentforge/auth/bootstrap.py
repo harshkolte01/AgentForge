@@ -33,7 +33,7 @@ def main() -> None:
     print("AUTH_MODE=local_single_user")
     print(f"LOCAL_USER_ID={user_id}")
     print(f"LOCAL_BOOTSTRAP_TOKEN={token_urlsafe(48)}")
-    print("Restart the API, then enter the bootstrap token at http://localhost:3000/workspace.")
+    print("Restart the API, then enter the bootstrap token at http://localhost:3000/chat.")
     print("Keep the API bound to 127.0.0.1. Do not share or commit the bootstrap token.")
 
 

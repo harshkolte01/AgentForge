@@ -3,11 +3,17 @@
 ## Conversation-first workspace update
 
 The compact conversation sidebar, automatic message routing, conversation-scoped
-optional repository and consolidated Settings are implemented. Simple greetings
-without attachments persist task-free replies; substantive requests use the
-bounded shared router. Existing agents/history retain their internal ownership
+optional repository and consolidated Settings are implemented. Every message,
+greetings included, is answered by a real model call through the bounded shared
+router, which receives the recent conversation as context. Existing agents/history retain their internal ownership
 scopes. Settings manages actual account/logout, model/limits, GitHub and all owned
 custom agents without project controls. Old management routes redirect there.
+
+Conversations and run details now have real URLs: `/chat`, `/chat/<id>` and
+`/chat/<id>/runs/<task-id>` (see `docs/conversation-ux.md#urls`). Back/Forward,
+deep links, reloads and open-in-new-tab work; `/workspace[?session=]` redirects.
+Verified with lint, `next build`, the 14 backend OAuth/security tests and a headless
+Chrome pass over navigation, history, deep links, not-found states and titles.
 
 Settings API checks passed on a disposable PostgreSQL database through revision
 `0008_automatic_conversation`, including cross-scope listing, pagination,
