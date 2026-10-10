@@ -169,3 +169,27 @@ pnpm dev
 Open `http://localhost:3000`, `http://localhost:8000/api/v1/health/live`, `http://localhost:8000/api/v1/health/ready`, and `http://localhost:8000/docs`.
 
 No blockers remain for Step 1.6. CI belongs to Step 1.7.
+
+## Phase 2 — Core harness, registry and permissions
+
+Implemented on 10 October 2026. Steps 2.1–2.9 are **implementation complete and source-reviewed only**. Their exit tests have not been run. Tests, builds, live provider calls and applying migrations were deliberately excluded from this run. **Gate P2 is not empirically verified.**
+
+| Step | Work | Status |
+|---|---|---|
+| 2.1 | Definition, budget and tool contracts | Implemented; unverified |
+| 2.2 | Four validated built-in definitions | Implemented; unverified |
+| 2.3 | Source and database registry | Implemented; unverified |
+| 2.4 | Effective permissions and resource checks | Implemented; unverified |
+| 2.5 | Catalog and central tool gateway | Implemented; unverified |
+| 2.6 | Standard bounded spawn brief | Implemented; unverified |
+| 2.7 | Child runtime and spawn service | Implemented; unverified |
+| 2.8 | Agent runs, tool calls and budget persistence | Implemented; unverified |
+| 2.9 | Atomic reservations and finite execution bounds | Implemented; unverified |
+
+Implemented files include `apps/api/src/agentforge/contracts/`, `subagents/`, `security/`, `tools/`, `llm/`, `repositories/`, the Phase 2 additions to `database/models.py`, revision `0002_phase2_harness.py`, explicit model settings/dependencies, and the authored manual example `apps/api/examples/phase2_mock_child.py`. [Phase 2 decisions and handoff](docs/phase-2.md) records researched sources, setup commands and required verification.
+
+Source review addressed contract/namespace integrity, grant narrowing, adapter absence, task cancellation, exact brief/snapshot provenance, audit-before-effect ordering, duplicate usage/settlement, task-row reservation locking, currency precision and unknown-cost accounting. This is manual reasoning, not empirical validation. No automated checks, fixture execution, provider calls or database migration application are claimed as passed. Dependency lock resolution is maintenance only and does not qualify runtime behavior.
+
+The API/web health behavior remains Phase 1 scope; no public task or agent endpoint was added. Trusted composition supplies owner-authorized task context and adapters. Sessions/membership, production GitHub/E2B/network adapters, semantic evidence verification and checkpoint/recovery integration remain later-phase work. The standalone child graph is not restart durable. Hostname fetch/browser calls fail closed until a pinned-DNS adapter exists. Budget operations preserve ambiguous costs and effects rather than authorizing automatic retries.
+
+The pre-existing deletion of `.env.example` was preserved. No secrets, commits, later-phase application tables or applied migration were introduced by this implementation.

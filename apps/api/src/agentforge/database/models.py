@@ -1,4 +1,4 @@
-"""Phase 1 application tables from implementation plan section 14.4."""
+"""Phase 1 entities and Phase 2 child audit/accounting tables."""
 
 from datetime import datetime
 from decimal import Decimal
@@ -127,3 +127,99 @@ Index(
     Task.status,
     Task.created_at.desc(),
 )
+
+
+class BudgetReservation(_UUIDTimestampMixin, Base):
+    """One durable child slice; created before its run to fail closed on crashes."""
+
+    __tablename__ = "budget_reservations"
+    __table_args__ = (
+        CheckConstraint("amount_usd > 0", name="amount"),
+        CheckConstraint("max_steps > 0 AND max_tool_calls > 0", name="limits"),
+        CheckConstraint("depth = 1", name="depth"),
+        Index("budget_reservations_task_idx", "task_id"),
+    )
+    task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id"))
+    run_id: Mapped[UUID] = mapped_column(Uuid, unique=True)
+    amount_usd: Mapped[Decimal] = mapped_column(Numeric(12, 4))
+    max_steps: Mapped[int] = mapped_column(Integer)
+    max_tool_calls: Mapped[int] = mapped_column(Integer)
+    depth: Mapped[int] = mapped_column(Integer)
+    deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    charged_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+
+
+class AgentRun(_UUIDTimestampMixin, Base):
+    __tablename__ = "agent_runs"
+    __table_args__ = (
+        CheckConstraint("status IN ('RUNNING', 'COMPLETED', 'PARTIAL', 'FAILED', 'BLOCKED', 'CANCELLED')", name="status"),
+        CheckConstraint("reserved_cost_usd > 0", name="reserved_cost"),
+        Index("agent_runs_task_started_idx", "task_id", "started_at"),
+    )
+    task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id"))
+    definition_version_id: Mapped[UUID] = mapped_column(ForeignKey("agent_definition_versions.id"))
+    definition_sha256: Mapped[str] = mapped_column(CHAR(64))
+    definition_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    brief_sha256: Mapped[str] = mapped_column(CHAR(64))
+    effective_permissions_json: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    effective_budget_json: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    budget_reservation_id: Mapped[UUID] = mapped_column(ForeignKey("budget_reservations.id"), unique=True)
+    reserved_cost_usd: Mapped[Decimal] = mapped_column(Numeric(12, 4))
+    measured_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    status: Mapped[str] = mapped_column(Text)
+    result_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    error_code: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ToolCall(_UUIDTimestampMixin, Base):
+    __tablename__ = "tool_calls"
+    __table_args__ = (
+        UniqueConstraint("agent_run_id", "operation_key"),
+        CheckConstraint("status IN ('INTENT', 'SUCCEEDED', 'FAILED', 'BLOCKED', 'UNKNOWN')", name="status"),
+        Index("tool_calls_task_started_idx", "task_id", "started_at"),
+    )
+    task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id"))
+    agent_run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id"))
+    tool_name: Mapped[str] = mapped_column(Text)
+    operation_key: Mapped[str] = mapped_column(Text)
+    args_digest: Mapped[str] = mapped_column(CHAR(64))
+    intent_json_sanitized: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    status: Mapped[str] = mapped_column(Text)
+    result_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    error_code: Mapped[str | None] = mapped_column(Text)
+    evidence_ids: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class BudgetOperation(_UUIDTimestampMixin, Base):
+    __tablename__ = "budget_operations"
+    __table_args__ = (
+        UniqueConstraint("reservation_id", "operation_key"),
+        CheckConstraint("kind IN ('model', 'tool')", name="kind"),
+        CheckConstraint("max_cost_usd >= 0 AND (cost_usd IS NULL OR cost_usd >= 0)", name="cost"),
+    )
+    reservation_id: Mapped[UUID] = mapped_column(ForeignKey("budget_reservations.id"))
+    operation_key: Mapped[str] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(Text)
+    max_cost_usd: Mapped[Decimal] = mapped_column(Numeric(12, 4))
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    usage_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    recorded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class BudgetTransaction(_UUIDTimestampMixin, Base):
+    __tablename__ = "budget_transactions"
+    __table_args__ = (
+        UniqueConstraint("reservation_id", "kind"),
+        CheckConstraint("kind IN ('RESERVE', 'CHARGE', 'RELEASE')", name="kind"),
+        CheckConstraint("amount_usd >= 0", name="amount"),
+        Index("budget_transactions_task_idx", "task_id"),
+    )
+    task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id"))
+    reservation_id: Mapped[UUID] = mapped_column(ForeignKey("budget_reservations.id"))
+    kind: Mapped[str] = mapped_column(Text)
+    amount_usd: Mapped[Decimal] = mapped_column(Numeric(12, 4))

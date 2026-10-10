@@ -2105,6 +2105,8 @@ GitHub Actions job outline:
 | 2.8 | `agent_runs`, `tool_calls` migrations | Persist definition version, calls and results | DB history present |
 | 2.9 | `budget.py` | Reserve, settle, enforce max steps/depth/time | Over-budget and nested spawn denied |
 
+**Implementation status (10 October 2026):** Steps 2.1–2.9 are implemented and source-reviewed only; the exit tests above were deliberately not run. See [Phase 2 implementation and handoff](docs/phase-2.md) and [phase status](phase-status.md). Migration `0002_phase2` is authored but unapplied. No tests, builds or live provider calls were executed; Gate P2 remains empirically unverified.
+
 **Gate P2:** `spawn_subagent` runs a real LLM child with **only its authorized tools** and validated return schema, while forbidden calls demonstrably fail. No GitHub write is necessary yet.
 
 ### Phase 3 — Planning, task state and neatlogs (Oct 10)

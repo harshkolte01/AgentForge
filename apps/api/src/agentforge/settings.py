@@ -1,10 +1,11 @@
 """Typed configuration loaded from environment variables and local .env files."""
 
 from functools import lru_cache
+from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import Field, HttpUrl, field_validator
+from pydantic import Field, HttpUrl, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 API_DIR = Path(__file__).resolve().parents[2]
@@ -36,6 +37,19 @@ class Settings(BaseSettings):
         min_length=1,
         repr=False,
     )
+    # Phase 2 is deliberately unconfigured until the operator verifies a model,
+    # its feature support, context limit and current pricing. Health routes do
+    # not create a provider client or make paid requests.
+    llm_provider: Literal["openai"] = "openai"
+    llm_model: str | None = Field(default=None, min_length=1, max_length=200)
+    llm_api_key: SecretStr | None = Field(default=None, repr=False)
+    llm_supports_tools: bool = False
+    llm_supports_json: bool = False
+    llm_context_window_tokens: int | None = Field(default=None, ge=8192, le=2_000_000)
+    llm_max_output_tokens: int = Field(default=2048, ge=128, le=16384)
+    llm_timeout_sec: float = Field(default=60, gt=0, le=120)
+    llm_input_usd_per_million: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
+    llm_output_usd_per_million: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
 
     @field_validator("allowed_origins", mode="before")
     @classmethod
