@@ -33,3 +33,38 @@ uv sync
 The missing uv tool was installed for the current user and its Scripts directory added to user PATH. Open a new terminal to pick up that PATH change. Existing terminals can use `py -3.12 -m uv sync`.
 
 No blockers remain for Step 1.2. PostgreSQL infrastructure, migrations, API routes, web scaffolding and CI belong to the remaining Phase 1 steps.
+
+## Step 1.3 — Next.js UI
+
+Completed on 10 October 2026. Phase 1 as a whole is still incomplete.
+
+Implemented:
+
+- `apps/web/`: Next.js 16.4 App Router, React, TypeScript and Tailwind CSS, scaffolded with the official Next.js generator.
+- `components.json`, `components/ui/` and `lib/utils.ts`: shadcn/ui configuration and generated Card, Badge and Button components. The home page uses Card and Badge.
+- `app/page.tsx`: one simple home page with the AgentForge AI heading and a System health placeholder marked **Not checked**. It does not claim that the backend is healthy or make a health request.
+- `app/layout.tsx` and `app/globals.css`: project metadata, shadcn theme and local system fonts; no Google font download is required.
+- `next.config.ts`: rewrites `/api/:path*` to `http://localhost:8000/api/:path*` so browser API calls can use the Next.js origin.
+- `package.json` and `pnpm-lock.yaml`: reproducible dependencies and explicit port 3000 for `pnpm dev` and `pnpm start`.
+- `README.md`: local setup, verification commands and API proxy usage. No login, task chat or agent pages were added.
+
+Verification:
+
+- `pnpm install`: completed successfully after retrying the stalled registry download with IPv4 preferred. A subsequent `pnpm install --frozen-lockfile` also passed.
+- `pnpm lint`: exit code 0.
+- `pnpm build`: exit code 0, including TypeScript validation and successful static generation of the home page.
+- `pnpm dev`: started successfully on port 3000. A live GET to `http://localhost:3000` returned HTTP 200 and contained AgentForge AI, System health and Not checked.
+- API rewrite smoke check: GET preserved a nested `/api/...` path and query string; POST preserved the path, method and JSON body. Verification used a temporary local HTTP listener on port 8000, which was stopped afterward. This does not claim that FastAPI routes have been implemented.
+- `git diff --check`: passed.
+
+Local setup:
+
+```powershell
+cd C:\Coding\AgentForge\apps\web
+pnpm install
+pnpm dev
+```
+
+Open `http://localhost:3000`. The verified dev server was left running in a hidden background process; its ignored logs are in `apps/web/.local/`. Stop the existing dev server before launching another one on port 3000.
+
+No blockers remain for Step 1.3. PostgreSQL infrastructure, migrations, FastAPI bootstrap/health routes and CI remain for later Phase 1 steps.
