@@ -3,10 +3,10 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from agentforge.contracts.sessions import AutoTurnCreate, MessageView, SessionCreate, StepView, SessionPatch, SessionView, SessionTurnCreate, TurnView
 from agentforge.contracts.tasks import TaskCreate, TaskView, TERMINAL_STATUSES
-from agentforge.database.models import Project, Task, ToolCall, User
+from agentforge.database.models import BudgetOperation, BudgetReservation, Project, Task, ToolCall, User
 from agentforge.database.sessions import Conversation, ConversationMessage, SessionTurn
 from agentforge.database.coding import CodingSession
 from .tasks import TaskConflict, TaskNotFound, TaskRepository
@@ -83,12 +83,10 @@ def clip(text, cap):
     return text if len(text) <= cap else text[:cap - 1].rstrip() + "\u2026"
 
 
-def bounded_context(session, conversation):
-    """Newest-first extractive history: full recent turns, then short excerpts, <= CONTEXT_BUDGET chars.
+def digest_history(session, conversation):
+    """The newest-first extractive history (recent turns in full, then short excerpts) within CONTEXT_BUDGET.
 
-    The conversation is replayed to the model as faithfully as the budget allows so follow-ups
-    resolve against what was actually said. No text is promoted to platform authority, every item
-    carries its message id and sequence, and full originals remain paginated.
+    Pure: nothing is written, so the same digest can be measured for the context status.
     """
     rows = list(session.scalars(select(ConversationMessage).where(
         ConversationMessage.session_id == conversation.id).order_by(ConversationMessage.sequence.desc()).limit(40)))
@@ -130,8 +128,19 @@ def bounded_context(session, conversation):
     excerpts.reverse()
     summary = {"method": "bounded_extractive_v2", "untrusted": True,
         "through_sequence": max((row["sequence"] for row in excerpts), default=0), "excerpts": excerpts}
-    conversation.summary_json = summary
     return {"untrusted_history": True, "summary": summary, "recent_messages": recent}
+
+
+def bounded_context(session, conversation):
+    """Newest-first extractive history: full recent turns, then short excerpts, <= CONTEXT_BUDGET chars.
+
+    The conversation is replayed to the model as faithfully as the budget allows so follow-ups
+    resolve against what was actually said. No text is promoted to platform authority, every item
+    carries its message id and sequence, and full originals remain paginated.
+    """
+    digest = digest_history(session, conversation)
+    conversation.summary_json = digest["summary"]
+    return digest
 
 
 class SessionRepository:
@@ -225,6 +234,35 @@ class SessionRepository:
             row.updated_at = datetime.now(timezone.utc)
             session.flush()
             return self.view(session, row)
+
+    def context_usage(self, session_id, owner_id):
+        """Measured inputs for the context status: the digest the next turn would carry, and the
+        provider-reported size of the latest run's largest request."""
+        with self.session_factory() as session:
+            row = self.owned(session, session_id, owner_id, lock=False)
+            digest = digest_history(session, row)
+            total = session.scalar(select(func.count()).select_from(ConversationMessage).where(
+                ConversationMessage.session_id == row.id)) or 0
+            return {"history_chars": len(json.dumps(digest, ensure_ascii=False, separators=(",", ":"))),
+                "messages_total": total, "messages_in_full": len(digest["recent_messages"]),
+                "messages_condensed": len(digest["summary"]["excerpts"]),
+                "last_run": self.last_run_context(session, row.id)}
+
+    @staticmethod
+    def last_run_context(session, session_id):
+        """Peak input tokens over the model calls of the newest turn that made any."""
+        recent = list(session.scalars(select(SessionTurn.task_id).join(ConversationMessage, ConversationMessage.id == SessionTurn.user_message_id)
+            .where(SessionTurn.session_id == session_id, SessionTurn.task_id.is_not(None))
+            .order_by(ConversationMessage.sequence.desc()).limit(3)))
+        tokens = BudgetOperation.usage_json["provider_usage"]["input_tokens"].as_integer()
+        compacted = BudgetOperation.usage_json["provider_usage"]["compacted_results"].as_integer()
+        for task_id in recent:
+            peak, calls, stubbed = session.execute(select(func.max(tokens), func.count(), func.max(compacted))
+                .join(BudgetReservation, BudgetReservation.id == BudgetOperation.reservation_id)
+                .where(BudgetReservation.task_id == task_id, BudgetOperation.kind == "model", tokens.is_not(None))).one()
+            if calls:
+                return {"peak_input_tokens": int(peak), "model_calls": calls, "compacted_results": int(stubbed or 0)}
+        return None
 
     def messages(self, session_id, owner_id, *, after_sequence=0, limit=100):
         if not 1 <= limit <= 100 or after_sequence < 0:

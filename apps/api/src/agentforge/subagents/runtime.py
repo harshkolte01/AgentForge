@@ -182,10 +182,10 @@ class ChildRuntime:
             if stream is not None:
                 extra["on_text"] = stream.feed
             sent = compact_messages(conversation, context_budget)
-            if sent is not conversation:
+            stubbed = [kept.get("tool_call_id") for original, kept in zip(conversation, sent) if original is not kept]
+            if stubbed:
                 # A result that was stubbed out can be fetched again; an identical call is no longer a repeat.
-                getattr(gateway, "forget", lambda _ids: None)(
-                    [kept.get("tool_call_id") for original, kept in zip(conversation, sent) if original is not kept])
+                getattr(gateway, "forget", lambda _ids: None)(stubbed)
             bound = model.maximum_request_cost(sent, tools)
             operation_key = f"{reservation.run_id}:model:{steps}"
             budgets.authorize_operation(reservation.id, operation_key, bound, kind="model")
@@ -200,7 +200,7 @@ class ChildRuntime:
                 raise
             budgets.record_usage(reservation.id, operation_key, response.usage.cost_usd,
                 usage={"input_tokens": response.usage.input_tokens,
-                       "output_tokens": response.usage.output_tokens,
+                       "output_tokens": response.usage.output_tokens, "compacted_results": len(stubbed),
                        "configured_model": model.model_id, "reported_model": response.model_id})
             if response.usage.cost_usd is not None and response.usage.cost_usd > bound:
                 raise BudgetExceeded("model_cost_bound_exceeded")

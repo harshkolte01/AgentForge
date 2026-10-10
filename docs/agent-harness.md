@@ -114,6 +114,32 @@ Model-provider failures use the taxonomy in the plan: `RATE_LIMIT`, `MODEL_PROVI
   bounds move into the description). It is off by default: enable it after confirming the configured model accepts it.
 - The reply streams from the `submit_result` arguments (or from content when no tools are offered).
 
+## Context status (the ring beside the composer)
+
+`GET /api/v1/context[?session_id=]` reports how much of the model's context window a conversation uses. It only reads
+stored data and never calls a provider (`api/routes_context.py`, `subagents/context_status.py`, `contracts/context.py`).
+
+Every turn starts a fresh agent that is handed a bounded digest of the conversation, so the window is filled by two
+things, and the headline figure is the larger of them:
+
+| Part | Source |
+| --- | --- |
+| Starting context of the next turn | instructions + tool schemas of the front-door agent (estimated) plus the history digest the turn would carry (`digest_history`, estimated at about four characters per token) |
+| Latest run's peak | the largest `input_tokens` the provider reported for any model call in the conversation's newest turn (measured, from `budget_operations.usage_json`) |
+
+Levels: `ok` below 50%, `notice` below 80%, `high` from 80%, `unknown` when `LLM_CONTEXT_WINDOW_TOKENS` is not set.
+Also reported: messages read in full, condensed to excerpts, or omitted from the digest, and how many old tool results
+the runtime stubbed out of a request during the latest run (`compacted_results`, recorded per model call).
+
+A conversation with no messages, no run and nothing typed is shown as **empty** (0%): the instructions and tool schemas
+only travel with a message, so they are not charged against a window nobody has used yet. They appear the moment a draft
+is typed or a message is sent. The details card anchors to the whole composer, so it opens clear above it and never
+covers what is being typed.
+
+In the UI (`features/sessions/context-status.tsx`) the ring adds the unsent draft (estimated) as the person types,
+refreshes when a turn starts or finishes and every 5 s while a run is live, keeps the last good value if a refresh
+fails, and is informational only: it never blocks sending. At 80% and above it offers to start a new conversation.
+
 ## Audit and observability
 
 `tool_calls.result_json` records, for every call: status, `attempt`, `duration_ms`, structural `arguments` (paths, ids,
