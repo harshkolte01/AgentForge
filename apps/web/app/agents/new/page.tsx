@@ -1,5 +1,5 @@
-import { SessionBoundary } from "@/components/session-boundary";
-import { ConversationWorkspace } from "@/features/sessions/conversation-workspace";
-export default function AgentsPage() {
-  return <SessionBoundary embedded><ConversationWorkspace initialSurface="agents" createAgent /></SessionBoundary>;
+import { redirect } from "next/navigation";
+import { legacySettingsUrl } from "@/features/settings/legacy-settings-url";
+export default async function NewAgentPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+  redirect(legacySettingsUrl("agents", await searchParams, true));
 }

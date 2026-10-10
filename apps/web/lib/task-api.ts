@@ -75,7 +75,7 @@ export type Source = {
   url: string;
   title: string;
   excerpt: string;
-  source_type: "search" | "webpage";
+  source_type: "search" | "webpage" | "repository";
   fetch_status: "SEARCH_ONLY" | "FETCHED" | "FAILED";
   retrieved_at: string;
   error_code: string | null;

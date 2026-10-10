@@ -48,6 +48,23 @@ class ResearchResult(SubagentResult):
     unknowns: TextItems = ()
 
 
+class RoutingResult(SubagentResult):
+    """Model intent is advice; server-owned repository and policy remain authority."""
+    intent: Literal["conversation", "clarification", "research", "general", "coding"]
+    response: str | None = Field(default=None, min_length=1, max_length=8000)
+    agent_key: str | None = Field(default=None, max_length=160)
+    agent_version: int | None = Field(default=None, ge=1)
+    use_repository: bool = False
+
+    @model_validator(mode="after")
+    def conversational_response(self):
+        if self.intent in {"conversation", "clarification"} and not self.response:
+            raise ValueError("natural reply is required for conversational turns")
+        if (self.agent_key is None) != (self.agent_version is None):
+            raise ValueError("agent identity and immutable version are required together")
+        return self
+
+
 class ExecutionResult(SubagentResult):
     changed_paths: Ids = ()
     test_evidence_ids: Ids = ()
@@ -106,6 +123,7 @@ class AssessmentResult(SubagentResult):
 
 
 RESULT_MODELS: dict[str, type[SubagentResult]] = {
+    "routing_result_v1": RoutingResult,
     "research_result_v1": ResearchResult, "general_result_v1": ResearchResult, "assessment_result_v1": AssessmentResult,
     "execution_result_v1": ExecutionResult,
     "review_result_v1": ReviewResult,

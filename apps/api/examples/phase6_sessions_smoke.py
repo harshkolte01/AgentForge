@@ -34,7 +34,7 @@ def run(settings):
     command.upgrade(cfg, "head")
     from agentforge.database.models import Base, User, Project, Task, TaskJob, AgentRun
     from agentforge.database.sessions import ConversationMessage, SessionTurn
-    from agentforge.contracts.sessions import SessionCreate, SessionPatch, SessionTurnCreate
+    from agentforge.contracts.sessions import AutoTurnCreate, SessionCreate, SessionPatch, SessionTurnCreate
     from agentforge.repositories.sessions import SessionRepository, bounded_context
     from agentforge.repositories.tasks import TaskNotFound, TaskConflict
     from agentforge.repositories.admission import AdmissionDenied
@@ -49,6 +49,24 @@ def run(settings):
         db.add_all([User(id=user, github_user_id=-123, display_name="Fixture"), User(id=outsider, github_user_id=-124, display_name="Other")])
         db.flush()
         db.add_all([Project(id=project, owner_id=user, name="Fixture"), Project(id=otherproject, owner_id=outsider, name="Other")])
+    stage = "natural messages and internal workspace"
+    natural = repo.create(user, SessionCreate())
+    check(natural.project_id == project, "canonical workspace created a duplicate project")
+    hello = AutoTurnCreate(routing="auto", idempotency_key=uuid4(), goal="hey")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        hellos = list(pool.map(lambda _: repo.conversational_turn(natural.id, user, hello, "Hi! What can I help you with?"), range(2)))
+    check(hellos[0].user_message.id == hellos[1].user_message.id and all(item.task is None for item in hellos), "free greeting retry created duplicate receipt/task")
+    check(len(repo.messages(natural.id, user)) == 2 and repo.get(natural.id, user).active_task_id is None, "natural message not durable")
+    with sessions() as db:
+        check(not list(db.scalars(select(Task))), "greeting queued paid task")
+        check(not list(db.scalars(select(TaskJob))), "greeting created worker job")
+    try:
+        repo.conversational_turn(natural.id, outsider, hello, "not owned")
+    except TaskNotFound:
+        pass
+    else:
+        raise AssertionError("outsider sent natural message")
+    print("PASS task-free natural receipts, concurrent idempotency and canonical existing workspace", flush=True)
     stage = "turn idempotency"
     conversation = repo.create(user, SessionCreate(project_id=project, mode="general"))
     request = SessionTurnCreate(idempotency_key=uuid4(), kind="general", goal="Research a concrete question with evidence.")
@@ -56,7 +74,7 @@ def run(settings):
         turns = list(pool.map(lambda _: repo.turn(conversation.id, user, request), range(2)))
     check(turns[0].task.id == turns[1].task.id, "same key created duplicate task")
     with sessions() as db:
-        check(len(list(db.scalars(select(SessionTurn)))) == 1, "duplicate turn receipt")
+        check(len(list(db.scalars(select(SessionTurn).where(SessionTurn.session_id == conversation.id)))) == 1, "duplicate turn receipt")
         check(len(list(db.scalars(select(TaskJob)))) == 1, "duplicate job")
     for changed in (request.model_copy(update={"goal": "A changed goal with same request identity."}),):
         try:
@@ -130,6 +148,26 @@ def run(settings):
         db.expunge(identity)
     app.dependency_overrides[current_user] = lambda: identity
     with TestClient(app) as client:
+        stage = "automatic session HTTP contracts"
+        fresh = client.post("/api/v1/sessions", json={"title": "New conversation", "repository": {"repo_id": "owner/repo", "ref": "main"}})
+        check(fresh.status_code == 201 and fresh.json()["project_id"] == str(project), "project-free session create failed")
+        fresh_id = fresh.json()["id"]
+        greeting = {"routing": "auto", "idempotency_key": str(uuid4()), "goal": "hey", "repository": None}
+        reply = client.post(f"/api/v1/sessions/{fresh_id}/turns", json=greeting)
+        check(reply.status_code == 202 and reply.json()["task"] is None and reply.json()["assistant_message"]["content"] == "Hi! What can I help you with?", "automatic HTTP greeting created task/report")
+        retry = client.post(f"/api/v1/sessions/{fresh_id}/turns", json=greeting)
+        check(retry.json()["replayed"] and retry.json()["user_message"]["id"] == reply.json()["user_message"]["id"], "HTTP greeting retry lost receipt")
+        inherited = {"routing": "auto", "idempotency_key": str(uuid4()), "goal": "Write a useful draft"}
+        admitted = client.post(f"/api/v1/sessions/{fresh_id}/turns", json=inherited)
+        check(admitted.status_code == 202 and admitted.json()["task"]["kind"] == "general", "semantic routing was not queued through bounded task path")
+        conflict = client.post(f"/api/v1/sessions/{fresh_id}/turns", json={**inherited, "repository": None})
+        check(conflict.status_code == 409, "inherit/null idempotency distinction lost over HTTP")
+        with sessions.begin() as db:
+            task = db.get(Task, admitted.json()["task"]["id"])
+            check(task.permissions_json["automatic"]["repository"] == {"repo_id": "owner/repo", "ref": "main"}, "inherited selected repository missing")
+            task.status = "PARTIAL"
+            db.scalar(select(TaskJob).where(TaskJob.task_id == task.id)).status = "COMPLETED"
+        print("PASS project-free HTTP sessions, natural reply/replay and inherit-vs-null idempotency", flush=True)
         response = client.post("/api/v1/agents", json={"project_id": str(project), "definition": definition})
         check(response.status_code == 201, "custom agent create failed " + str(response.status_code) + " " + response.text[:400])
         agent_id = response.json()["id"]
@@ -200,7 +238,10 @@ def run(settings):
             item.status = "COMPLETED"
     coding_request = TaskCreate(project_id=project, kind="coding", goal="Fix addition", coding={
         "repository": {"repo_id": "owner/repo", "ref": "a" * 40}, "test_profiles": ["python_unittest"]})
-    original = TaskRepository(sessions).create(user, coding_request)
+    from agentforge.contracts.coding import RepoSelection
+    code_conversation = repo.create(user, SessionCreate(project_id=project, repository=RepoSelection(repo_id="owner/repo", ref="main")))
+    original = repo.turn(code_conversation.id, user, SessionTurnCreate(idempotency_key=uuid4(), **coding_request.model_dump(exclude={"project_id"})),
+        automatic={"repository": {"repo_id": "owner/repo", "ref": "main"}, "resolved": True}).task
     jobs = JobRepository(sessions, lease_sec=90)
     lease = jobs.claim("continuation-fixture")
     with sessions() as db:
@@ -215,8 +256,18 @@ def run(settings):
     with sessions.begin() as db:
         db.get(Task, original.id).status = "PARTIAL"
     jobs.complete(lease)
-    followup = TaskRepository(sessions).create(user, coding_request.model_copy(update={"continue_from_task_id": original.id, "goal": "add tests"}))
+    check(repo.get(code_conversation.id, user).continuation_task_id == original.id, "branch selection did not recognize pinned workspace")
+    research = repo.turn(code_conversation.id, user, SessionTurnCreate(idempotency_key=uuid4(), goal="Research a related question", kind="general")).task
+    with sessions.begin() as db:
+        db.get(Task, research.id).status = "COMPLETED"
+        db.get(Task, research.id).final_summary = "A natural related answer."
+        db.get(TaskJob, db.scalar(select(TaskJob.id).where(TaskJob.task_id == research.id))).status = "COMPLETED"
+    check(repo.get(code_conversation.id, user).continuation_task_id == original.id, "intervening research lost saved changes")
+    followup = repo.turn(code_conversation.id, user, SessionTurnCreate(idempotency_key=uuid4(), kind="general", goal="add tests"),
+        automatic={"repository": {"repo_id": "owner/repo", "ref": "main"}, "inherit_continuation": True}).task
     lease = jobs.claim("continuation-fixture-2")
+    from agentforge.orchestration.store import WorkflowStore
+    WorkflowStore(sessions, lease).resolve_automatic("coding", coding=coding_request.coding)
     with sessions() as db:
         followup_row = db.get(Task, followup.id)
         followup_ctx = coding_context(followup_row)
@@ -234,6 +285,13 @@ def run(settings):
         pass
     else:
         raise AssertionError("cross-owner continuation accepted")
+    with sessions.begin() as db:
+        db.get(Task, followup.id).status = "PARTIAL"
+    check(repo.get(code_conversation.id, user).continuation_task_id == followup.id, "latest coding workspace was not offered")
+    cleared = repo.patch(code_conversation.id, user, SessionPatch(repository=None))
+    check(cleared.continuation_task_id is None, "No repository retained continuation authority")
+    reselected = repo.patch(code_conversation.id, user, SessionPatch(repository=RepoSelection(repo_id="owner/repo", ref="main")))
+    check(reselected.continuation_task_id is None, "repository reselection reused pre-reset workspace")
     print("PASS coding followup retains immutable changed files and original baseline with fresh workspace, grants, tests and owner isolation", flush=True)
     stage = "global atomic admission"
     from agentforge.contracts.tasks import TaskCreate

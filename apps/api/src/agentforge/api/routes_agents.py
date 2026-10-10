@@ -3,7 +3,7 @@ from datetime import datetime
 from decimal import Decimal
 import json
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, Query
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from agentforge.api.dependencies import sessions
@@ -19,7 +19,7 @@ router = APIRouter(prefix="/api/v1/agents", tags=["agents"])
 
 class AgentSave(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    project_id: UUID
+    project_id: UUID | None = None
     definition: DefinitionContract
 
 class AgentTest(BaseModel):
@@ -70,13 +70,18 @@ def validate_management(definition):
 
 
 @router.get("")
-def list_agents(request: Request, project_id: UUID, user: User = Depends(current_user)):
+def list_agents(request: Request, project_id: UUID | None = None,
+                limit: int = Query(200, ge=1, le=200), offset: int = Query(0, ge=0, le=20000),
+                user: User = Depends(current_user)):
     with sessions(request)() as session:
-        if session.scalar(select(Project.id).where(Project.id == project_id, Project.owner_id == user.id)) is None:
+        if project_id is not None and session.scalar(select(Project.id).where(Project.id == project_id, Project.owner_id == user.id)) is None:
             raise HTTPException(404, "project_not_found")
-        return [view(session, row) for row in session.scalars(select(AgentDefinition).where(
-            AgentDefinition.project_id == project_id, AgentDefinition.namespace == "project")
-            .order_by(AgentDefinition.agent_key).limit(200))]
+        query = select(AgentDefinition).join(Project).where(Project.owner_id == user.id,
+            AgentDefinition.namespace == "project")
+        if project_id is not None:
+            query = query.where(AgentDefinition.project_id == project_id)
+        return [view(session, row) for row in session.scalars(query
+            .order_by(AgentDefinition.agent_key, AgentDefinition.id).limit(limit).offset(offset))]
 
 
 @router.post("", status_code=201)
@@ -85,7 +90,13 @@ def save_agent(body: AgentSave, request: Request, user: User = Depends(current_u
         validate_management(body.definition)
         snapshot, digest = canonical_snapshot(body.definition)
         with sessions(request)() as session, session.begin():
-            project = session.scalar(select(Project).where(Project.id == body.project_id, Project.owner_id == user.id).with_for_update())
+            if body.project_id is None:
+                from agentforge.repositories.sessions import canonical_workspace
+                project = canonical_workspace(session, user.id)
+                # Match explicit-project serialization for agent-count enforcement.
+                session.refresh(project, with_for_update=True)
+            else:
+                project = session.scalar(select(Project).where(Project.id == body.project_id, Project.owner_id == user.id).with_for_update())
             if project is None:
                 raise HTTPException(404, "project_not_found")
             rows = list(session.scalars(select(AgentDefinition).where(AgentDefinition.project_id == project.id).limit(201)))
@@ -96,6 +107,12 @@ def save_agent(body: AgentSave, request: Request, user: User = Depends(current_u
             return view(session, session.get(AgentDefinition, version.definition_id))
     except ValueError as exc:
         raise HTTPException(409, str(exc) if str(exc) in {"first_version_must_be_one", "definition_version_conflict", "builtin_key_reserved", "agent_version_limit_reached"} else "agent_definition_rejected") from None
+
+
+@router.get("/{agent_id}")
+def get_agent(agent_id: UUID, request: Request, user: User = Depends(current_user)):
+    with sessions(request)() as session:
+        return view(session, owned(session, agent_id, user.id))
 
 
 @router.get("/{agent_id}/versions")

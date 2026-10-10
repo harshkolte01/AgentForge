@@ -56,7 +56,7 @@ async def run(settings):
         def maximum_request_cost(self, messages, tools): return Decimal("0.001")
         async def complete(self, messages, tools):
             brief = json.loads(messages[1]["content"]); role = brief["role"]["name"]
-            verifier, general = role == "verifier", role == "general-executor"
+            verifier, general, routing = role == "verifier", role == "general-executor", role == "intent-router"
             content = brief["goal_and_acceptance_brief"]; handoff = json.loads(content[content.index("{"):])
             functions = {call["id"]: call["function"] for m in messages for call in m.get("tool_calls", [])}
             previous = [(functions[m["tool_call_id"]]["name"], json.loads(functions[m["tool_call_id"]]["arguments"]), json.loads(m["content"].split("\n", 1)[1])) for m in messages if m["role"] == "tool"]
@@ -69,7 +69,15 @@ async def run(settings):
                 for item in handoff["inputs"]:
                     if not verifier and mode == "unread_attachment" and item["input_kind"] == "attachment": continue
                     read("read_task_input", {"input_kind": item["input_kind"], "attachment_index": item["attachment_index"]})
-            if not pending and not verifier and not general:
+            if not pending and not verifier and not general and not routing and mode == "auto_repository":
+                selected = handoff["selected_repository"]
+                check("write_sandbox_file" not in brief["permitted_tools"] and "run_tests" not in brief["permitted_tools"], "repository research gained write/exec tools")
+                repo_reads = [o for n, a, o in previous if n == "read_repo_file"]
+                if not repo_reads:
+                    pending.append(("read_repo_file", {"repo_id": selected["repo_id"], "ref": selected["ref"], "path": "policy #1.md"}))
+                else:
+                    read("read_research_source", {"source_id": repo_reads[-1]["data"]["source_id"]})
+            if not pending and not verifier and not general and not routing and mode != "auto_repository":
                 searches = [o for n, a, o in previous if n == "web_search"]
                 if not searches: pending.append(("web_search", {"query": "fixture official policy", "max_results": 1}))
                 else:
@@ -85,7 +93,9 @@ async def run(settings):
                 message = {"role": "assistant", "content": None, "tool_calls": [{"id": "call" + str(len(previous) + i), "type": "function", "function": {"name": n, "arguments": json.dumps(a)}} for i, (n, a) in enumerate(pending)]}; reason = "tool_calls"
             else:
                 evidence = sorted({ref for _, _, o in previous for ref in o["evidence_ids"]})
-                if verifier:
+                if routing:
+                    payload = {"status": "PASS", "summary": "Understood the complete supplied goal.", "evidence_ids": evidence, "intent": kind, "use_repository": mode == "auto_repository"}
+                elif verifier:
                     refs = evidence or [handoff["inputs"][0]["id"]]
                     payload = {"status": "PASS", "summary": "Independent fixture assessment after bounded reads.", "evidence_ids": refs,
                         "criterion_checks": [{"criterion_index": i, "status": "SATISFIED", "reason": "The actual owned goal and deliverables satisfy this bounded fixture criterion.", "evidence_ids": refs[:1]} for i in range(len(handoff["criteria"]))],
@@ -94,7 +104,7 @@ async def run(settings):
                         "conflict_source_ids": handoff["source_ids"], "conflict_status": "UNRESOLVED" if mode == "contradiction" else "NO_CONFLICT_FOUND", "conflict_reason": "Fixture sources were compared for disagreement and missing context."}
                     if mode == "missing_criterion": payload["criterion_checks"].pop()
                 else:
-                    sources = [o["data"]["id"] for n, _, o in previous if n == "fetch_webpage"]
+                    sources = [o["data"]["source_id"] if n == "read_repo_file" else o["data"]["id"] for n, _, o in previous if n in {"fetch_webpage", "read_repo_file"}]
                     payload = {"status": "PASS", "summary": "A useful supported fixture answer with requested constraints.", "evidence_ids": evidence, "artifact_ids": artifacts,
                         "claims": [] if general else [{"claim": QUOTE if mode != "unsupported_quote" else "An invented statement with no support in the actual source.", "source_ids": sources[-1:], "confidence": "supported"}], "unknowns": []}
                 if not verifier and mode in {"interim_partial", "unresolved_prior_issue"} and "Assigned bounded stage: Investigate" in content:
@@ -107,24 +117,44 @@ async def run(settings):
     async def search(self, *args, **kwargs): return SearchResponse(({"url": "https://example.org/policy", "title": "Official fixture", "content": QUOTE},), 1, Decimal("0.0001"))
     async def fetch(self, *args, **kwargs): return SimpleNamespace(url="https://example.org/policy", title="Official fixture", content=QUOTE)
     async def resolve(url, hosts): return PublicURL(url, "example.org", ("1.1.1.1",))
-    for test_mode, kind, expected in (("positive", "general", "COMPLETED"), ("fake_pass", "general", "PARTIAL"), ("unread_attachment", "general", "PARTIAL"), ("positive", "research", "COMPLETED"), ("contradiction", "research", "PARTIAL"), ("missing_criterion", "research", "PARTIAL"), ("unsupported_quote", "research", "PARTIAL"), ("interim_partial", "research", "COMPLETED"), ("unresolved_prior_issue", "research", "PARTIAL")):
-        stage = test_mode + " " + kind; mode = test_mode
+    for test_mode, kind, expected in (("auto_repository", "research", "COMPLETED"), ("auto_positive", "general", "COMPLETED"), ("auto_positive", "research", "COMPLETED"), ("positive", "general", "COMPLETED"), ("fake_pass", "general", "PARTIAL"), ("unread_attachment", "general", "PARTIAL"), ("positive", "research", "COMPLETED"), ("contradiction", "research", "PARTIAL"), ("missing_criterion", "research", "PARTIAL"), ("unsupported_quote", "research", "PARTIAL"), ("interim_partial", "research", "COMPLETED"), ("unresolved_prior_issue", "research", "PARTIAL")):
+        stage = test_mode + " " + kind; mode = "positive" if test_mode == "auto_positive" else test_mode
         goal = "Write a useful concise draft preserving the final constraint." if kind == "general" else "Compare the fixture policy; evaluate contrary sources and synthesize evidence."
         attachments = (TextAttachment(name="owned.txt", content="A" * 5000 + "\nFINAL CONSTRAINT: preserve this complete attachment."),) if kind == "general" else ()
-        task = TaskRepository(sessions).create(user, TaskCreate(project_id=project, kind=kind, goal=goal, max_cost_usd=Decimal("0.8"), max_wall_time_sec=600, attachments=attachments))
+        request = TaskCreate(project_id=project, kind="general" if test_mode.startswith("auto_") else kind, goal=goal, max_cost_usd=Decimal("0.8"), max_wall_time_sec=600, attachments=attachments)
+        if test_mode.startswith("auto_"):
+            with sessions.begin() as db:
+                task = TaskRepository(sessions).create_in_session(db, user, request, automatic={"repository": {"repo_id": "fixture/repository", "ref": "main"} if mode == "auto_repository" else None})
+        else:
+            task = TaskRepository(sessions).create(user, request)
         jobs = JobRepository(sessions); lease = jobs.claim("research-general-fixture"); check(lease and lease.task_id == task.id, "fixture lease")
         store = WorkflowStore(sessions, lease)
-        selected_settings = settings.model_copy(update={"tavily_api_key": None}) if kind == "general" else settings
-        with patch.object(ModelRouter, "from_settings", return_value=ModelRouter(FixtureModel())), patch.object(TavilyClient, "search", search), patch.object(SafeWebFetcher, "fetch", fetch), patch("agentforge.integrations.safe_fetch.resolve_public_url", resolve):
+        selected_settings = settings.model_copy(update={"tavily_api_key": None}) if kind == "general" or mode == "auto_repository" else settings
+        from agentforge.integrations.github_client import GitHubClient, ResolvedRepository, RepositorySnapshot
+        async def repo_resolve(self, repo_id, ref): return ResolvedRepository(repo_id, "a" * 40, "main")
+        async def repo_snapshot(self, repo_id, ref): return RepositorySnapshot(repo_id, ref, {"policy #1.md": QUOTE.encode()})
+        with patch.object(GitHubClient, "resolve", repo_resolve), patch.object(GitHubClient, "snapshot", repo_snapshot), patch.object(ModelRouter, "from_settings", return_value=ModelRouter(FixtureModel())), patch.object(TavilyClient, "search", search), patch.object(SafeWebFetcher, "fetch", fetch), patch("agentforge.integrations.safe_fetch.resolve_public_url", resolve):
             runtime = compose_runtime(selected_settings, sessions, telemetry, store)
             async def authority(): jobs.heartbeat(lease)
-            graph = build_graph(store=store, service=runtime.service, verifier=VerificationService(sessions), authority=authority, checkpointer=InMemorySaver())
             config = {"configurable": {"thread_id": task.thread_id}, "recursion_limit": 40}
+            if test_mode.startswith("auto_"):
+                from agentforge.orchestration.automatic import route_turn
+                github = GitHubClient() if mode == "auto_repository" else SimpleNamespace(resolve=lambda *args: (_ for _ in ()).throw(AssertionError("unrelated intent tried GitHub")))
+                await route_turn(store=store, service=runtime.service, settings=selected_settings, github=github, authority=authority, config=config)
+                check(store.task().permissions_json["kind"] == kind, "semantic intent was not persisted")
+                check(not store.steps(), "routing polluted execution plan steps")
+                await runtime.close()
+                runtime = compose_runtime(selected_settings, sessions, telemetry, store)
+            graph = build_graph(store=store, service=runtime.service, verifier=VerificationService(sessions), authority=authority, checkpointer=InMemorySaver())
             await graph.ainvoke({"task_id": str(task.id)}, config); await runtime.close()
         row = store.task()
         if row.status != expected: print("RECEIPT " + json.dumps(row.final_result, default=str), flush=True)
         check(row.status == expected, stage + " terminal status " + row.status)
         ctx = research_context(row); repository = ResearchInputRepository(sessions)
+        if mode == "auto_repository":
+            sources = repository.list_sources(**repository._scope(ctx))
+            check(sources and all(source["source_type"] == "repository" for source in sources), "repository sources not persisted")
+            check(all("policy%20%231.md" in source["url"] and "/blob/" + "a" * 40 in source["url"] for source in sources), "repository URL not pinned/escaped")
         if expected == "COMPLETED":
             check(not (await graph.aget_state(config)).next, "graph left pending work"); check(row.final_result["verification"]["status"] == "PASS", "missing verified receipt")
             if kind == "general":

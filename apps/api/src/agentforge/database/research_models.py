@@ -14,7 +14,7 @@ from .base import Base
 class ResearchSource(Base):
     __tablename__ = "research_sources"
     __table_args__ = (
-        CheckConstraint("source_type IN ('search', 'webpage')", name="source_type"),
+        CheckConstraint("source_type IN ('search', 'webpage', 'repository')", name="source_type"),
         CheckConstraint("fetch_status IN ('SEARCH_ONLY', 'FETCHED', 'FAILED')", name="fetch_status"),
         UniqueConstraint("task_id", "operation_key", "ordinal"),
         Index("research_sources_task_time_idx", "task_id", "retrieved_at"),

@@ -11,6 +11,12 @@ versions. GitHub App sign-in uses durable, revocable sessions and retains the
 user's own repository permissions. See [implementation status](phase-status.md)
 and [qualification tracker](docs/remaining-phases.md) for tested boundaries.
 
+Start a conversation and describe the work. AgentForge routes the request
+automatically; the composer has an optional repository selection that defaults to
+No repo. The sidebar focuses on conversations. Account, model/limits, GitHub
+connections and custom-agent management live in Settings. See
+[conversation behavior and migration](docs/conversation-ux.md) for the details.
+
 ```mermaid
 flowchart LR
     Browser --> Proxy[Same-origin TLS proxy]

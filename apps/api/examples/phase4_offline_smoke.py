@@ -88,6 +88,17 @@ async def run(settings):
             brief=json.loads(messages[1]['content']);role=brief['role']['name'];prompt=brief['goal_and_acceptance_brief']
             previous=[json.loads(m['content'].split('\n',1)[1]) for m in messages if m['role']=='tool']
             role_calls.append(role)
+            if role == 'intent-router':
+                handoff = json.loads(prompt)
+                calls = {call['id']: call['function'] for message in messages for call in message.get('tool_calls', [])}
+                read_inputs = {json.loads(calls[message['tool_call_id']]['arguments'])['input_kind'] for message in messages if message['role'] == 'tool'}
+                pending = [item for item in handoff['inputs'] if item['input_kind'] not in read_inputs]
+                if pending:
+                    item = pending[0]
+                    message = {'role':'assistant','content':None,'tool_calls':[{'id':'routing_'+str(len(previous)), 'type':'function','function':{'name':'read_task_input','arguments':json.dumps({'input_kind':item['input_kind'],'attachment_index':item['attachment_index']})}}]}
+                    return ModelResponse(message,ModelUsage(10,10,Decimal('0.0001')),self.model_id,'tool_calls')
+                payload = {'status':'PASS','summary':'Understood the complete owned request.','intent':'coding','evidence_ids': sorted({ref for value in previous for ref in value['evidence_ids']}), 'use_repository':True}
+                return ModelResponse({'role':'assistant','content':json.dumps(payload)},ModelUsage(10,10,Decimal('0.0001')),self.model_id,'stop')
             workspace=CodingRepository(sessions).session(coding_context(WorkflowStore(sessions,current_lease).task()))
             refs=brief['authorized_context_refs']
             n=len(previous)
@@ -142,6 +153,21 @@ async def run(settings):
         check([code for _,code in remote_calls]==[1,1,0,0],'executor and parent actual fail then actual pass')
         check(set(role_calls)=={'general-executor','code-reviewer','verifier'},'three roles shared model/runtime')
         ok('real generated fixture exits 1->0; shared executor repair reviewer verifier; current-revision COMPLETED')
+        stage='automatic intent routing into real shared coding graph'
+        with sessions.begin() as db:
+            auto_task=TaskRepository(sessions).create_in_session(db,user,TaskCreate(project_id=project,kind='general',goal=request.goal,max_cost_usd=Decimal('3')),automatic={'repository':{'repo_id':'fixture/repository','ref':'main'}})
+        current_lease=jobs.claim('automatic-coding-fixture')
+        async def resolve_repo(self,repo_id,ref):
+            from agentforge.integrations.github_client import ResolvedRepository
+            return ResolvedRepository(repo_id,SHA,'main')
+        with patch.object(ModelRouter,'from_settings',return_value=ModelRouter(FixtureModel())),patch.object(GitHubClient,'resolve',resolve_repo),patch.object(GitHubClient,'snapshot',snapshot),patch.object(E2BRunner,'run',fixture_run):
+            await execute(settings,sessions,saver,telemetry,jobs,current_lease)
+        auto_result=TaskRepository(sessions).get(auto_task.id,user)
+        if auto_result.status!='COMPLETED': print('DEBUG_AUTO '+str(auto_result.final_result)+' ERROR '+str(auto_result.error_code),flush=True)
+        check(auto_result.status=='COMPLETED' and auto_result.kind=='coding','auto intent did not dispatch full coding graph')
+        check(auto_result.coding.test_profiles==('python_unittest',),'profiles not inferred from fixture tests')
+        check('intent-router' in role_calls,'shared budgeted router did not execute')
+        ok('automatic shared router reads owned goal, infers trusted profile and dispatches actual coding graph with repaired tested completion')
         stage='unsupported PASS and bounded repair'
         for mode in ('assertion-only-review','never-fix','cleanup-unknown'):
             fixture_mode=mode
@@ -227,7 +253,7 @@ try:
     created = True
     safe = Settings(_env_file=None, database_url=source.set(database=DB_NAME).render_as_string(hide_password=False),
         langgraph_checkpoint_db_url=source.set(drivername="postgresql", database=DB_NAME).render_as_string(hide_password=False),
-        app_env="test", auth_mode="local_single_user", local_user_id=uuid4(),
+        app_env="test", auth_mode="local_single_user", local_user_id=uuid4(), global_max_daily_cost_usd=100,
         local_bootstrap_token="offline-smoke-token-" + uuid4().hex,
         llm_api_key=None, tavily_api_key=None, neatlogs_api_key=None, research_storage_path=ARTIFACTS, e2b_api_key="fixture-key-never-remote", e2b_template_id="fixture-template", e2b_template_qualified=True)
     settings_module.get_settings = lambda: safe

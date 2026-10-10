@@ -41,7 +41,7 @@ class TaskRepository:
         with self.session_factory() as session, session.begin():
             return self.create_in_session(session, owner_id, request)
 
-    def create_in_session(self, session, owner_id: UUID, request: TaskCreate, *, context: dict | None = None) -> TaskView:
+    def create_in_session(self, session, owner_id: UUID, request: TaskCreate, *, context: dict | None = None, automatic: dict | None = None) -> TaskView:
         request = TaskCreate.model_validate_json(request.model_dump_json())
         if request.coding is not None:
             import re
@@ -90,6 +90,7 @@ class TaskRepository:
                 "attachments": [item.model_dump() for item in request.attachments],
                 **({"agent_key": request.agent_key, "agent_version": request.agent_version} if request.agent_key else {}),
                 **({"session_context": context} if context else {}),
+                **({"automatic": automatic} if automatic else {}),
                 **({"continuation": continuation} if continuation else {}),
                 **({"coding": request.coding.model_dump(mode="json")} if request.coding else {})})
         session.add(row)

@@ -22,7 +22,7 @@ from agentforge.security.policies import AuthorizationService
 from agentforge.subagents.scope import ScopeDenied, TaskContext
 
 
-BUILTIN_KEYS = frozenset({"researcher", "general-executor", "code-reviewer", "verifier"})
+BUILTIN_KEYS = frozenset({"researcher", "general-executor", "code-reviewer", "verifier", "intent-router"})
 
 
 def canonical_snapshot(definition: AgentDefinition) -> tuple[dict, str]:
@@ -70,7 +70,7 @@ class AgentRegistry:
     async def list_for_task(self, ctx: TaskContext) -> tuple[AgentCatalogEntry, ...]:
         """Short authorized selection metadata; never feed full prompts to a planner."""
         await self.authorizer.check_context(ctx)
-        latest = {"researcher": 2, "general-executor": 3, "code-reviewer": 2, "verifier": 3}
+        latest = {"researcher": 3, "general-executor": 4, "code-reviewer": 2, "verifier": 3, "intent-router": 1}
         keys = [(f"builtin/{name}", latest[name]) for name in sorted(BUILTIN_KEYS)]
         with self.session_factory() as session:
             custom = session.execute(select(DefinitionRow.agent_key, DefinitionRow.current_version, AgentDefinitionVersion).outerjoin(

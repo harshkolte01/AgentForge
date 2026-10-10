@@ -5,7 +5,7 @@ import { inputClass } from "@/components/session-boundary";
 import { api, message } from "@/lib/task-api";
 import { starterDefinition, type AgentDefinition, type CustomAgent } from "@/lib/agents-api";
 
-export function AgentEditor({ projectId, existing, onSaved }: { projectId: string; existing: CustomAgent | null; onSaved: (agent: CustomAgent) => void }) {
+export function AgentEditor({ projectId, existing, onSaved }: { projectId?: string; existing: CustomAgent | null; onSaved: (agent: CustomAgent) => void }) {
   const initial = existing ? { ...existing.definition, version: existing.current_version + 1, allowed_tools: [...new Set(["read_task_input", "read_research_source", ...existing.definition.allowed_tools])] } : starterDefinition();
   const [definition, setDefinition] = useState<AgentDefinition>(initial);
   const [json, setJson] = useState(JSON.stringify(initial, null, 2));
@@ -45,6 +45,6 @@ export function AgentEditor({ projectId, existing, onSaved }: { projectId: strin
       <fieldset className="grid gap-4 sm:grid-cols-2"><legend className="mb-3 text-sm font-medium">Agent budget</legend>{([['max_steps', 'Maximum model steps', 1, 12, 1], ['max_tool_calls', 'Maximum tool calls', 1, 20, 1], ['max_llm_cost_usd', 'Maximum model cost (USD)', 0.01, 1, 0.01], ['max_wall_time_sec', 'Maximum duration (seconds)', 10, 300, 1]] as const).map(([key, label, min, max, step]) => <div key={key} className="space-y-2"><label htmlFor={`agent-${key}`} className="text-xs font-medium">{label}</label><input id={`agent-${key}`} type="number" min={min} max={max} step={step} required value={definition.budget[key]} onChange={(event) => change({ budget: { ...definition.budget, [key]: Number(event.target.value) } })} className={`${inputClass} tabular-nums`} /></div>)}</fieldset>
     </fieldset>}
     {error ? <p role="alert" className="text-sm leading-6 text-destructive">{error}</p> : null}
-    <Button type="submit" disabled={busy || !projectId}>{busy ? "Saving…" : existing ? `Save immutable version ${existing.current_version + 1}` : "Create agent"}</Button>
+    <Button type="submit" disabled={busy}>{busy ? "Saving…" : existing ? `Save version ${existing.current_version + 1}` : "Create agent"}</Button>
   </form>;
 }

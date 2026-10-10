@@ -5,9 +5,11 @@ from agentforge.subagents.scope import ScopeDenied, TaskContext
 
 def research_context(task) -> TaskContext:
     grants = task.permissions_json or {}
+    repository = grants.get("repository") or {}
     if grants.get("web") is not True and (task.permissions_json or {}).get("kind") != "general":
         raise ScopeDenied("task_has_no_research_grant")
-    permissions = Permissions(web=grants.get("web") is True, allowed_repo_ids=(), allowed_sandbox_ids=(),
+    permissions = Permissions(web=grants.get("web") is True, github_read=bool(repository),
+        allowed_repo_ids=(repository["repo_id"],) if repository else (), allowed_sandbox_ids=(),
         allowed_context_refs=(), allowed_command_profiles=(),
         allowed_web_hosts=tuple(grants.get("allowed_web_hosts", ())))
     budget = Budget(max_steps=18, max_tool_calls=40,

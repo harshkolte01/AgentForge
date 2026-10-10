@@ -45,7 +45,7 @@ def main():
     directory = ROOT / ".local" / "releases" / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid4().hex[:8])
     directory.mkdir(parents=True, mode=0o700)
     commands = [("api-unit", [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"], ROOT / "apps/api")]
-    for filename in ("phase4_offline_smoke.py", "phase5_identity_smoke.py", "phase6_sessions_smoke.py", "phase6_research_general_smoke.py", "phase7_operations_smoke.py"):
+    for filename in ("phase4_offline_smoke.py", "phase5_identity_smoke.py", "phase6_sessions_smoke.py", "phase6_research_general_smoke.py", "phase7_operations_smoke.py", "settings_agents_smoke.py"):
         example = ROOT / "apps/api/examples" / filename
         if example.is_file():
             commands.append((example.stem, [sys.executable, str(example)], ROOT / "apps/api"))

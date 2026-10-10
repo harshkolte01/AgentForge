@@ -22,3 +22,15 @@ class WorkerAuthorityTests(unittest.IsolatedAsyncioTestCase):
         jobs = SimpleNamespace(authority=AsyncMock())
         await task_authority(SimpleNamespace(auth_mode="local_single_user"), SimpleNamespace(coding=None), None, jobs, "lease")
         jobs.authority.assert_awaited_once_with("lease")
+
+    async def test_selected_repository_research_rechecks_private_source_rights(self):
+        github = SimpleNamespace(authorize=AsyncMock())
+        runtime = SimpleNamespace(coding=None, repository_github=github)
+        jobs = SimpleNamespace(authority=AsyncMock())
+        store = SimpleNamespace(task=lambda: SimpleNamespace(permissions_json={"repository": {"repo_id": "owner/repo"}}))
+        await task_authority(SimpleNamespace(auth_mode="github_app"), runtime, store, jobs, "lease")
+        github.authorize.assert_awaited_once_with("owner/repo")
+        self.assertEqual(jobs.authority.await_count, 2)
+        github.authorize.side_effect = GitHubError("github_access_denied")
+        with self.assertRaises(GitHubError):
+            await task_authority(SimpleNamespace(auth_mode="github_app"), runtime, store, jobs, "lease")

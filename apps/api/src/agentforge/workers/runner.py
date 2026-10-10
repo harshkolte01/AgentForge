@@ -35,6 +35,10 @@ async def task_authority(settings, runtime, store, jobs, lease):
         selection = current.permissions_json["coding"]["repository"]
         await runtime.coding.github.authorize(selection["repo_id"])
         await jobs.authority(lease)
+    elif settings.auth_mode == "github_app" and getattr(runtime, "repository_github", None) is not None:
+        current = store.task()
+        await runtime.repository_github.authorize(current.permissions_json["repository"]["repo_id"])
+        await jobs.authority(lease)
 
 
 async def execute(settings, sessions, saver, telemetry, jobs, lease):
@@ -58,17 +62,35 @@ async def execute(settings, sessions, saver, telemetry, jobs, lease):
             async def authority():
                 # Cached workspace content never bypasses current source rights.
                 await task_authority(settings, runtime, store, jobs, lease)
-            if runtime.coding is not None:
-                from agentforge.orchestration.coding_graph import build_coding_graph
-                graph = build_coding_graph(store=store, service=runtime.service, coding=runtime.coding,
-                    github=runtime.coding.github, authority=authority, checkpointer=saver)
-            else:
-                graph = build_graph(store=store, service=runtime.service,
-                    verifier=VerificationService(sessions), authority=authority, checkpointer=saver)
             config = {"configurable": {"thread_id": task.thread_id},
                 "callbacks": telemetry.callbacks(), "recursion_limit": 40,
                 "metadata": {"task_id": str(task.id), "lease_generation": lease.generation}}
             async def invoke():
+                nonlocal runtime
+                automatic = store.task().permissions_json.get("automatic")
+                if automatic and not automatic.get("resolved"):
+                    from agentforge.orchestration.automatic import route_turn
+                    from agentforge.integrations.github_client import GitHubClient
+                    if settings.auth_mode == "github_app":
+                        from agentforge.integrations.github_app import AuthorizedGitHubClient
+                        github = AuthorizedGitHubClient(sessions, settings, task.created_by)
+                    else:
+                        github = GitHubClient()
+                    await route_turn(store=store, service=runtime.service, settings=settings,
+                        github=github, authority=authority, config=config)
+                    if store.task().status in TERMINAL_STATUSES:
+                        return
+                    # No child remains active when resolved grants are persisted.
+                    # A fresh composition binds tools/context to the resolved kind.
+                    await runtime.close()
+                    runtime = compose_runtime(settings, sessions, telemetry, store)
+                if runtime.coding is not None:
+                    from agentforge.orchestration.coding_graph import build_coding_graph
+                    graph = build_coding_graph(store=store, service=runtime.service, coding=runtime.coding,
+                        github=runtime.coding.github, authority=authority, checkpointer=saver)
+                else:
+                    graph = build_graph(store=store, service=runtime.service,
+                        verifier=VerificationService(sessions), authority=authority, checkpointer=saver)
                 snapshot = await graph.aget_state(config)
                 # Existing pending checkpoints resume with None. Supplying
                 # initial input would restart logic and potentially paid calls.

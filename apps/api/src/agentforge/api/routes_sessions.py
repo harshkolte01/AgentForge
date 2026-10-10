@@ -5,7 +5,7 @@ from starlette.concurrency import run_in_threadpool
 from agentforge.api.dependencies import sessions
 from agentforge.api.routes_tasks import prepare_task
 from agentforge.auth.session import current_user
-from agentforge.contracts.sessions import MessageView, SessionCreate, SessionPatch, SessionTurnCreate, SessionView, TurnView
+from agentforge.contracts.sessions import AutoTurnCreate, MessageView, SessionCreate, SessionPatch, SessionTurnCreate, SessionView, TurnView
 from agentforge.contracts.tasks import TaskCreate
 from agentforge.database.models import User
 from agentforge.repositories.sessions import SessionRepository
@@ -57,7 +57,7 @@ def messages(session_id: UUID, user: User = Depends(current_user), repo=Depends(
         raise error(exc) from None
 
 @router.post("/{session_id}/turns", response_model=TurnView, status_code=202)
-async def turn(session_id: UUID, body: SessionTurnCreate, request: Request,
+async def turn(session_id: UUID, body: AutoTurnCreate | SessionTurnCreate, request: Request,
                user: User = Depends(current_user), repo=Depends(repository)):
     try:
         # Reconnect/retry uses the original request hash before any ref/network resolution.
@@ -65,6 +65,21 @@ async def turn(session_id: UUID, body: SessionTurnCreate, request: Request,
         if replay is not None:
             return replay
         owned = await run_in_threadpool(repo.get, session_id, user.id)
+        if isinstance(body, AutoTurnCreate):
+            from agentforge.orchestration.automatic import greeting_response
+            response = greeting_response(body.goal) if not body.attachments else None
+            if response is not None:
+                return await run_in_threadpool(repo.conversational_turn, session_id, user.id, body, response)
+            selection = body.repository if "repository" in body.model_fields_set else owned.repository
+            # Selection supplies read context only. A later validated model decision
+            # may request coding; profile/sandbox/source grants are resolved by worker.
+            explicit = SessionTurnCreate(**body.model_dump(exclude={"routing", "repository", "continue_from_task_id"}), kind="general")
+            metadata = {"repository": selection.model_dump(mode="json") if selection else None,
+                "inherit_repository": "repository" not in body.model_fields_set,
+                "inherit_continuation": "continue_from_task_id" not in body.model_fields_set,
+                "continue_from_task_id": str(body.continue_from_task_id) if body.continue_from_task_id else None}
+            return await run_in_threadpool(repo.turn, session_id, user.id, explicit,
+                original_digest=repo.request_digest(body), automatic=metadata)
         task_body = TaskCreate.model_validate({**body.model_dump(exclude={"project_id", "idempotency_key"}), "project_id": owned.project_id})
         prepared = await prepare_task(task_body, request, user, repo.tasks)
         resolved = body.model_copy(update={"coding": prepared.coding})

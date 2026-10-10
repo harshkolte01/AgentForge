@@ -1,11 +1,12 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import { AssistantMessage } from "@/features/sessions/assistant-message";
 import { TaskTurn } from "@/features/sessions/task-turn";
 import { Button } from "@/components/ui/button";
 import { api, message, formatDate } from "@/lib/task-api";
 import type { ConversationMessage, ConversationSession } from "@/lib/workspace-api";
 
-export function ConversationThread({ session, refresh, onChange, onLatestTaskId }: { onLatestTaskId: (id: string | null) => void; session: ConversationSession; refresh: number; onChange: (session: ConversationSession) => void }) {
+export function ConversationThread({ session, refresh, onChange }: { session: ConversationSession; refresh: number; onChange: (session: ConversationSession) => void }) {
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -14,8 +15,6 @@ export function ConversationThread({ session, refresh, onChange, onLatestTaskId 
   const root = useRef<HTMLDivElement>(null);
   const bottom = useRef<HTMLDivElement>(null);
   const records = useRef<ConversationMessage[]>([]);
-  const latestTaskCallback = useRef(onLatestTaskId);
-  useEffect(() => { latestTaskCallback.current = onLatestTaskId; }, [onLatestTaskId]);
   const changeCallback = useRef(onChange);
   useEffect(() => { changeCallback.current = onChange; }, [onChange]);
   useEffect(() => {
@@ -36,7 +35,7 @@ export function ConversationThread({ session, refresh, onChange, onLatestTaskId 
           const follow = !records.current.length || !scroller || scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 180;
           records.current = [...new Map([...records.current, ...additions].map((entry) => [entry.sequence, entry])).values()].sort((a, b) => a.sequence - b.sequence);
           setMessages(records.current); changeCallback.current(next);
-          latestTaskCallback.current([...records.current].reverse().find((entry) => entry.role === "user" && entry.task_id)?.task_id ?? null); setError(""); setLoading(false);
+          setError(""); setLoading(false);
           if (follow) requestAnimationFrame(() => { if (!controller.signal.aborted) bottom.current?.scrollIntoView({ behavior: "instant", block: "end" }); });
         }
       } catch (error) { if (!controller.signal.aborted) { setError(message(error)); setLoading(false); } }
@@ -57,17 +56,17 @@ export function ConversationThread({ session, refresh, onChange, onLatestTaskId 
     } catch (error) { setError(message(error)); } finally { setOlderBusy(false); }
   }
   const displayedTasks = new Set<string>();
-  return <div ref={root} className="mx-auto w-full max-w-3xl space-y-9 px-5 pb-6 pt-6 sm:px-8">
+  return <div ref={root} className="mx-auto w-full max-w-3xl space-y-6 px-5 pb-4 pt-6 sm:px-8">
     {loading ? <p role="status" className="text-sm text-muted-foreground">Loading conversation…</p> : null}
     {messages[0]?.sequence > 1 ? <div className="text-center"><Button variant="ghost" size="sm" disabled={olderBusy} onClick={() => void loadOlder()}>{olderBusy ? "Loading earlier messages…" : "Load earlier messages"}</Button></div> : null}
     {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
     {messages.map((entry) => {
       const showTask = entry.task_id && !displayedTasks.has(entry.task_id);
       if (entry.task_id) displayedTasks.add(entry.task_id);
-      return <article key={entry.id} className="min-w-0 space-y-4" aria-label={entry.role === "user" ? "Your message" : "Agent response"}>
-        <div className={entry.role === "user" ? "ml-auto max-w-[92%] rounded-2xl bg-muted/65 px-5 py-4 sm:max-w-[85%]" : "space-y-3 py-1"}>
-          {entry.role === "assistant" ? <p className="text-sm font-semibold">AgentForge</p> : null}
-          <p className="whitespace-pre-wrap break-words text-sm leading-7">{entry.content}</p><time dateTime={entry.created_at} className="mt-2 block text-[11px] text-muted-foreground">{formatDate(entry.created_at)}</time>
+      return <article key={entry.id} className="min-w-0 space-y-1" aria-label={entry.role === "user" ? "Your message" : "Agent response"}>
+        <div className={entry.role === "user" ? "ml-auto max-w-[92%] rounded-xl bg-muted/65 px-4 py-3 sm:max-w-[85%]" : "space-y-3 py-1"}>
+          {entry.role === "assistant" ? <p className="text-xs font-medium text-muted-foreground">AgentForge</p> : null}
+          {entry.role === "assistant" ? <AssistantMessage content={entry.content} /> : <p className="whitespace-pre-wrap break-words text-sm leading-6">{entry.content}</p>}<time dateTime={entry.created_at} className="mt-2 block text-[11px] text-muted-foreground">{formatDate(entry.created_at)}</time>
         </div>
         {showTask ? <TaskTurn taskId={entry.task_id!} active={entry.task_id === session.active_task_id} onFinished={() => setFinished((value) => value + 1)} /> : null}
       </article>;

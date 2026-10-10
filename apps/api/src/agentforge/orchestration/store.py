@@ -27,6 +27,35 @@ class WorkflowStore:
             session.expunge(row)
             return row
 
+    def resolve_automatic(self, kind, *, repository=None, coding=None, agent=None):
+        """Resolve once before execution; model output never supplies grant values."""
+        if kind not in {"research", "general", "coding"}:
+            raise ValueError("invalid_automatic_kind")
+        with self.sessions() as session, session.begin():
+            task = self.locked_task(session)
+            grants = dict(task.permissions_json)
+            automatic = dict(grants.get("automatic") or {})
+            if not automatic or automatic.get("resolved"):
+                raise ValueError("automatic_already_resolved")
+            if session.scalar(select(TaskStep.id).where(TaskStep.task_id == task.id).limit(1)):
+                raise ValueError("execution_already_started")
+            automatic["resolved"] = True
+            grants.update(kind=kind, web=kind != "coding", automatic=automatic)
+            if repository and kind != "coding":
+                grants["repository"] = repository.model_dump(mode="json")
+            if coding:
+                grants["coding"] = coding.model_dump(mode="json")
+                grants["allowed_web_hosts"] = []
+                previous = automatic.get("continue_from_task_id")
+                if previous:
+                    from agentforge.repositories.coding_continuation import capture_continuation
+                    grants["continuation"] = capture_continuation(session, task.created_by,
+                        task.project_id, UUID(previous), coding.repository)
+            if agent:
+                grants["agent_key"], grants["agent_version"] = agent
+            task.permissions_json = grants
+            append_event(session, task, "task.plan.created", {"type": kind, "reason": "automatic_intent_resolved"})
+
     def transition(self, status: str):
         allowed = {"CREATED": {"PLANNING"}, "PLANNING": {"RUNNING"},
             "RUNNING": {"VERIFYING"}, "VERIFYING": {"RUNNING"}}

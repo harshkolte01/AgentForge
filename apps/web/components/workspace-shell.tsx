@@ -12,7 +12,7 @@ export function WorkspaceShell({ children, back = false }: { children: ReactNode
           </Link>
           <div className="flex gap-5 text-sm">
             {back ? <Link href="/workspace" className="flex items-center gap-2 underline-offset-4 hover:underline focus-visible:outline-2"><ArrowLeft aria-hidden="true" className="size-4" />Workspace</Link> : null}
-            <Link href="/connections" className="text-muted-foreground underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2">Connections</Link>
+            <Link href="/settings" className="text-muted-foreground underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2">Settings</Link>
             <Link href="/" className="text-muted-foreground underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2">System health</Link>
           </div>
         </nav>

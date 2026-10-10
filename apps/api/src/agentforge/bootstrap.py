@@ -16,6 +16,7 @@ class Runtime:
     service: SpawnService
     models: ModelRouter
     coding: object | None = None
+    repository_github: object | None = None
 
     async def close(self):
         close = getattr(self.models.model, "aclose", None)
@@ -29,6 +30,7 @@ def compose_runtime(settings, sessions, telemetry, store) -> Runtime:
     base_catalog = ToolCatalog()
     is_coding = store.task().permissions_json.get("kind") == "coding"
     coding = None
+    repository_github = None
     if is_coding:
         from types import SimpleNamespace
         from agentforge.integrations.artifact_storage import ArtifactStorage
@@ -64,6 +66,18 @@ def compose_runtime(settings, sessions, telemetry, store) -> Runtime:
         resources = register_research(base_catalog, sessions, settings)
         from agentforge.tools.general import register_general
         register_general(base_catalog, sessions, settings)
+        task = store.task()
+        selection = task.permissions_json.get("repository")
+        if selection:
+            from agentforge.integrations.github_client import GitHubClient
+            from agentforge.tools.repository_research import register_repository_research
+            if settings.auth_mode == "github_app":
+                from agentforge.integrations.github_app import AuthorizedGitHubClient
+                github = AuthorizedGitHubClient(sessions, settings, task.created_by)
+            else:
+                github = GitHubClient()
+            register_repository_research(base_catalog, sessions, selection, github, resources)
+            repository_github = github
     catalog = ToolCatalog()
     for tool in base_catalog.available(DESCRIPTIONS):
         catalog.register(tool.name, observed_tool(tool, telemetry, store),
@@ -75,4 +89,4 @@ def compose_runtime(settings, sessions, telemetry, store) -> Runtime:
         models=ModelRouter(ObservedModel(models.model, telemetry, store)), resources=resources)
     service.spawn_subagent = telemetry.decorate(service.spawn_subagent,
         kind="AGENT", name="spawn_subagent")
-    return Runtime(service, models, coding)
+    return Runtime(service, models, coding, repository_github)

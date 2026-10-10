@@ -5,6 +5,7 @@ if (!["http:", "https:"].includes(apiUrl.protocol) || apiUrl.username || apiUrl.
   throw new Error("API_ORIGIN must be an HTTP(S) origin without credentials, path, query or fragment.");
 }
 const nextConfig: NextConfig = {
+  devIndicators: false,
   async rewrites() {
     return [
       {

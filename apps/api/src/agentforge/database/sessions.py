@@ -21,8 +21,14 @@ class Conversation(Base):
     active_task_id: Mapped[UUID | None] = mapped_column(ForeignKey("tasks.id"), unique=True)
     last_sequence: Mapped[int] = mapped_column(BigInteger, server_default=text("0"))
     summary_json: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    repository_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    repository_since_sequence: Mapped[int] = mapped_column(BigInteger, server_default=text("0"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    @property
+    def repository(self):
+        return self.repository_json
 
 
 class ConversationMessage(Base):
@@ -34,7 +40,7 @@ class ConversationMessage(Base):
     sequence: Mapped[int] = mapped_column(BigInteger)
     role: Mapped[str] = mapped_column(Text)
     content: Mapped[str] = mapped_column(Text)
-    task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id"))
+    task_id: Mapped[UUID | None] = mapped_column(ForeignKey("tasks.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -45,6 +51,6 @@ class SessionTurn(Base):
     session_id: Mapped[UUID] = mapped_column(ForeignKey("conversations.id"), index=True)
     idempotency_key: Mapped[UUID] = mapped_column(Uuid)
     request_sha256: Mapped[str] = mapped_column(Text)
-    task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id"), unique=True)
+    task_id: Mapped[UUID | None] = mapped_column(ForeignKey("tasks.id"), unique=True, nullable=True)
     user_message_id: Mapped[UUID] = mapped_column(ForeignKey("conversation_messages.id"), unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

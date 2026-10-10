@@ -6,6 +6,7 @@ from alembic import context
 from sqlalchemy import create_engine, pool
 
 from agentforge.database import models
+from agentforge.database.migration_filter import include_autogenerate_object
 from agentforge.settings import get_settings
 
 config = context.config
@@ -23,6 +24,7 @@ def run_migrations_offline() -> None:
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
         compare_server_default=True,
+        include_object=include_autogenerate_object,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -38,6 +40,7 @@ def run_migrations_online() -> None:
                 target_metadata=target_metadata,
                 compare_type=True,
                 compare_server_default=True,
+                include_object=include_autogenerate_object,
             )
             with context.begin_transaction():
                 context.run_migrations()

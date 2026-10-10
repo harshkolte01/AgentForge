@@ -4,7 +4,6 @@ import dynamic from "next/dynamic";
 import { useEffect, useRef, useState } from "react";
 import { ArrowUpRight, ChevronDown, LoaderCircle, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 const TaskDetail = dynamic(() => import("@/components/task-detail").then((module) => module.TaskDetail), { loading: () => <p role="status" className="text-sm text-muted-foreground">Loading execution evidence…</p> });
 import { api, eventTypes, message, statusLabel, terminalStatuses, type Task, type TaskEvent } from "@/lib/task-api";
 
@@ -18,7 +17,6 @@ export function TaskTurn({ taskId, onFinished, active }: { taskId: string; activ
   const finishedCallback = useRef(onFinished);
   useEffect(() => { finishedCallback.current = onFinished; }, [onFinished]);
   useEffect(() => {
-    if (!active && !expanded) return;
     const controller = new AbortController();
     let stream: EventSource | undefined;
     let inFlight = false;
@@ -33,7 +31,7 @@ export function TaskTurn({ taskId, onFinished, active }: { taskId: string; activ
         if (controller.signal.aborted) return;
         setTask(result); setError("");
         terminal = terminalStatuses.has(result.status);
-        if (terminal) { stream?.close(); setConnection("Saved"); if (!notified) { notified = true; finishedCallback.current(); } }
+        if (terminal) { stream?.close(); setConnection("Saved"); if (active && !notified) { notified = true; finishedCallback.current(); } }
       } catch (error) { if (!controller.signal.aborted) setError(message(error)); }
       finally { inFlight = false; }
     }
@@ -63,11 +61,17 @@ export function TaskTurn({ taskId, onFinished, active }: { taskId: string; activ
     try { setTask(await api<Task>(`/tasks/${taskId}/cancel`, { method: "POST" })); }
     catch (error) { setError(message(error)); } finally { setBusy(false); }
   }
-  return <div className="min-w-0 space-y-4 border-y py-4">
-    <div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2">{!finished ? <LoaderCircle className="size-3.5 motion-safe:animate-spin text-muted-foreground" aria-hidden="true" /> : null}<Badge variant="outline">{task ? statusLabel(task.status) : active ? "Loading task" : "Saved task"}</Badge><span className="text-xs text-muted-foreground" role="status">{task || active ? connection : ""}</span></div><div className="flex items-center gap-2">{task && !finished ? <Button variant="ghost" size="sm" disabled={busy || !!task.cancel_requested_at} onClick={() => void cancel()}><Square className="size-3" />{task.cancel_requested_at ? "Stopping…" : "Stop"}</Button> : null}<Link href={`/tasks/${taskId}`} className="inline-flex min-h-8 items-center gap-1 text-xs text-muted-foreground hover:text-foreground focus-visible:outline-2">Open task<ArrowUpRight className="size-3.5" aria-hidden="true" /></Link></div></div>
-    {!finished ? <p className="text-sm leading-6 text-muted-foreground">{task?.cancel_requested_at ? "Cancellation requested. In-flight work may finish before stopping." : activity || (task?.status === "CREATED" ? "Queued for the worker. Waiting for execution to begin." : "Your agents are working. Evidence appears as it is saved.")}</p> : task?.error_code ? <p className="text-sm text-destructive">{task.error_code}</p> : null}
-    {error ? <p role="alert" className="text-sm text-destructive">{error} Showing the last received state.</p> : null}
-    <button type="button" className="flex min-h-8 items-center gap-2 rounded text-xs font-medium focus-visible:outline-2" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}><ChevronDown className={`size-3.5 transition-transform motion-reduce:transition-none ${expanded ? "rotate-180" : ""}`} aria-hidden="true" />{expanded ? "Hide" : "View"} plan, agent runs and evidence</button>
-    {expanded ? <div className="pt-4"><TaskDetail taskId={taskId} /></div> : null}
+  if (finished && task?.final_result?.conversation === true && !error) return null;
+  return <div className="min-w-0 py-1">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+      {!finished ? <LoaderCircle className="size-3 motion-safe:animate-spin" aria-hidden="true" /> : null}
+      <span role="status">{task ? statusLabel(task.status) : error ? "Status unavailable" : "Loading status…"}</span>
+      {active && !finished ? <span className="text-[11px]">{connection}</span> : null}
+      <button type="button" className="inline-flex min-h-11 items-center gap-1 rounded text-xs hover:text-foreground focus-visible:outline-2 sm:min-h-8" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}><ChevronDown className={`size-3 transition-transform motion-reduce:transition-none ${expanded ? "rotate-180" : ""}`} aria-hidden="true" />Run details</button>
+      <div className="ml-auto flex items-center gap-2">{task && !finished ? <Button variant="ghost" size="sm" className="min-h-11 sm:min-h-8" disabled={busy || !!task.cancel_requested_at} onClick={() => void cancel()}><Square className="size-3" />{task.cancel_requested_at ? "Stopping…" : "Stop"}</Button> : null}<Link href={`/tasks/${taskId}`} className="inline-flex min-h-11 items-center gap-1 rounded text-xs hover:text-foreground focus-visible:outline-2 sm:min-h-8" aria-label="Open full run details"><ArrowUpRight className="size-3.5" aria-hidden="true" /></Link></div>
+    </div>
+    {!finished ? <p className="text-xs leading-5 text-muted-foreground">{task?.cancel_requested_at ? "Stopping after in-flight work finishes." : activity || (task?.status === "CREATED" ? "Waiting to start…" : "Working…")}</p> : task?.error_code ? <p className="text-xs leading-5 text-destructive">This run could not finish. Review run details for more information.</p> : null}
+    {error ? <p role="alert" className="text-xs leading-5 text-destructive">{error}{task ? " Showing the last received state." : " Open run details to retry."}</p> : null}
+    {expanded ? <div className="mt-3 border-t pt-4"><TaskDetail taskId={taskId} /></div> : null}
   </div>;
 }

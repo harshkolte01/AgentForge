@@ -1,5 +1,31 @@
 # Implementation status
 
+## Conversation-first workspace update
+
+The compact conversation sidebar, automatic message routing, conversation-scoped
+optional repository and consolidated Settings are implemented. Simple greetings
+without attachments persist task-free replies; substantive requests use the
+bounded shared router. Existing agents/history retain their internal ownership
+scopes. Settings manages actual account/logout, model/limits, GitHub and all owned
+custom agents without project controls. Old management routes redirect there.
+
+Settings API checks passed on a disposable PostgreSQL database through revision
+`0008_automatic_conversation`, including cross-scope listing, pagination,
+automatic creation, ownership denial, versions, exact-version test queuing and
+soft disable. Focused frontend lint/types and isolated mocked-API desktop/mobile
+Settings interaction/layout checks passed. The migration is authored and tested
+in disposable databases. Final checks passed 84 unit tests, six disposable
+workflows, and frontend lint/types/isolated production build. After a private
+mode-0600 DB/artifact backup and idle-queue check, the serving local database was
+upgraded to `0008_automatic_conversation` and the API/worker restarted; Next.js was
+preserved. Old message/task/job counts stayed unchanged. A real authenticated
+`hey` turn returned a short reply with no task; replay was idempotent and
+task/job/run/budget-operation counts stayed unchanged. Its canary conversation was
+archived. Metadata checks passed after excluding only the four separately owned
+LangGraph framework tables; a disposable unknown-table check still detected
+application drift. No live semantic model task, paid provider request or GitHub
+account action was performed. See [conversation UX](docs/conversation-ux.md).
+
 ## Current release work — Phases 5–7
 
 Updated 10 October 2026. Phase5 identity/GitHub delivery was published as

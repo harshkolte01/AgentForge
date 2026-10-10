@@ -1,6 +1,4 @@
-import { SessionBoundary } from "@/components/session-boundary";
-import { GitHubConnection } from "@/features/github/github-connection";
-import { WorkspaceShell } from "@/components/workspace-shell";
+import { redirect } from "next/navigation";
 export default function ConnectionsPage() {
-  return <WorkspaceShell back><SessionBoundary><GitHubConnection /></SessionBoundary></WorkspaceShell>;
+  redirect("/settings?section=github");
 }

@@ -66,6 +66,18 @@ try:
             assert error.orig.sqlstate == "25006"
         else:
             raise AssertionError("Operational inspection transaction permitted writes")
+    from alembic.autogenerate import compare_metadata
+    from alembic.migration import MigrationContext
+    from agentforge.database.models import Base
+    from agentforge.database.migration_filter import include_autogenerate_object
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE checkpoint_migrations (v integer PRIMARY KEY)"))
+        connection.execute(text("CREATE TABLE unknown_extra (id integer PRIMARY KEY)"))
+        differences = compare_metadata(MigrationContext.configure(connection, opts={
+            "include_object": include_autogenerate_object}), Base.metadata)
+        removed = {operation[1].name for operation in differences if operation[0] == "remove_table"}
+        assert removed == {"unknown_extra"}, "framework filter hid unknown schema drift"
+    print("PASS separately owned checkpoint table excluded; unknown extra table still detected in disposable DB")
     print("PASS aggregate measured/unknown ledger costs; no content/identifiers; missing-checkpoint/idle-worker honesty; read-only transaction enforcement")
 except Exception as error:
     print("FAIL operations fixture class=" + type(error).__name__)
