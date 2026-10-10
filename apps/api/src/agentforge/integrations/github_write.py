@@ -56,6 +56,32 @@ class GitHubWriteService:
         action = approval["action"]
         try:
             adapter = AuthorizedGitHubClient(self.session_factory, self.settings, owner_id, transport=self.transport)
+            receipt = self.repository.sent_delivery_receipt(approval_id, owner_id)
+            if receipt is not None:
+                # An accepted PR can outlive cancellation, approval expiry and a
+                # moved base branch. Resolve only that existing effect before
+                # evaluating any conditions that authorize additional writes.
+                client, _, installation = await adapter.authorize(action["repo_id"], repository_id=action["repository_id"])
+                if installation["id"] != action["installation_id"]:
+                    raise ApprovalError("github_repository_scope_changed")
+                sha = checked_sha(receipt["commit"])
+                if receipt["kind"] == "branch":
+                    branch = await client.request("GET", f"/repos/{action['repo_id']}/git/ref/heads/{quote(action['head_branch'], safe='')}", allow_missing=True)
+                    if branch is None:
+                        raise GitHubError("github_write_outcome_unknown")
+                    if branch.get("object", {}).get("sha") != sha:
+                        raise ApprovalError("github_task_branch_conflict")
+                    self.repository.operation_state(receipt["id"], "CONFIRMED", branch)
+                    return self.repository.complete(approval_id, owner_id, {"repo_id": action["repo_id"],
+                        "head_branch": action["head_branch"], "base_branch": action["base_branch"], "commit_sha": sha})
+                owner = action["repo_id"].split("/", 1)[0]
+                prs = await client.request("GET", f"/repos/{action['repo_id']}/pulls?state=all&head={quote(owner + ':' + action['head_branch'], safe='')}&base={quote(action['base_branch'], safe='')}&per_page=100")
+                if not isinstance(prs, list) or len(prs) != 1:
+                    raise GitHubError("github_write_outcome_unknown")
+                confirmed = self._checked_pr(prs[0], action, sha, reconciliation=True)
+                self.repository.operation_state(receipt["id"], "CONFIRMED", confirmed)
+                return self.repository.complete(approval_id, owner_id, {"repo_id": action["repo_id"], "head_branch": action["head_branch"],
+                    "base_branch": action["base_branch"], "commit_sha": sha, "pr_number": confirmed["number"], "pr_url": confirmed["html_url"]})
             client, repo, install = await adapter.authorize(action["repo_id"], write=True, repository_id=action["repository_id"])
             if install["id"] != action["installation_id"] or repo["default_branch"] != action["base_branch"]:
                 raise ApprovalError("github_repository_scope_changed")
@@ -166,11 +192,11 @@ class GitHubWriteService:
             self.repository.release(approval_id, owner_id)
 
     @staticmethod
-    def _checked_pr(value, action, sha):
+    def _checked_pr(value, action, sha, *, reconciliation=False):
         if (not isinstance(value, dict) or value.get("draft") is not True or value.get("state") != "open"
                 or value.get("head", {}).get("sha") != sha or value.get("head", {}).get("ref") != action["head_branch"]
                 or value.get("base", {}).get("ref") != action["base_branch"]
-                or value.get("base", {}).get("sha") != action["base_sha"]
+                or (not reconciliation and value.get("base", {}).get("sha") != action["base_sha"])
                 or value.get("head", {}).get("repo", {}).get("id") != action["repository_id"]
                 or value.get("base", {}).get("repo", {}).get("id") != action["repository_id"]
                 or type(value.get("number")) is not int or value["number"] <= 0

@@ -6,7 +6,7 @@ from agentforge.auth.crypto import CredentialCipher
 from agentforge.auth.durable import digest, now
 from agentforge.database.models import User, Project
 from agentforge.database.identity import OAuthTransaction, GitHubCredential, GitHubInstallation, GitHubRepositoryGrant
-from agentforge.integrations.github_app import GitHubAppClient
+from agentforge.integrations.github_app import GitHubAppClient, valid_github_id
 from agentforge.integrations.github_app import github_for_user  # public shared task adapter
 from agentforge.integrations.github_client import GitHubError
 
@@ -57,12 +57,12 @@ class GitHubIdentityService:
         stamp = now()
         # Expiring user tokens are required to avoid silently accepting a broad,
         # permanently valid credential deployment.
-        if not isinstance(value.get("expires_in"), int) or not 60 <= value["expires_in"] <= 86400:
+        if type(value.get("expires_in")) is not int or not 60 <= value["expires_in"] <= 86400:
             raise GitHubError("github_expiring_tokens_required")
         if not isinstance(value.get("refresh_token"), str) or not value["refresh_token"].startswith("ghr_"):
             raise GitHubError("github_refresh_token_required")
         refresh_ttl = value.get("refresh_token_expires_in")
-        if not isinstance(refresh_ttl, int) or not 60 <= refresh_ttl <= 20000000:
+        if type(refresh_ttl) is not int or not 60 <= refresh_ttl <= 20000000:
             raise GitHubError("github_response_invalid")
         row.access_encrypted = self.cipher.encrypt(value["access_token"])
         row.refresh_encrypted = self.cipher.encrypt(value["refresh_token"])
@@ -76,7 +76,7 @@ class GitHubIdentityService:
         client.token = value["access_token"]
         profile = await client.request("GET", "/user")
         identifier, login = profile.get("id"), profile.get("login")
-        if type(identifier) is not int or identifier <= 0 or not isinstance(login, str) or not login or len(login) > 100:
+        if not valid_github_id(identifier) or not isinstance(login, str) or not login or len(login) > 100:
             raise GitHubError("github_identity_invalid")
         with self.session_factory() as session, session.begin():
             # One lock per GitHub identity makes concurrent initial signups
@@ -120,7 +120,7 @@ class GitHubIdentityService:
                 "grant_type": "refresh_token", "refresh_token": refresh})
             with self.session_factory() as session, session.begin():
                 row = session.scalar(select(GitHubCredential).where(GitHubCredential.user_id == user_id).with_for_update())
-                if row.refresh_started_at != stamp or row.revoked_at:
+                if row is None or row.refresh_started_at != stamp or row.revoked_at:
                     raise GitHubError("github_reauthorization_required")
                 self._store_token(row, value)
             return value["access_token"]

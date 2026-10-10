@@ -81,6 +81,22 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
             json={"installations": [{"id": 1, "app_id": 123}, {"id": 2, "app_id": 999}, {"id": 3, "app_id": 123, "suspended_at": "date"}]})))
         self.assertEqual([item["id"] for item in await client.installations()], [1])
 
+    async def test_malformed_oauth_and_identity_payloads_fail_closed(self):
+        client = GitHubAppClient(self.settings())
+        for identity in (True, -1, 0, 2**63):
+            client.transport = httpx.MockTransport(lambda request: httpx.Response(200,
+                json={"installations": [{"id": identity, "app_id": 123}]}))
+            with self.assertRaises(GitHubError):
+                await client.installations()
+        for payload in ([None], {"installations": [None]}, {"installations": {}}):
+            client.transport = httpx.MockTransport(lambda request: httpx.Response(200, json=payload))
+            with self.assertRaises(GitHubError):
+                await client.installations()
+        client.transport = httpx.MockTransport(lambda request: httpx.Response(200,
+            json={"access_token": "ghu_fixture", "token_type": True}))
+        with self.assertRaises(GitHubError):
+            await client.oauth({})
+
     async def test_unknown_pr_outcome_reconciles_without_reissue(self):
         store = SimpleNamespace(operation=lambda *args: {"id": uuid4(), "status": "UNKNOWN", "response": None},
             operation_state=lambda *args: None, require_unexpired=lambda *args: None)
@@ -94,6 +110,27 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(GitHubError, "outcome_unknown"):
             await service._effect(approval, uuid4(), client, "draft_pr", "/path", {}, reconcile=AsyncMock(return_value=None))
         client.request.assert_not_called()
+
+    async def test_branch_only_cancellation_reconciles_without_creating_pr(self):
+        approval_id, owner = uuid4(), uuid4()
+        action = {"repo_id": "owner/repo", "repository_id": 42, "installation_id": 7,
+            "head_branch": "agentforge/task-a", "base_branch": "main"}
+        branch = {"object": {"sha": "a"*40}}
+        client = SimpleNamespace(request=AsyncMock(return_value=branch))
+        adapter = SimpleNamespace(authorize=AsyncMock(return_value=(client, {}, {"id": 7})))
+        states = []
+        store = SimpleNamespace(begin=lambda *args: {"state": "EXECUTING", "action": action},
+            sent_delivery_receipt=lambda *args: {"id": uuid4(), "kind": "branch", "commit": {"sha": "a"*40}},
+            operation_state=lambda *args: states.append(args[1]),
+            complete=lambda approval, user, result: {"state": "CONSUMED", "result": result}, release=lambda *args: None)
+        with patch("agentforge.integrations.github_write.AuthorizedGitHubClient", return_value=adapter):
+            result = await GitHubWriteService(store, None, self.settings()).execute(approval_id, owner)
+        self.assertEqual(states, ["CONFIRMED"])
+        self.assertNotIn("pr_url", result["result"])
+        self.assertEqual(result["result"]["commit_sha"], "a"*40)
+        self.assertEqual(client.request.await_count, 1)
+        self.assertEqual(client.request.await_args.args[0], "GET")
+        self.assertNotIn("write", adapter.authorize.await_args.kwargs)
 
     async def test_sent_is_durable_before_network_and_error_becomes_unknown(self):
         states=[]
@@ -128,7 +165,10 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         app.state.settings = Settings(_env_file=None, github_webhook_secret=SecretStr("x"*32))
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             for payload in ({"installation": None}, {"installation": []},
-                    {"installation": {"id": 1}, "sender": {"id": 2}, "repositories_removed": [None]}):
+                    {"installation": {"id": 1}, "sender": {"id": 2}, "repositories_removed": [None]},
+                    {"installation": {"id": -1}, "sender": {"id": 2}},
+                    {"installation": {"id": 1}, "sender": {"id": True}},
+                    {"installation": {"id": 2**63}, "sender": {"id": 2}}):
                 body = json.dumps(payload).encode()
                 response = await client.post("/api/v1/github/webhook", content=body, headers={
                     "X-GitHub-Event": "installation_repositories", "X-GitHub-Delivery": str(uuid4()),

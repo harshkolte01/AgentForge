@@ -11,6 +11,9 @@ from agentforge.integrations.github_client import (GitHubClient, GitHubError, Re
 
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 
+def valid_github_id(value):
+    return type(value) is int and 0 < value <= 9223372036854775807
+
 class GitHubAppClient:
     def __init__(self, settings, *, token=None, transport=None):
         self.settings, self.token, self.transport = settings, token, transport
@@ -66,7 +69,8 @@ class GitHubAppClient:
                     value = json.loads(data)
                 if not isinstance(value, dict) or not isinstance(value.get("access_token"), str) or value.get("error"):
                     raise GitHubError("github_authorization_failed")
-                if value.get("token_type", "").lower() != "bearer" or not value["access_token"].startswith("ghu_"):
+                if (not isinstance(value.get("token_type"), str) or value["token_type"].lower() != "bearer"
+                        or not value["access_token"].startswith("ghu_") or len(value["access_token"]) > 1024):
                     raise GitHubError("github_app_user_token_required")
                 return value
         except (httpx.HTTPError, ValueError):
@@ -77,7 +81,7 @@ class GitHubAppClient:
         for page in range(1, 11):
             separator = "&" if "?" in path else "?"
             value = await self.request("GET", f"{path}{separator}per_page=100&page={page}")
-            values = value if key is None else value.get(key)
+            values = value if key is None else value.get(key) if isinstance(value, dict) else None
             if not isinstance(values, list):
                 raise GitHubError("github_response_invalid")
             result.extend(values)
@@ -88,7 +92,10 @@ class GitHubAppClient:
     @_deadline(45)
     async def installations(self):
         values = await self.pages("/user/installations", "installations")
-        result = [value for value in values if value.get("app_id") == self.settings.github_app_id
+        if any(not isinstance(value, dict) or not valid_github_id(value.get("id"))
+                or not valid_github_id(value.get("app_id")) for value in values):
+            raise GitHubError("github_response_invalid")
+        result = [value for value in values if value["app_id"] == self.settings.github_app_id
             and not value.get("suspended_at")]
         if len(result) > 10:
             raise GitHubError("github_installation_discovery_limit")
@@ -99,10 +106,19 @@ class GitHubAppClient:
         result = []
         for installation in await self.installations():
             for repository in await self.pages(f"/user/installations/{int(installation['id'])}/repositories", "repositories"):
+                self.validate_repository(repository)
                 result.append((installation, repository))
                 if len(result) > 1000:
                     raise GitHubError("github_repository_discovery_limit")
         return result
+
+    @staticmethod
+    def validate_repository(repository):
+        if (not isinstance(repository, dict) or not valid_github_id(repository.get("id"))
+                or not isinstance(repository.get("permissions"), dict)
+                or not isinstance(repository.get("default_branch"), str)):
+            raise GitHubError("github_response_invalid")
+        validate_repo_id(repository.get("full_name", ""))
 
 class AuthorizedGitHubClient:
     """Task adapter obtains fresh user credentials and current repo membership per call."""
@@ -128,6 +144,8 @@ class AuthorizedGitHubClient:
             matches = []
             for installation in installs:
                 repos = await client.pages(f"/user/installations/{known_installation}/repositories", "repositories")
+                for item in repos:
+                    client.validate_repository(item)
                 matches.extend((installation, item) for item in repos if item.get("full_name", "").lower() == repo_id.lower())
         else:
             matches = [(installation, repo) for installation, repo in await client.repositories()
@@ -137,12 +155,12 @@ class AuthorizedGitHubClient:
         installation, repo = matches[0]
         if repository_id is not None and repo.get("id") != repository_id:
             raise GitHubError("github_repository_identity_changed")
-        if not repo.get("permissions", {}).get("pull") and not repo.get("permissions", {}).get("admin"):
+        if repo.get("permissions", {}).get("pull") is not True and repo.get("permissions", {}).get("admin") is not True:
             raise GitHubError("github_repository_not_authorized")
         permissions = installation.get("permissions", {})
         if permissions.get("contents") not in {"read", "write"}:
             raise GitHubError("github_contents_permission_required")
-        if write and (not self.settings.enable_github_writes or not repo.get("permissions", {}).get("push")
+        if write and (not self.settings.enable_github_writes or repo.get("permissions", {}).get("push") is not True
                 or permissions.get("contents") != "write" or permissions.get("pull_requests") != "write"
                 or repo.get("archived") or repo.get("disabled")):
             raise GitHubError("github_write_permission_required")

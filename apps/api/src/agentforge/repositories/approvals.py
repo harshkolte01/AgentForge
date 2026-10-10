@@ -45,6 +45,17 @@ class ApprovalRepository:
             raise ApprovalError("approval_integrity_failed")
         return row
 
+    def _writable_task(self, session, row):
+        task = self.owned_task(session, row.task_id, row.user_id, True)
+        if task.cancel_requested_at is not None or task.status not in {"COMPLETED", "AWAITING_APPROVAL"}:
+            raise ApprovalError("github_task_cancelled_or_unavailable")
+        return task
+
+    def _execution_lease(self, row):
+        if (row.state != "EXECUTING" or row.execution_token != self.execution_token
+                or row.execution_expires_at is None or row.execution_expires_at <= now()):
+            raise ApprovalError("github_execution_lease_lost")
+
     @staticmethod
     def frozen_workspace(session, task):
         delivery = (task.final_result or {}).get("coding", {})
@@ -94,6 +105,8 @@ class ApprovalRepository:
         stamp = now()
         with self.session_factory() as session, session.begin():
             task = self.owned_task(session, task_id, owner_id, True)
+            if task.cancel_requested_at is not None:
+                raise ApprovalError("github_task_cancelled_or_unavailable")
             workspace, _, _, changed, artifact = self.frozen_workspace(session, task)
             if workspace.repo_id != repo["full_name"]:
                 raise ApprovalError("github_repository_identity_changed")
@@ -168,6 +181,10 @@ class ApprovalRepository:
             row = self._owned(session, approval_id, owner_id, True)
             if row.state == "CONSUMED":
                 return view(row)
+            # A prior execution may already have crossed the network boundary.
+            # Cancellation still permits receipts to be reconciled, never sends.
+            if row.state != "EXECUTING":
+                self._writable_task(session, row)
             if row.state not in {"APPROVED", "EXECUTING"}:
                 raise ApprovalError("approval_not_approved")
             if row.state == "APPROVED" and row.expires_at <= now():
@@ -184,11 +201,11 @@ class ApprovalRepository:
         key = f"github:{approval_id}:{kind}"
         with self.session_factory() as session, session.begin():
             row = self._owned(session, approval_id, owner_id, True)
-            if row.state != "EXECUTING" or row.execution_token != self.execution_token or row.execution_expires_at <= now():
-                raise ApprovalError("approval_not_executing")
+            self._execution_lease(row)
             row.execution_expires_at = now() + timedelta(seconds=300)
             operation = session.scalar(select(ExternalOperation).where(ExternalOperation.operation_key == key).with_for_update())
             if operation is None:
+                self._writable_task(session, row)
                 operation = ExternalOperation(task_id=row.task_id, approval_id=row.id, operation_key=key, kind=kind,
                     status="PREPARED", input_sha256=digest, request_json=payload)
                 session.add(operation)
@@ -204,25 +221,56 @@ class ApprovalRepository:
             self.owned_task(session, approval.task_id, approval.user_id, True)
             approval = session.get(Approval, operation.approval_id, with_for_update=True, populate_existing=True)
             operation = session.get(ExternalOperation, operation_id, with_for_update=True, populate_existing=True)
-            if approval.execution_token != self.execution_token or approval.execution_expires_at <= now():
-                raise ApprovalError("github_execution_lease_lost")
+            self._execution_lease(approval)
+            # Confirming a response remains allowed after cancellation so that
+            # an effect already sent retains its durable reconciliation receipt.
+            if status == "SENT":
+                self._writable_task(session, approval)
             if operation.status == "CONFIRMED" and status != "CONFIRMED":
                 raise ApprovalError("github_operation_already_confirmed")
             operation.status, operation.updated_at = status, now()
             if response is not None:
                 operation.response_json = response
 
+    def sent_delivery_receipt(self, approval_id, owner_id):
+        """Read immutable intent that may already exist; never admit work."""
+        with self.session_factory() as session:
+            row = self._owned(session, approval_id, owner_id)
+            self._execution_lease(row)
+            operation = session.scalar(select(ExternalOperation).where(ExternalOperation.approval_id == row.id,
+                ExternalOperation.kind == "draft_pr", ExternalOperation.status.in_(["SENT", "UNKNOWN", "CONFIRMED"])))
+            if operation is None:
+                task = self.owned_task(session, row.task_id, owner_id)
+                if task.cancel_requested_at is None and row.expires_at > now():
+                    return None
+                operation = session.scalar(select(ExternalOperation).where(ExternalOperation.approval_id == row.id,
+                    ExternalOperation.kind == "branch", ExternalOperation.status.in_(["SENT", "UNKNOWN", "CONFIRMED"])))
+                if operation is None:
+                    return None
+            commit = session.scalar(select(ExternalOperation).where(ExternalOperation.approval_id == row.id,
+                ExternalOperation.kind == "commit", ExternalOperation.status == "CONFIRMED"))
+            if commit is None or canonical_hash(operation.request_json) != operation.input_sha256:
+                raise ApprovalError("github_operation_input_changed")
+            return {"id": operation.id, "kind": operation.kind, "commit": commit.response_json}
+
     def complete(self, approval_id, owner_id, result):
         with self.session_factory() as session, session.begin():
             row = self._owned(session, approval_id, owner_id, True)
             if row.state == "CONSUMED":
                 return view(row)
-            if row.state != "EXECUTING" or row.execution_token != self.execution_token:
-                raise ApprovalError("approval_not_executing")
+            self._execution_lease(row)
+            result = {**result, "delivery_kind": "draft_pr" if "pr_number" in result else "branch_only"}
+            if result["delivery_kind"] == "branch_only":
+                from urllib.parse import quote
+                result["branch_url"] = f"https://github.com/{result['repo_id']}/tree/{quote(result['head_branch'], safe='/')}"
             row.state, row.result_json = "CONSUMED", result
             row.execution_token, row.execution_expires_at = None, None
             task = self.owned_task(session, row.task_id, owner_id, True)
-            task.status, task.final_summary = "COMPLETED", "Verified coding result delivered as a GitHub draft pull request."
+            task.status = "CANCELLED" if task.cancel_requested_at is not None else "COMPLETED"
+            task.final_summary = ("Verified coding result delivered as a GitHub draft pull request." if "pr_number" in result
+                else "The GitHub task branch was created. Publication stopped before a pull request was sent.")
+            if task.cancel_requested_at is not None:
+                task.final_summary += " Cancellation was requested after publication began."
             task.final_result = {**(task.final_result or {}), "github": result}
             append_event(session, task, "github.delivery.confirmed", result)
             return view(row)
@@ -234,7 +282,9 @@ class ApprovalRepository:
                 row.execution_token, row.execution_expires_at = None, None
 
     def require_unexpired(self, approval_id, owner_id):
-        with self.session_factory() as session:
-            row = self._owned(session, approval_id, owner_id)
-            if row.execution_token != self.execution_token or row.expires_at <= now():
+        with self.session_factory() as session, session.begin():
+            row = self._owned(session, approval_id, owner_id, True)
+            self._execution_lease(row)
+            self._writable_task(session, row)
+            if row.expires_at <= now():
                 raise ApprovalError("approval_expired_or_execution_lease_lost")

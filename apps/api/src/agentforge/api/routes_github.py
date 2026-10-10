@@ -11,7 +11,7 @@ from agentforge.auth.github_service import github_configured, GitHubIdentityServ
 from agentforge.auth.durable import now
 from agentforge.database.models import User
 from agentforge.database.identity import AuthSession, GitHubCredential, GitHubInstallation, GitHubRepositoryGrant, GitHubWebhookDelivery
-from agentforge.integrations.github_app import GitHubAppClient, AuthorizedGitHubClient
+from agentforge.integrations.github_app import GitHubAppClient, AuthorizedGitHubClient, valid_github_id
 from agentforge.integrations.github_client import GitHubError, validate_repo_id
 from agentforge.security.webhook_verification import verify_github_signature
 
@@ -107,14 +107,14 @@ async def webhook(request: Request):
         raise HTTPException(422, "github_webhook_event_not_supported")
     installation = payload.get("installation")
     install_id = installation.get("id") if isinstance(installation, dict) else None
-    if event.startswith("installation") and type(install_id) is not int:
+    if event.startswith("installation") and not valid_github_id(install_id):
         raise HTTPException(422, "github_webhook_identity_invalid")
     sender = payload.get("sender")
-    if event != "ping" and (not isinstance(sender, dict) or type(sender.get("id")) is not int):
+    if event != "ping" and (not isinstance(sender, dict) or not valid_github_id(sender.get("id"))):
         raise HTTPException(422, "github_webhook_identity_invalid")
     removed_repositories = payload.get("repositories_removed", [])
     if event == "installation_repositories" and (not isinstance(removed_repositories, list)
-            or any(not isinstance(item, dict) or type(item.get("id")) is not int for item in removed_repositories)):
+            or any(not isinstance(item, dict) or not valid_github_id(item.get("id")) for item in removed_repositories)):
         raise HTTPException(422, "github_webhook_identity_invalid")
     # Persist receipt and process only authorization-reducing actions in this
     # transaction. Granting authority always requires fresh authenticated API.

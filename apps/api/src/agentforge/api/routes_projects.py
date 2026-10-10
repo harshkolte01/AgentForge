@@ -2,7 +2,7 @@
 
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 
@@ -42,6 +42,10 @@ def list_projects(request: Request, user: User = Depends(current_user),
 @router.post("", status_code=201)
 def create_project(body: ProjectCreate, request: Request, user: User = Depends(current_user)) -> dict:
     with sessions(request)() as database, database.begin():
+        if database.scalar(select(User.id).where(User.id == user.id).with_for_update()) is None:
+            raise HTTPException(401, "session_identity_unavailable")
+        if len(list(database.scalars(select(Project.id).where(Project.owner_id == user.id).limit(100)))) >= 100:
+            raise HTTPException(409, "project_limit_reached")
         project = Project(id=uuid4(), owner_id=user.id, name=body.name)
         database.add(project)
         database.flush()

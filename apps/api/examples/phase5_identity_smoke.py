@@ -1,6 +1,5 @@
 """Disposable PostgreSQL and mocked GitHub qualification; no live providers."""
 import asyncio
-import getpass
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
@@ -14,6 +13,7 @@ from sqlalchemy import create_engine, select, text, func
 from sqlalchemy.engine import make_url, URL
 from sqlalchemy.orm import sessionmaker
 from agentforge.settings import Settings
+from _disposable_db import admin_engine
 import agentforge.settings as settings_module
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -103,6 +103,23 @@ async def run(settings):
     with sessions.begin() as db:
         credential = db.scalar(select(GitHubCredential).where(GitHubCredential.user_id == signup_id))
         credential.expires_at = now() - timedelta(seconds=1)
+    def revoked_during_refresh(request):
+        with sessions.begin() as db:
+            db.scalar(select(GitHubCredential).where(GitHubCredential.user_id == signup_id)).revoked_at = now()
+        return auth_handler(request)
+    racing = GitHubIdentityService(sessions, settings, transport=httpx.MockTransport(revoked_during_refresh))
+    try:
+        await racing.access_token(signup_id)
+    except GitHubError:
+        pass
+    else:
+        raise AssertionError("refresh restored concurrently revoked credential")
+    with sessions() as db:
+        check(db.scalar(select(GitHubCredential).where(GitHubCredential.user_id == signup_id)).revoked_at is not None,
+            "refresh erased revocation")
+    await signup.signup("fixture-code", "fixture-verifier")
+    with sessions.begin() as db:
+        db.scalar(select(GitHubCredential).where(GitHubCredential.user_id == signup_id)).expires_at = now() - timedelta(seconds=1)
     async def lost_refresh(request):
         raise httpx.ReadTimeout("simulated lost refresh response")
     uncertain = GitHubIdentityService(sessions, settings, transport=httpx.MockTransport(lost_refresh))
@@ -149,6 +166,45 @@ async def run(settings):
         else:
             raise AssertionError("approval owner/hash bypass")
     repository.decision(preview["id"], owner, ApprovalDecision(action_hash=preview["action_hash"], decision="approve"))
+    stage = "approval cancellation and execution lease fencing"
+    from agentforge.repositories.tasks import TaskRepository
+    repository.begin(preview["id"], owner)
+    operation = repository.operation(preview["id"], owner, "lease-fixture", {})
+    with sessions.begin() as db:
+        db.get(Approval, preview["id"]).execution_expires_at = now() - timedelta(seconds=1)
+    for action in (lambda: repository.require_unexpired(preview["id"], owner),
+                   lambda: repository.operation_state(operation["id"], "SENT"),
+                   lambda: repository.complete(preview["id"], owner, {})):
+        try:
+            action()
+        except ApprovalError:
+            pass
+        else:
+            raise AssertionError("expired execution lease accepted")
+    replacement = ApprovalRepository(sessions, settings)
+    replacement.begin(preview["id"], owner)
+    try:
+        repository.operation_state(operation["id"], "SENT")
+    except ApprovalError:
+        pass
+    else:
+        raise AssertionError("replaced executor retained authority")
+    replacement.operation_state(operation["id"], "SENT")
+    TaskRepository(sessions).cancel(task_id, owner)
+    for action in (lambda: replacement.operation(preview["id"], owner, "new-after-cancel", {}),
+                   lambda: replacement.require_unexpired(preview["id"], owner),
+                   lambda: replacement.operation_state(operation["id"], "SENT")):
+        try:
+            action()
+        except ApprovalError:
+            pass
+        else:
+            raise AssertionError("cancelled task admitted new GitHub effect")
+    replacement.operation_state(operation["id"], "CONFIRMED", {"fixture": True})
+    with sessions.begin() as db:
+        task = db.get(Task, task_id)
+        task.status, task.cancel_requested_at = "AWAITING_APPROVAL", None
+    replacement.release(preview["id"], owner)
     try:
         with sessions.begin() as db:
             db.execute(text("UPDATE approvals SET action_json='{}'::jsonb"))
@@ -219,12 +275,33 @@ async def run(settings):
         raise AssertionError("lost response reported confirmed")
     with sessions() as db:
         check(db.scalar(select(ExternalOperation).where(ExternalOperation.kind == "draft_pr")).status == "UNKNOWN", "ambiguous outcome not persisted")
+    cancelled = TaskRepository(sessions).cancel(task_id, owner)
+    check(cancelled.status == "CANCELLED", "awaiting approval cancellation never settled")
+    state["base_sha"] = "a"*40
+    state["pr"]["base"]["sha"] = state["base_sha"]
     restarted = ApprovalRepository(sessions, settings)
     result = await GitHubWriteService(restarted, sessions, settings, transport=transport).execute(preview["id"], owner)
     check(result["state"] == "CONSUMED" and result["result"]["pr_url"].endswith("/pull/8"), "delivery not confirmed")
     check(state["pr_posts"] == 1 and state["branch_posts"] == 1, "duplicate external write")
+    with sessions() as db:
+        check(db.get(Task, task_id).status == "CANCELLED", "reconciliation erased cancellation")
     result = await GitHubWriteService(ApprovalRepository(sessions, settings), sessions, settings, transport=transport).execute(preview["id"], owner)
     check(result["state"] == "CONSUMED" and state["pr_posts"] == 1, "consumed approval replayed")
+    stage = "cancelled branch-only read reconciliation"
+    from agentforge.contracts.approvals import canonical_hash
+    branch_approval = uuid4()
+    branch_action = {**preview["action"], "title": "Interrupted before PR"}
+    with sessions.begin() as db:
+        db.add(Approval(id=branch_approval, task_id=task_id, user_id=owner, state="EXECUTING", action_json=branch_action,
+            action_hash=canonical_hash(branch_action), expires_at=now() - timedelta(seconds=1)))
+        db.flush()
+        for kind, payload, status, response in (("commit", {"parents": [base_sha]}, "CONFIRMED", {"sha": commit_sha}),
+                ("branch", {"ref": "refs/heads/"+action["head_branch"], "sha": commit_sha}, "UNKNOWN", None)):
+            db.add(ExternalOperation(task_id=task_id, approval_id=branch_approval, operation_key=f"github:{branch_approval}:{kind}",
+                kind=kind, status=status, request_json=payload, input_sha256=canonical_hash(payload), response_json=response))
+    branch_result = await GitHubWriteService(ApprovalRepository(sessions, settings), sessions, settings, transport=transport).execute(branch_approval, owner)
+    check(branch_result["result"]["delivery_kind"] == "branch_only" and "pr_url" not in branch_result["result"], "branch reported as PR")
+    check(state["pr_posts"] == 1 and state["branch_posts"] == 1, "cancelled branch reconciliation wrote remotely")
     stage = "webhook durable replay and revocation"
     from fastapi import FastAPI
     from agentforge.api.routes_github import router as github_router
@@ -239,12 +316,12 @@ async def run(settings):
         check((await http.post("/api/v1/github/webhook", content=raw, headers=headers)).status_code == 202, "valid webhook rejected")
         check((await http.post("/api/v1/github/webhook", content=raw, headers=headers)).status_code == 409, "webhook replay accepted")
         check((await http.post("/api/v1/github/webhook", content=raw+b" ", headers=headers)).status_code == 403, "forged raw body accepted")
-    print("PASS durable session cap/restart/revocation; PKCE state binding/replay; approval owner/hash/immutability; changed-only Git trees preserve modes; PR response-loss reconciles to one branch and one draft PR", flush=True)
+    print("PASS durable session cap/restart/revocation; PKCE state binding/replay; approval owner/hash/immutability/lease fencing; changed-only Git trees preserve modes; cancelled PR response-loss reconciles read-only after base advance to one branch and one draft PR", flush=True)
 
 try:
     source = make_url(Settings().database_url)
     check(source.host in ("localhost", "127.0.0.1", "::1"), "nonlocal configured DB")
-    admin = create_engine(URL.create("postgresql+psycopg", username=getpass.getuser(), port=source.port, database="postgres"), isolation_level="AUTOCOMMIT")
+    admin = admin_engine(source)
     with admin.connect() as connection:
         owner = connection.dialect.identifier_preparer.quote_identifier(source.username)
         connection.execute(text('CREATE DATABASE "' + name + '" OWNER ' + owner))

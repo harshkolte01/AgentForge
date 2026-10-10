@@ -106,5 +106,16 @@ class TaskRepository:
             if task.cancel_requested_at is None:
                 task.cancel_requested_at = datetime.now(timezone.utc)
                 append_event(session, task, "task.cancel_requested", {"status": task.status})
+            if task.status == "AWAITING_APPROVAL":
+                # Its worker job has already finished; no worker remains to
+                # observe the flag and settle the task. Keep executing approvals
+                # recoverable because an effect may already have been sent.
+                from agentforge.database.identity import Approval
+                for approval in session.scalars(select(Approval).where(Approval.task_id == task.id).with_for_update()):
+                    if approval.state in {"PENDING", "APPROVED"}:
+                        approval.state = "INVALIDATED"
+                task.status = "CANCELLED"
+                task.final_summary = "Task cancelled. GitHub operations already sent may still require reconciliation."
+                append_event(session, task, "task.finished", {"status": task.status})
             session.flush()
             return TaskView.model_validate(task)
