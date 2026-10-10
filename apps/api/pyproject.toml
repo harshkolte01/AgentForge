@@ -16,6 +16,7 @@ dependencies = [
     "langchain-core>=1.0,<2.0",
     "openai>=2.0,<3.0",
     "httpx>=0.28,<1.0",
+    "cryptography>=44,<47",
     "e2b==2.55.1",
     "neatlogs>=1.4.26,<2.0",
 ]

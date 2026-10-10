@@ -18,7 +18,7 @@ export type CodingDetail = {
   evidence: Array<{ id: string; kind: string; revision: string } & Record<string, unknown>>;
 };
 export type Task = {
-  kind: "research" | "coding";
+  kind: "research" | "coding" | "general";
   coding: CodingSpec | null;
   id: string;
   project_id: string;
@@ -53,6 +53,11 @@ export type TaskEvent = {
   created_at: string;
 };
 export type AgentRun = {
+  agent_type?: string;
+  definition_version?: number;
+  parent_task_id?: string;
+  budget?: Record<string, unknown>;
+  effective_tool_names?: string[];
   id: string;
   status: string;
   definition_sha256?: string;
@@ -92,7 +97,7 @@ export class ApiError extends Error {
 }
 
 const friendlyErrors: Record<string, string> = {
-  session_required: "Your local session has expired. Unlock the workspace again.",
+  session_required: "Your session has expired. Sign in again to continue.",
   session_identity_unavailable: "The configured local identity is unavailable. Check local setup.",
   invalid_bootstrap_token: "The bootstrap token was not accepted. Use the token in your private API configuration.",
   local_auth_not_configured: "Local access has not been configured. Follow the local setup instructions.",
@@ -104,6 +109,22 @@ const friendlyErrors: Record<string, string> = {
   github_read_unavailable: "GitHub is unavailable. Try again later.",
   github_invalid_repository: "Enter a GitHub repository as owner/name.",
   github_issue_not_found: "The selected issue was not found in this public repository. Pull requests cannot be selected as issues.",
+  github_repository_not_authorized: "Connect this repository through your GitHub App installation, then refresh repository access.",
+  github_write_permission_required: "The GitHub installation needs contents and pull request write access, and publishing must be enabled by the operator.",
+  github_reauthorization_required: "Your GitHub authorization needs refreshing. Sign out and continue with GitHub again.",
+  github_access_denied: "GitHub denied repository access. Review the app installation and account permissions.",
+  github_issues_permission_required: "The GitHub app needs issue read access to select this issue.",
+  verified_coding_result_required: "This task has no publishable verified code result. Review its tests and execution evidence.",
+  approval_expired: "This approval has expired. Prepare and review a new exact change.",
+  approval_not_pending: "This approval has already been decided. Refresh to see its current state.",
+  session_turn_in_progress: "This conversation already has an active turn. Wait for it to finish or stop it before sending another.",
+  session_archived: "Restore this conversation from archived history before sending a message.",
+  active_session_cannot_archive: "Wait for the active turn to finish before archiving this conversation.",
+  turn_idempotency_conflict: "This retry does not match the original turn. Reload the conversation before starting a new request.",
+  session_message_limit_reached: "This conversation reached its message limit. Start a new conversation to continue.",
+  definition_version_conflict: "Another version was saved first. Refresh the agent and create its next version.",
+  custom_agent_requires_explicit_restricted_resources: "Use explicit resource arrays in the agent JSON. Only allowed_web_hosts can contain public domains.",
+  custom_agents_support_source_research_tools: "Custom agents currently support web search and source fetching with research_result_v1 output.",
   task_not_found: "This task is unavailable for the current workspace.",
   artifact_unavailable: "The report file is unavailable. Try downloading it again later.",
 };
@@ -131,7 +152,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 export const terminalStatuses = new Set(["COMPLETED", "PARTIAL", "FAILED", "CANCELLED"]);
 export const eventTypes = ["task.created", "task.status", "task.cancel_requested", "task.plan.created",
   "task.step.updated", "subagent.started", "subagent.finished", "model.started", "model.finished", "tool.started", "tool.finished",
-  "task.verified", "task.recovered", "task.finished"];
+  "task.verified", "task.recovered", "task.finished", "sandbox.workspace.created", "test.finished", "task.repair.started"];
 export function statusLabel(status: string): string {
   return status.toLowerCase().replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
 }

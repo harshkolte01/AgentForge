@@ -41,7 +41,12 @@ def compose_runtime(settings, sessions, telemetry, store) -> Runtime:
         from agentforge.tools.sandbox_exec import CodingExecution, register_sandbox_exec
         from agentforge.tools.test_tools import register_test_results
         repository = CodingRepository(sessions, ArtifactStorage(settings.research_storage_path), lease=store.lease)
-        github = GitHubClient()
+        task = store.task()
+        if settings.auth_mode == "github_app":
+            from agentforge.integrations.github_app import AuthorizedGitHubClient
+            github = AuthorizedGitHubClient(sessions, settings, task.created_by)
+        else:
+            github = GitHubClient()
         configured = bool(settings.e2b_api_key and settings.e2b_template_id and settings.e2b_template_qualified)
         runner = E2BRunner(E2BConfig(api_key=settings.e2b_api_key.get_secret_value() if settings.e2b_api_key else None,
             template_id=settings.e2b_template_id, template_qualified=settings.e2b_template_qualified,

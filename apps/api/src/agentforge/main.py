@@ -14,8 +14,11 @@ from agentforge.api.routes_artifacts import router as artifacts_router
 from agentforge.api.routes_configuration import router as configuration_router
 from agentforge.auth.routes import router as auth_router
 from agentforge.auth.session import SessionStore
+from agentforge.api.routes_github import router as github_router
+from agentforge.api.routes_approvals import router as approvals_router
 from agentforge.database.engine import create_db_engine
 from agentforge.settings import Settings, get_settings
+from agentforge.security.request_limits import RequestBodyLimitMiddleware
 
 
 @asynccontextmanager
@@ -48,6 +51,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = resolved
     app.state.auth_sessions = SessionStore()
+    app.add_middleware(RequestBodyLimitMiddleware, maximum=1_000_000)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=resolved.allowed_origins,
@@ -62,6 +66,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(events_router)
     app.include_router(artifacts_router)
     app.include_router(configuration_router)
+    app.include_router(github_router)
+    app.include_router(approvals_router)
     @app.middleware("http")
     async def private_response_headers(request, call_next):
         response = await call_next(request)

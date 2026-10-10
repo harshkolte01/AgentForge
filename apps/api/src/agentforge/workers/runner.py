@@ -28,6 +28,15 @@ from .reconciliation import reconcile
 logger = logging.getLogger(__name__)
 
 
+async def task_authority(settings, runtime, store, jobs, lease):
+    await jobs.authority(lease)
+    if settings.auth_mode == "github_app" and runtime.coding is not None:
+        current = store.task()
+        selection = current.permissions_json["coding"]["repository"]
+        await runtime.coding.github.authorize(selection["repo_id"])
+        await jobs.authority(lease)
+
+
 async def execute(settings, sessions, saver, telemetry, jobs, lease):
     store = WorkflowStore(sessions, lease)
     runtime = None
@@ -47,7 +56,8 @@ async def execute(settings, sessions, saver, telemetry, jobs, lease):
         else:
             runtime = compose_runtime(settings, sessions, telemetry, store)
             async def authority():
-                await jobs.authority(lease)
+                # Cached workspace content never bypasses current source rights.
+                await task_authority(settings, runtime, store, jobs, lease)
             if runtime.coding is not None:
                 from agentforge.orchestration.coding_graph import build_coding_graph
                 graph = build_coding_graph(store=store, service=runtime.service, coding=runtime.coding,

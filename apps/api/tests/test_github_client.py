@@ -110,14 +110,14 @@ class SubmissionTests(unittest.IsolatedAsyncioTestCase):
     async def test_owner_is_checked_before_github_and_pin_before_queue(self):
         owner = uuid4()
         repository = SimpleNamespace(authorize_project=lambda **kw: None, create=lambda **kw: kw)
-        with patch("agentforge.api.routes_tasks.GitHubClient.resolve", AsyncMock(return_value=ResolvedRepository("owner/repo", SHA, "main"))):
+        with patch("agentforge.auth.github_service.github_for_user", AsyncMock(return_value=SimpleNamespace(resolve=AsyncMock(return_value=ResolvedRepository("owner/repo", SHA, "main"))))), patch("agentforge.api.dependencies.sessions", return_value=None):
             result = await create_task(self.body(), self.request(), SimpleNamespace(id=owner), repository)
         self.assertEqual(result["owner_id"], owner)
         self.assertEqual(result["request"].coding.repository.ref, SHA)
         def deny(**kw):
             raise TaskNotFound()
         repository.authorize_project = deny
-        with patch("agentforge.api.routes_tasks.GitHubClient.resolve", AsyncMock()) as github:
+        with patch("agentforge.auth.github_service.github_for_user", AsyncMock()) as github:
             with self.assertRaises(HTTPException) as error:
                 await create_task(self.body(), self.request(), SimpleNamespace(id=owner), repository)
             self.assertEqual(error.exception.status_code, 404)
@@ -169,7 +169,7 @@ class ReadBoundaryTests(unittest.TestCase):
             llm_input_usd_per_million=1, llm_output_usd_per_million=1, llm_supports_tools=True, llm_supports_json=True,
             tavily_api_key="private-search-secret", neatlogs_api_key=None, e2b_api_key="private-sandbox-secret",
             e2b_template_id=None, e2b_template_qualified=False)
-        result = configuration(SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(settings=settings))), SimpleNamespace())
+        result = configuration(SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(settings=settings))), SimpleNamespace(github_user_id=123))
         self.assertTrue(result["research_configured"])
         self.assertFalse(result["coding_configured"])
         self.assertEqual(result["coding_missing_settings"], ["E2B_TEMPLATE_ID", "E2B_TEMPLATE_QUALIFIED=true"])

@@ -104,15 +104,46 @@ def require_local_transport(request: Request, *, mutation: bool = False) -> None
 
 
 def current_user(request: Request) -> User:
-    require_local_transport(request, mutation=request.method not in {"GET", "HEAD", "OPTIONS"})
     settings: Settings = request.app.state.settings
-    session = request.app.state.auth_sessions.resolve(request.cookies.get(COOKIE_NAME))
-    if session is None or session.user_id != settings.local_user_id:
-        raise HTTPException(401, "session_required")
+    if settings.auth_mode == "github_app":
+        require_public_transport(request, mutation=request.method not in {"GET", "HEAD", "OPTIONS"})
+        from agentforge.auth.durable import PUBLIC_COOKIE_NAME
+        identity = durable_sessions(request).resolve(request.cookies.get(PUBLIC_COOKIE_NAME))
+        if identity is None:
+            raise HTTPException(401, "session_required")
+    else:
+        require_local_transport(request, mutation=request.method not in {"GET", "HEAD", "OPTIONS"})
+        session = request.app.state.auth_sessions.resolve(request.cookies.get(COOKIE_NAME))
+        if session is None or session.user_id != settings.local_user_id:
+            raise HTTPException(401, "session_required")
+        identity = session.user_id
     # A deleted/changed identity cannot keep reading through an old cookie or SSE stream.
     with Session(request.app.state.engine) as database:
-        user = database.get(User, session.user_id)
+        user = database.get(User, identity)
         if user is None:
             raise HTTPException(401, "session_identity_unavailable")
         database.expunge(user)
         return user
+
+
+def durable_sessions(request):
+    from sqlalchemy.orm import sessionmaker
+    from agentforge.auth.durable import DurableSessionStore
+    return DurableSessionStore(sessionmaker(bind=request.app.state.engine, expire_on_commit=False), request.app.state.settings)
+
+
+def require_public_transport(request: Request, *, mutation: bool = False):
+    settings = request.app.state.settings
+    public = urlsplit(str(settings.api_public_base_url))
+    # Trust only configured public Host. The deployment must forward HTTPS and
+    # strip untrusted forwarded headers before the ASGI server.
+    if request.url.hostname != public.hostname:
+        raise HTTPException(403, "host_not_allowed")
+    if settings.app_env == "production" and (public.scheme != "https" or request.url.scheme != "https"
+            or str(settings.app_base_url).split(":", 1)[0] != "https"):
+        raise HTTPException(503, "https_configuration_required")
+    origin = request.headers.get("origin")
+    if mutation and not origin:
+        raise HTTPException(403, "origin_required")
+    if origin and origin not in settings.allowed_origins:
+        raise HTTPException(403, "origin_not_allowed")

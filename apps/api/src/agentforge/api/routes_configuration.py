@@ -28,8 +28,10 @@ def configuration(request: Request, user: User = Depends(current_user)) -> dict:
     coding_required["E2B_TEMPLATE_QUALIFIED=true"] = bool(getattr(settings, "e2b_template_qualified", False))
     coding_missing = [name for name, present in coding_required.items() if not present]
     return {"research_configured": not missing, "missing_settings": missing,
+            "configured_model": settings.llm_model or None, "configured_provider": getattr(settings, "llm_provider", "openai"),
+            "per_task_cost_limit_usd": str(5 if user.github_user_id < 0 else min(getattr(settings, "public_max_task_cost_usd", 1), 5)),
             "coding_configured": not coding_missing, "coding_missing_settings": coding_missing,
-            "coding_repository_access": "public_only", "coding_sandbox_provider": "e2b",
+            "coding_repository_access": "github_app_user_installation" if getattr(settings, "auth_mode", None) == "github_app" else "public_only", "coding_sandbox_provider": "e2b",
             "tracing_configured": bool(settings.neatlogs_api_key),
             "worker_status": "not_observed", "checkpointer_status": "not_observed",
             "qualification": "Configuration presence only; providers and worker have not been checked."}

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import Field, HttpUrl, SecretStr, field_validator
+from pydantic import AliasChoices, Field, HttpUrl, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 API_DIR = Path(__file__).resolve().parents[2]
@@ -20,6 +20,7 @@ class Settings(BaseSettings):
         env_file=(REPO_ROOT / ".env", API_DIR / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
+        env_ignore_empty=True,
     )
 
     app_env: Literal["development", "test", "production"] = "development"
@@ -71,7 +72,28 @@ class Settings(BaseSettings):
     e2b_sandbox_ttl_sec: int = Field(default=300, ge=60, le=600)
     e2b_max_output_bytes: int = Field(default=65536, ge=1024, le=131072)
     e2b_execution_max_cost_usd: Decimal = Field(default=Decimal("0.10"), gt=0, le=1, allow_inf_nan=False)
-    auth_mode: Literal["disabled", "local_single_user"] = "disabled"
+    auth_mode: Literal["disabled", "local_single_user", "github_app"] = "disabled"
+    github_client_id: str | None = Field(default=None, min_length=1, max_length=200)
+    github_client_secret: SecretStr | None = Field(default=None, repr=False)
+    github_app_id: int | None = Field(default=None, gt=0)
+    github_app_slug: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9-]+$", max_length=100)
+    github_webhook_secret: SecretStr | None = Field(default=None, repr=False, min_length=32)
+    github_token_encryption_key: SecretStr | None = Field(default=None, repr=False,
+        validation_alias=AliasChoices("GITHUB_TOKEN_ENCRYPTION_KEY", "ENCRYPTION_KEY", "github_token_encryption_key"))
+    github_oauth_callback_url: HttpUrl | None = None
+    enable_github_writes: bool = False
+    github_api_version: str = Field(default="2026-03-10", pattern=r"^\d{4}-\d{2}-\d{2}$")
+    public_signup_enabled: bool = True
+    session_absolute_ttl_sec: int = Field(default=86400, ge=300, le=604800)
+    session_idle_ttl_sec: int = Field(default=1800, ge=60, le=86400)
+    public_max_concurrent_tasks: int = Field(default=2, ge=1, le=10)
+    public_max_daily_tasks: int = Field(default=20, ge=1, le=1000)
+    public_max_daily_cost_usd: Decimal = Field(default=Decimal("5"), gt=0, le=100, allow_inf_nan=False)
+    public_max_task_cost_usd: Decimal = Field(default=Decimal("1"), gt=0, le=10, allow_inf_nan=False)
+    global_max_concurrent_tasks: int = Field(default=10, ge=1, le=100)
+    global_max_daily_tasks: int = Field(default=100, ge=1, le=10000)
+    global_max_daily_cost_usd: Decimal = Field(default=Decimal("20"), gt=0, le=1000, allow_inf_nan=False)
+    github_approval_ttl_sec: int = Field(default=900, ge=60, le=3600)
     local_user_id: UUID | None = None
     local_bootstrap_token: SecretStr | None = Field(default=None, repr=False, min_length=32)
     local_session_ttl_sec: int = Field(default=3600, ge=60, le=86400)

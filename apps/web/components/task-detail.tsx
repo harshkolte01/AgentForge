@@ -5,6 +5,8 @@ import { Download, ExternalLink, RefreshCw } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { RunTree } from "@/features/agents/run-tree";
+import { ChangeApprovals } from "@/features/github/change-approvals";
 import { api, eventTypes, formatDate, message, publicSourceUrl, statusLabel, terminalStatuses,
   type AgentRun, type Artifact, type CodingDetail, type Source, type Task, type TaskEvent, type TaskStep } from "@/lib/task-api";
 
@@ -150,7 +152,7 @@ export function TaskDetail({ taskId }: { taskId: string }) {
 
       <div className="grid items-start gap-10 xl:grid-cols-[minmax(0,1.6fr)_minmax(18rem,1fr)]">
         <div className="min-w-0 space-y-8">
-          <Panel title={task.kind === "coding" ? "Code change outcome" : "Research outcome"}>
+          <Panel title={task.kind === "coding" ? "Code change outcome" : "Task outcome"}>
             {task.final_summary ? <p className="max-w-prose whitespace-pre-wrap break-words text-sm leading-7">{task.final_summary}</p> : <p className="text-sm leading-relaxed text-muted-foreground">{finished ? task.kind === "coding" ? "This task ended without a final code change summary. Review the execution evidence and timeline." : "This task ended without a final research summary. Review the timeline and any sources collected below." : task.kind === "coding" ? "The final summary will appear after code review and sandbox verification." : "The final summary will appear here after the worker verifies the research."}</p>}
             {task.error_code ? <p className="break-words text-sm text-destructive">Worker reported: <code>{task.error_code}</code></p> : null}
             {artifacts.length ? <div className="flex flex-col items-start gap-3">{artifacts.map((artifact) => <a key={artifact.id} href={`/api/v1/tasks/${taskId}/artifacts/${artifact.id}`} className="inline-flex items-center gap-2 text-sm font-medium underline underline-offset-4 focus-visible:outline-2"><Download aria-hidden="true" className="size-4" />Download {artifact.filename}<span className="font-normal text-muted-foreground">({Math.ceil(artifact.byte_size / 1024)} KB)</span></a>)}</div> : null}
@@ -167,16 +169,11 @@ export function TaskDetail({ taskId }: { taskId: string }) {
         </div>
 
         <aside className="min-w-0 space-y-8" aria-label="Execution details">
+          {task.kind === "coding" && finished ? <ChangeApprovals taskId={taskId} /> : null}
           <Panel title="Plan">
             {!steps.length ? <p className="text-sm leading-relaxed text-muted-foreground">{finished ? "No plan was persisted." : "Waiting for the worker to create a plan."}</p> : <ol className="space-y-5">{steps.map((step) => <li key={step.id} className="space-y-2"><div className="flex flex-wrap items-center gap-2"><Badge variant="outline">{statusLabel(step.status)}</Badge><span className="text-xs text-muted-foreground">{step.agent_type} v{step.definition_version}</span></div><p className="break-words text-sm font-medium leading-relaxed">{step.objective}</p>{step.acceptance_criteria.length ? <ul className="list-disc space-y-1 pl-4 text-xs leading-relaxed text-muted-foreground">{step.acceptance_criteria.map((criterion, index) => <li key={`${step.id}-${index}`}>{criterion}</li>)}</ul> : null}{step.depends_on.length ? <p className="text-xs text-muted-foreground">After: {step.depends_on.join(", ")}</p> : null}</li>)}</ol>}
           </Panel>
-          <Panel title="Agent runs">
-            <p className="text-xs leading-relaxed text-muted-foreground">Accounted costs may include conservative caps for usage whose actual charge is unknown.</p>
-            {!runs.length ? <p className="text-sm text-muted-foreground">No agents have started yet.</p> : <ul className="space-y-4">{runs.map((run) => {
-              const step = steps.find((step) => step.agent_run_id === run.id);
-              return <li key={run.id} className="space-y-2 text-sm"><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-medium">{step ? `${step.agent_type} v${step.definition_version}` : "Agent run"}</p><Badge variant="outline">{statusLabel(run.status)}</Badge></div><p className="text-xs tabular-nums text-muted-foreground">Reserved ${run.reserved_cost_usd ?? "unknown"} · Accounted {run.measured_cost_usd == null ? "not available" : `$${run.measured_cost_usd}`}</p>{run.started_at ? <p className="text-xs text-muted-foreground">Started {formatDate(run.started_at)}</p> : null}{run.error_code ? <p className="break-words text-xs text-destructive">{run.error_code}</p> : null}</li>;
-            })}</ul>}
-          </Panel>
+          <RunTree runs={runs} steps={steps} />
           <Panel title="Timeline">
             <p className="text-xs text-muted-foreground">Server events only. Showing up to the latest 200 received events.</p>
             {!events.length ? <p className="text-sm text-muted-foreground">Waiting for persisted events.</p> : <ol className="space-y-4">{events.map((event) => <li key={event.sequence} className="space-y-1"><div className="flex items-baseline justify-between gap-2"><p className="break-words text-sm font-medium">{event.event_type.split(".").map(statusLabel).join(" · ")}</p><span className="text-xs tabular-nums text-muted-foreground">#{event.sequence}</span></div><time className="block text-xs text-muted-foreground" dateTime={event.created_at}>{formatDate(event.created_at)}</time>{typeof event.payload.tool === "string" ? <p className="text-xs text-muted-foreground">{event.payload.tool}</p> : null}{typeof event.payload.model === "string" ? <p className="text-xs text-muted-foreground">{event.payload.model}</p> : null}{typeof event.payload.status === "string" ? <p className="text-xs">{statusLabel(event.payload.status)}</p> : null}{typeof event.payload.error_code === "string" ? <p className="break-words text-xs text-destructive">{event.payload.error_code}</p> : null}</li>)}</ol>}

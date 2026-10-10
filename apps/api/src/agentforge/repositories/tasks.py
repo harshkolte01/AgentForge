@@ -45,6 +45,8 @@ class TaskRepository:
                 raise TaskConflict("github_immutable_commit_required")
         task_id = uuid4()
         with self.session_factory() as session, session.begin():
+            from agentforge.repositories.admission import admit_task
+            admit_task(session, owner_id, request.max_cost_usd)
             project = session.scalar(select(Project).where(Project.id == request.project_id,
                 Project.owner_id == owner_id).with_for_update())
             if project is None:
