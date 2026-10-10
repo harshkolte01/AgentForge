@@ -7,8 +7,10 @@ history and custom agents keep their original owner and internal scope.
 
 ## Sending a message
 
-The composer sends a message with `routing: "auto"`, bounded inputs/budgets and an
-optional repository. It does not ask the user to choose research/general/coding.
+The composer sends a message with `routing: "auto"`, platform-managed bounded
+budgets (cost capped at the per-user limit, 300 s, no extra source domains; users
+do not configure them) and an optional repository. A "Continue saved changes"
+switch appears in the repository menu only when a saved coding change exists. It does not ask the user to choose research/general/coding.
 New conversations default to **No repo**. A repository selection belongs to the
 conversation; switching conversations restores that conversation's selection.
 Clearing it explicitly removes repository context and starts a continuation

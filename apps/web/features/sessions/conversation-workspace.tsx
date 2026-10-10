@@ -94,7 +94,7 @@ export function ConversationWorkspace() {
       pendingSession.current = null; setSelected(updated); updateSession(updated); setThreadRefresh((value) => value + 1); urlSession(updated.id);
     } finally { setBusy(false); }
   }
-  const composer = <ConversationComposer key={selected?.id ?? `new-${draftSequence}`} previousTaskId={selected?.continuation_task_id ?? null} repository={selected ? selected.repository : draftRepository} onRepositoryChange={changeRepository} config={config} disabled={loading || busy || !!selected?.active_task_id} archived={selected?.archived ?? false} onSend={send} />;
+  const composer = <ConversationComposer menuSide={selected ? "top" : "bottom"} key={selected?.id ?? `new-${draftSequence}`} previousTaskId={selected?.continuation_task_id ?? null} repository={selected ? selected.repository : draftRepository} onRepositoryChange={changeRepository} config={config} disabled={loading || busy || !!selected?.active_task_id} archived={selected?.archived ?? false} onSend={send} />;
   return <div className="flex h-svh min-h-0 overflow-hidden bg-background selection:bg-foreground/15">
     {sidebar ? <button className="fixed inset-0 z-30 bg-foreground/20 lg:hidden" aria-label="Close navigation" onClick={() => setSidebar(false)} /> : null}
     <aside ref={navigation} id="workspace-navigation" className={`fixed inset-y-0 left-0 z-40 flex w-60 shrink-0 flex-col border-r bg-sidebar px-3 pb-3 pt-3 transition-transform motion-reduce:transition-none lg:static lg:translate-x-0 ${sidebar ? "translate-x-0" : "-translate-x-full max-lg:invisible"} ${collapsed ? "lg:hidden" : ""}`} aria-label="Workspace navigation" role={sidebar ? "dialog" : undefined} aria-modal={sidebar || undefined}>
