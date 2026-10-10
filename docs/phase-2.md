@@ -78,8 +78,11 @@ For the optional real model path, set these through process environment or the i
 | `LLM_CONTEXT_WINDOW_TOKENS` | Verified model context limit |
 | `LLM_INPUT_USD_PER_MILLION` | Current configured input token rate |
 | `LLM_OUTPUT_USD_PER_MILLION` | Current configured output token rate |
-| `LLM_MAX_OUTPUT_TOKENS` | Optional bounded output cap; default 2048 |
+| `LLM_MAX_OUTPUT_TOKENS` | Optional bounded output cap; default 8192 (a tool call can carry a whole file) |
 | `LLM_TIMEOUT_SEC` | Optional provider request timeout; default 60 |
+| `LLM_PARALLEL_TOOL_CALLS` | Optional; default `true`. Lets the model request several independent read-only tools in one turn |
+| `LLM_STRICT_TOOLS` | Optional; default `false`. Sends tool schemas in strict structured-output form; confirm the model accepts it first |
+| `LLM_MAX_RETRIES` | Optional; default 2. Retries for rate limits, 5xx and refused connections only (no completion was produced) |
 
 Reservation ceilings use four decimal places in USD and round down to avoid exceeding the requested slice; requests below USD 0.0001 are rejected. Operation caps and charges round up to that precision to avoid unaccounted usage.
 

@@ -105,7 +105,8 @@ class SpawnService:
 
             gateway = ToolGateway(catalog=self.catalog, calls=self.calls, budgets=self.budgets,
                 resources=self.resources, reauthorize=reauthorize, ctx=ctx, scope=scope,
-                run_id=run_id, reservation_id=reservation.id)
+                run_id=run_id, reservation_id=reservation.id,
+                strict_tools=bool(getattr(model, "strict_tools", False)))
             result = await self.runtime.run(
                 definition=resolved.definition, ctx=ctx, scope=scope, model=model, gateway=gateway,
                 budgets=self.budgets, reservation=reservation, messages=messages,
@@ -131,6 +132,8 @@ class SpawnService:
                 error_code = "MODEL_CONTEXT_LIMIT"
             elif isinstance(exc, UnknownToolOutcome):
                 error_code = "UNKNOWN_REMOTE_OUTCOME"
+            elif isinstance(exc, ModelProviderError):
+                error_code = exc.code
             else:
                 error_code = "MODEL_PROVIDER_ERROR"
             terminal_status = "BLOCKED"

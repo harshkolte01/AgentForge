@@ -11,7 +11,7 @@ class StrictContract(BaseModel):
 
 ToolName = Literal[
     "web_search", "fetch_webpage", "read_repo_file", "search_repo", "get_issue",
-    "list_repo_files", "read_sandbox_file", "write_sandbox_file", "git_diff",
+    "list_repo_files", "read_sandbox_file", "write_sandbox_file", "edit_sandbox_file", "git_diff",
     "run_sandbox_command", "run_tests", "get_test_results", "get_pr_status",
     "browser_public_page", "read_task_input", "read_research_source", "read_task_artifact", "create_task_artifact",
 ]
@@ -59,7 +59,7 @@ TOOL_CAPABILITIES: dict[str, tuple[str, ...]] = {
     "get_issue": ("github_read",), "list_repo_files": ("github_read",),
     "get_pr_status": ("github_read",),
     "read_sandbox_file": ("sandbox_read",), "git_diff": ("sandbox_read",),
-    "write_sandbox_file": ("sandbox_write",),
+    "write_sandbox_file": ("sandbox_write",), "edit_sandbox_file": ("sandbox_write",),
     "run_sandbox_command": ("sandbox_exec",), "run_tests": ("sandbox_exec",),
     "get_test_results": (), "browser_public_page": ("web", "browser"),
     "read_task_input": (), "read_research_source": (), "read_task_artifact": (), "create_task_artifact": (),

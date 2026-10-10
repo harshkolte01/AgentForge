@@ -3,7 +3,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from agentforge.contracts.sessions import AutoTurnCreate, MessageView, SessionCreate, StepView, SessionPatch, SessionView, SessionTurnCreate, TurnView
 from agentforge.contracts.tasks import TaskCreate, TaskView, TERMINAL_STATUSES
 from agentforge.database.models import Project, Task, ToolCall, User
@@ -52,6 +52,9 @@ def complete_task_conversation(session, task_id):
 STEP_LIMIT = 40
 
 
+SELF_CORRECTION_CODES = ("SCHEMA_INVALID", "DUPLICATE_CALL", "TOOL_LIMIT_REACHED")
+
+
 def tool_steps(session, task_ids):
     """Finished tool calls per task in the order they ran, for rendering a reply's work step by step."""
     steps = {task_id: [] for task_id in task_ids}
@@ -59,7 +62,9 @@ def tool_steps(session, task_ids):
         return steps
     rows = session.execute(select(ToolCall.task_id, ToolCall.tool_name, ToolCall.status).where(
         ToolCall.task_id.in_(list(steps)), ToolCall.status.in_(("SUCCEEDED", "FAILED", "BLOCKED", "UNKNOWN")),
-        ToolCall.tool_name != "unknown").order_by(ToolCall.started_at, ToolCall.id))
+        ToolCall.tool_name != "unknown",
+        # The model correcting its own malformed or repeated call is not a step the person needs to see.
+        or_(ToolCall.error_code.is_(None), ToolCall.error_code.notin_(SELF_CORRECTION_CODES))).order_by(ToolCall.started_at, ToolCall.id))
     for task_id, tool, status in rows:
         if len(steps[task_id]) < STEP_LIMIT:
             steps[task_id].append(StepView(tool=tool, status="done" if status == "SUCCEEDED" else "failed"))

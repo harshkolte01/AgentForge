@@ -17,6 +17,14 @@ class CodingResourceResolver:
         await self.authorizer.check_context(ctx)
         self.repository.verify_references(ctx, evidence_ids=evidence_ids, artifact_ids=artifact_ids)
 
+    def bindings(self, ctx, name):
+        """The task has exactly one repository, pinned commit and sandbox, so the model never has to name them."""
+        state = self.repository.session(ctx)
+        if state is None:
+            return {}
+        return {"repo_id": state["repo_id"], "ref": state["commit_sha"],
+                "base_ref": state["commit_sha"], "sandbox_id": state["id"]}
+
     async def verify_tool_inputs(self, ctx, name, args):
         await self.authorizer.check_context(ctx)
         state = self.repository.session(ctx)

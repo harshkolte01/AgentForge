@@ -1,7 +1,7 @@
 """Explicit framework schema setup; never called by API/worker startup."""
-import asyncio
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from agentforge.settings import get_settings
+from agentforge.workers.asyncio_run import run_async
 
 
 async def setup():
@@ -16,7 +16,7 @@ def main():
     parser.add_argument("command", choices=["setup"])
     parser.parse_args()
     try:
-        asyncio.run(setup())
+        run_async(setup())
     except Exception:
         raise SystemExit("Checkpoint setup failed. Check the local database configuration; connection details are suppressed.") from None
     print("LangGraph checkpoint setup completed.")

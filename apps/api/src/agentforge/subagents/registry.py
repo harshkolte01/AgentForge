@@ -70,7 +70,7 @@ class AgentRegistry:
     async def list_for_task(self, ctx: TaskContext) -> tuple[AgentCatalogEntry, ...]:
         """Short authorized selection metadata; never feed full prompts to a planner."""
         await self.authorizer.check_context(ctx)
-        latest = {"researcher": 4, "general-executor": 5, "code-reviewer": 3, "code-executor": 1, "code-verifier": 1, "verifier": 4, "intent-router": 3}
+        latest = {"researcher": 4, "general-executor": 5, "code-reviewer": 4, "code-executor": 2, "code-verifier": 2, "verifier": 4, "intent-router": 3}
         keys = [(f"builtin/{name}", latest[name]) for name in sorted(BUILTIN_KEYS)]
         with self.session_factory() as session:
             custom = session.execute(select(DefinitionRow.agent_key, DefinitionRow.current_version, AgentDefinitionVersion).outerjoin(

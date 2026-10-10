@@ -7,12 +7,26 @@ from decimal import Decimal
 from typing import Any, Protocol
 
 
+# The synthetic tool a child finishes with; its arguments are the typed result.
+SUBMIT_RESULT = "submit_result"
+
+
 class ModelConfigurationError(ValueError):
     pass
 
 
 class ModelProviderError(RuntimeError):
-    """Safe error without the provider request, credentials, or response body."""
+    """Safe error without the provider request, credentials, or response body.
+
+    code is a stable taxonomy value (MODEL_PROVIDER_ERROR, RATE_LIMIT, AUTH_ERROR, ...) the caller
+    stores and shows; retriable marks failures that happened before any completion was produced.
+    """
+
+    def __init__(self, message: str = "model provider request failed", *, code: str = "MODEL_PROVIDER_ERROR",
+                 retriable: bool = False) -> None:
+        super().__init__(message)
+        self.code = code
+        self.retriable = retriable
 
 
 class ModelContextLimit(ValueError):
@@ -40,8 +54,10 @@ class ToolCallingModel(Protocol):
     def maximum_request_cost(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> Decimal: ...
 
     async def complete(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
-                       on_text: Callable[[str], None] | None = None) -> ModelResponse:
-        """on_text, when given, receives content tokens as they stream; implementations may ignore it."""
+                       on_text: Callable[[str], None] | None = None,
+                       tool_choice: dict[str, Any] | str | None = None) -> ModelResponse:
+        """on_text, when given, receives the person-facing reply as it streams (message content, or the
+        arguments of a submit_result call); implementations may ignore it. tool_choice forces a tool."""
         ...
 
 

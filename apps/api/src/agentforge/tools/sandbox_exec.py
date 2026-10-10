@@ -8,6 +8,7 @@ from agentforge.subagents.budget import BudgetService
 from agentforge.subagents.scope import ScopeDenied
 from agentforge.sandbox.workspace import workspace_revision
 from .contracts import ToolOutcome
+from .errors import ToolError
 from .test_tools import observed_test_count, qualification
 
 
@@ -95,8 +96,6 @@ class CodingExecution:
 
 def register_sandbox_exec(catalog, execution):
     async def command(args, context):
-        if args.args:
-            raise ScopeDenied("command profiles do not accept model-provided arguments")
         outcome = await execution.execute(context.task, args.command_id, operation_key=context.operation_key,
             authority=context.authorize_current, kind="build" if args.command_id == "node_build" else "test")
         if outcome.status == "ok" and outcome.data.get("cleanup_confirmed") is not True:
@@ -105,7 +104,7 @@ def register_sandbox_exec(catalog, execution):
         return outcome
     async def tests(args, context):
         if args.test_profile == "node_build":
-            raise ScopeDenied("build profile is not a test profile")
+            raise ToolError("PROFILE_MISMATCH", "node_build is a build profile. Run it with run_sandbox_command.")
         outcome = await execution.execute(context.task, args.test_profile, operation_key=context.operation_key,
             authority=context.authorize_current, kind="test")
         if outcome.status == "ok" and outcome.data.get("cleanup_confirmed") is not True:

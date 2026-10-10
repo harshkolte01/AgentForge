@@ -3,8 +3,9 @@
 Every model call is built from three layers, highest priority first:
 
 1. **Platform rules** (`subagents/prompt_builder.py`, the `developer` message). Instruction priority, how to work
-   with tools, honesty and safety, and the result contract. They also carry the result JSON schema. Change them
-   here once and every role, built-in or custom, follows.
+   with tools, honesty and safety, and the result contract (finish by calling `submit_result`; its parameters are the
+   result schema, so the schema is sent once, as a tool, not repeated in the prompt). Change them here once and every
+   role, built-in or custom, follows.
 2. **Role instructions** (`subagents/definitions/<name>.v<N>.json`, `system_prompt`). One immutable version per
    role. Released versions are never edited; a change ships as a new version and `registry.py` (`latest`) points to it.
 3. **Brief** (the `user` message, JSON). The assignment from the parent workflow, the current date, permitted tools,
@@ -18,9 +19,9 @@ Every model call is built from three layers, highest priority first:
 | `researcher` v4 | Evidence-backed research with verbatim, source-linked quotations | yes |
 | `general-executor` v5 | Drafting, analysis and planning with a saved deliverable | yes |
 | `verifier` v4 | Independent assessment of an answer, claims and sources | no |
-| `code-executor` v1 | Edits code in the sandbox and runs real tests | no |
-| `code-reviewer` v3 | Read-only review of the diff, tests and secrets | no |
-| `code-verifier` v1 | Read-only check that the change meets the goal | no |
+| `code-executor` v2 | Makes exact, targeted edits in the sandbox and runs real tests | no |
+| `code-reviewer` v4 | Read-only review of the diff, tests and secrets | no |
+| `code-verifier` v2 | Read-only check that the change meets the goal | no |
 
 Older versions (including `general-executor` v1-v2 and `verifier` v2, which were coding roles) remain for runs that
 already used them.
@@ -39,9 +40,12 @@ Start with `# Role`, then a numbered `# Process`, then `# Result rules`, then ha
 
 `tools/catalog.py` holds one description per tool: what it does, when to use it, how to continue (`next_offset`,
 `next_line`), and its limits. Every argument in `tools/contracts.py` has a `description`. Provider schemas drop
-pydantic's auto-generated titles. A failed call returns an error code plus static guidance from `error_guidance`, so the
-model can correct itself without ever seeing provider text. Adding a tool means adding its argument model, a
-description, and a label in `apps/web/lib/tool-steps.ts`.
+pydantic's auto-generated titles, and hide identifiers the task fixes (repository, commit, sandbox, task). A failed call
+returns an error code, a short detail written by our own code (for a bad argument: each wrong field and the constraint it
+broke, never the value) and static guidance from `error_guidance`, so the model can correct itself without ever seeing
+provider text. Adding a tool means adding its argument model, a description, its capability in
+`contracts/agent_definition.py`, and a label in `apps/web/lib/tool-steps.ts`. See `docs/agent-harness.md` for the whole
+tool-calling contract.
 
 ## Rendering activity
 
@@ -63,8 +67,8 @@ the end of the content, and "scroll to latest" appears only when real content, n
 
 ## Live replies
 
-The reply is shown while the model writes it. Models answer with one JSON object, so `llm/streaming.py` reads the
-token stream and yields only the person-facing field: `response` for chat replies and `summary` for the last
+The reply is shown while the model writes it. Models answer with one typed result (the arguments of `submit_result`),
+so `llm/streaming.py` reads the token stream and yields only the person-facing field: `response` for chat replies and `summary` for the last
 research/general stage. Other fields, and fields that are `null`, never stream.
 
 1. `OpenAIAdapter.complete(..., on_text=...)` streams the completion and returns the same message, usage and finish

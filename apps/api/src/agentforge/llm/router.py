@@ -31,4 +31,6 @@ class ModelRouter:
             context_window_tokens=settings.llm_context_window_tokens,
             max_output_tokens=settings.llm_max_output_tokens, timeout_sec=settings.llm_timeout_sec,
             reasoning_effort=settings.llm_reasoning_effort,
+            parallel_tool_calls=settings.llm_parallel_tool_calls, strict_tools=settings.llm_strict_tools,
+            max_retries=settings.llm_max_retries,
         ))

@@ -16,8 +16,12 @@ class ArtifactStorage:
     def __init__(self, root: Path | str) -> None:
         # Construction is inert. Only a configured artifact write creates dirs.
         self.root = Path(root).absolute()
-        if os.name != "posix" or not hasattr(os, "O_NOFOLLOW") or os.open not in os.supports_dir_fd:
+        self._posix = os.name == "posix" and hasattr(os, "O_NOFOLLOW") and os.open in os.supports_dir_fd
+        if not self._posix and os.name != "nt":
             raise ValueError("Phase 3 research artifact storage requires a POSIX host with dir_fd and O_NOFOLLOW support")
+        # Windows has no dir_fd or O_NOFOLLOW, so a local-development fallback is used instead: path based, it
+        # refuses links and junctions below the root and never overwrites, but it cannot close the race that
+        # the descriptor walk closes and cannot enforce owner-only modes. Production runs on POSIX.
 
     def _root_fd(self, *, create: bool = False) -> int:
         # Walk directory FDs from the root so an ancestor symlink replacement
@@ -58,11 +62,47 @@ class ArtifactStorage:
             raise ScopeDenied("invalid artifact storage key")
         return task, filename
 
+    @staticmethod
+    def _plain(path: Path, *, directory: bool) -> None:
+        if path.is_symlink() or path.is_junction():
+            raise ScopeDenied("artifact storage object is a link")
+        if path.exists() and not (path.is_dir() if directory else path.is_file()):
+            raise ScopeDenied("artifact storage object is invalid")
+
+    def _write_local(self, key: str, content: bytes) -> None:
+        directory, filename = self._parts(key)
+        self.root.mkdir(parents=True, exist_ok=True)
+        folder = self.root / directory
+        folder.mkdir(exist_ok=True)
+        self._plain(folder, directory=True)
+        with open(folder / filename, "xb") as handle:  # exclusive: FileExistsError, like O_EXCL
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        self._plain(folder / filename, directory=False)
+
+    def _read_local(self, key: str, sha256: str, max_bytes: int) -> bytes:
+        directory, filename = self._parts(key)
+        folder = self.root / directory
+        self._plain(folder, directory=True)
+        target = folder / filename
+        self._plain(target, directory=False)
+        with open(target, "rb") as handle:
+            if os.fstat(handle.fileno()).st_size > max_bytes:
+                raise ScopeDenied("artifact storage object is invalid")
+            content = handle.read(max_bytes + 1)
+        if len(content) > max_bytes or hashlib.sha256(content).hexdigest() != sha256:
+            raise ScopeDenied("artifact content integrity check failed")
+        return content
+
     def write(self, *, task_id: UUID, artifact_id: UUID, content: bytes) -> tuple[str, str]:
         if len(content) > 2_000_000:
             raise ValueError("artifact_size_limit")
         key = f"{task_id}/{artifact_id}.md"
         directory, filename = self._parts(key)
+        if not self._posix:
+            self._write_local(key, content)
+            return key, hashlib.sha256(content).hexdigest()
         root_fd = self._root_fd(create=True)
         directory_fd = None
         try:
@@ -88,6 +128,8 @@ class ArtifactStorage:
 
     def read(self, storage_key: str, sha256: str, *, max_bytes: int = 2_000_000) -> bytes:
         directory, filename = self._parts(storage_key)
+        if not self._posix:
+            return self._read_local(storage_key, sha256, max_bytes)
         root_fd = self._root_fd()
         directory_fd = None
         try:

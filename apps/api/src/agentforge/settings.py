@@ -48,10 +48,19 @@ class Settings(BaseSettings):
     llm_supports_tools: bool = False
     llm_supports_json: bool = False
     llm_context_window_tokens: int | None = Field(default=None, ge=8192, le=2_000_000)
-    llm_max_output_tokens: int = Field(default=2048, ge=128, le=16384)
+    # A single tool call can carry a whole file (write_sandbox_file, create_task_artifact), so the
+    # default leaves room for roughly 25 KB of text; 2048 truncated anything larger mid-call.
+    llm_max_output_tokens: int = Field(default=8192, ge=128, le=16384)
     llm_timeout_sec: float = Field(default=60, gt=0, le=120)
     llm_input_usd_per_million: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
     llm_output_usd_per_million: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
+    # Let the model request several independent read-only tools in one turn.
+    llm_parallel_tool_calls: bool = True
+    # Send tool schemas in the provider's strict structured-output form. Verify the configured
+    # model accepts it before enabling; the gateway validates every call either way.
+    llm_strict_tools: bool = False
+    # Retries for failures that produced no completion (rate limit, 5xx, connection refused).
+    llm_max_retries: int = Field(default=2, ge=0, le=5)
     llm_reasoning_effort: Literal["none", "minimal", "low", "medium", "high", "xhigh"] | None = None
     worker_lease_sec: int = Field(default=90, ge=30, le=300)
     worker_heartbeat_sec: int = Field(default=10, ge=2, le=30)

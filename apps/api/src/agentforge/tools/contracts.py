@@ -4,7 +4,7 @@ import json
 from decimal import Decimal
 from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 
 class ToolArguments(BaseModel):
@@ -36,14 +36,28 @@ class RepoFileArgs(RepoArgs):
     max_lines: int = Field(default=200, ge=1, le=200, description="Complete lines requested; returned content is also capped at 10000 UTF-8 bytes.")
 
 
+def _directory_prefix(value: str | None) -> str | None:
+    if not isinstance(value, str):
+        return value
+    cleaned = value.strip().removeprefix("./").rstrip("/")
+    return None if cleaned in ("", ".") else cleaned
+
+
 class RepoSearchArgs(RepoArgs):
     ref: Ref = Field(description="The pinned commit SHA from the brief.")
-    query: str = Field(min_length=1, max_length=2000, description="Text to find. Case-insensitive substring match, not a regular expression.")
+    query: str = Field(min_length=1, max_length=2000, description="Text to find, matched as a plain substring (not a regular expression).")
+    path_prefix: Path | None = Field(default=None, description="Only search files under this directory, such as 'src/api'. Omit to search the whole repository.")
+    case_sensitive: bool = Field(default=False, description="Match letter case exactly. Default is case-insensitive.")
+    context_lines: int = Field(default=0, ge=0, le=3, description="Lines of surrounding code to return with each match (0-3).")
+    max_results: int = Field(default=30, ge=1, le=50, description="Maximum matches to return (1-50).")
+
+    _prefix = field_validator("path_prefix", mode="after")(_directory_prefix)
 
 
 class RepoFilesArgs(RepoArgs):
     ref: Ref = Field(description="The pinned commit SHA from the brief.")
     path: Path = Field(default=".", description="Directory to list, relative to the repository root. Use '.' for the root.")
+    max_depth: int | None = Field(default=None, ge=1, le=10, description="Show only this many directory levels; deeper folders are summarised as 'folder/ (N files)'. Omit to list every file.")
 
 
 class IssueArgs(RepoArgs):
@@ -73,13 +87,18 @@ class SandboxWriteArgs(SandboxFileArgs):
     expected_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$", description="Required to overwrite an existing file: the sha256 returned by your most recent read_sandbox_file of that path. Omit it only to create a new file.")
 
 
+class SandboxEditArgs(SandboxFileArgs):
+    old_string: str = Field(min_length=1, max_length=20_000, description="The exact existing text to replace, including whitespace and indentation. Copy it from read_sandbox_file output. It must match exactly one place unless replace_all is true, so include enough surrounding lines to be unique.")
+    new_string: str = Field(max_length=50_000, description="The replacement text. Use an empty string to delete old_string.")
+    replace_all: bool = Field(default=False, description="Replace every occurrence of old_string instead of requiring exactly one match.")
+
+
 class GitDiffArgs(SandboxArgs):
     base_ref: Ref = Field(description="The base commit SHA given in the brief.")
 
 
 class SandboxCommandArgs(SandboxArgs):
     command_id: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_\-]+$", description="One of the command profiles listed in the brief, such as node_build.")
-    args: Annotated[tuple[Annotated[str, Field(max_length=512)], ...], Field(strict=False, max_length=20)] = Field(default=(), description="Must stay empty. Command profiles do not accept arguments.")
 
 
 class RunTestsArgs(SandboxArgs):
@@ -127,6 +146,7 @@ ARGUMENT_MODELS: dict[str, type[ToolArguments]] = {
     "read_repo_file": RepoFileArgs, "search_repo": RepoSearchArgs,
     "get_issue": IssueArgs, "list_repo_files": RepoFilesArgs,
     "read_sandbox_file": SandboxReadArgs, "write_sandbox_file": SandboxWriteArgs,
+    "edit_sandbox_file": SandboxEditArgs,
     "git_diff": GitDiffArgs, "run_sandbox_command": SandboxCommandArgs,
     "run_tests": RunTestsArgs, "get_test_results": TestResultsArgs,
     "get_pr_status": PRStatusArgs, "browser_public_page": BrowserArgs,
@@ -144,6 +164,8 @@ class ToolOutcome(BaseModel):
     # None means the remote charge is unknown, retaining the operation cap.
     cost_usd: Decimal | None
     error_code: str | None = Field(default=None, max_length=64, pattern=r"^[A-Z_]+$")
+    # Safe, human-written explanation of an error, shown to the model next to the static guidance.
+    error_detail: str | None = Field(default=None, max_length=600)
 
     @model_validator(mode="after")
     def bounded(self) -> Self:
@@ -204,6 +226,11 @@ class SandboxWriteRequest(_Request):
     args: SandboxWriteArgs
 
 
+class SandboxEditRequest(_Request):
+    name: Literal["edit_sandbox_file"]
+    args: SandboxEditArgs
+
+
 class DiffRequest(_Request):
     name: Literal["git_diff"]
     args: GitDiffArgs
@@ -256,7 +283,7 @@ class TaskArtifactCreateRequest(_Request):
 
 ToolRequest = Annotated[
     WebSearchRequest | FetchRequest | RepoFileRequest | RepoSearchRequest |
-    IssueRequest | RepoFilesRequest | SandboxFileRequest | SandboxWriteRequest |
+    IssueRequest | RepoFilesRequest | SandboxFileRequest | SandboxWriteRequest | SandboxEditRequest |
     DiffRequest | CommandRequest | TestsRequest | TestResultsRequest |
     PRStatusRequest | BrowserRequest | TaskInputRequest | ResearchSourceRequest |
     TaskArtifactReadRequest | TaskArtifactCreateRequest,

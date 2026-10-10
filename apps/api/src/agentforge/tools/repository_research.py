@@ -5,6 +5,7 @@ from urllib.parse import quote
 from agentforge.repositories.research_inputs import ResearchInputRepository
 from agentforge.subagents.scope import ScopeDenied
 from agentforge.tools.contracts import ToolOutcome
+from agentforge.tools.files import in_directory, line_matches, match_record, overview, require_directory, require_text
 from agentforge.tools.text_ranges import read_lines
 
 
@@ -33,6 +34,11 @@ def register_repository_research(catalog, sessions, selection, github, resources
             await authorize(selection["repo_id"])
     resources.verify_tool_inputs = verify
 
+    def bindings(ctx, name):
+        # One repository and one pinned commit are selected for the whole task.
+        return {"repo_id": selection["repo_id"], "ref": selection["ref"]}
+    resources.bindings = bindings
+
     async def files(execution):
         nonlocal cached
         if cached is None:
@@ -52,11 +58,7 @@ def register_repository_research(catalog, sessions, selection, github, resources
             title=path, content=content, source_type="repository", fetch_status="FETCHED")
 
     async def read(args, execution):
-        data = (await files(execution))[args.path]
-        try:
-            text = data.decode("utf-8")
-        except UnicodeError:
-            raise ValueError("binary_file_not_readable_as_text") from None
+        text = require_text(await files(execution), args.path)
         saved = source(execution, args.path, text)
         return ToolOutcome(status="ok", data={"path": args.path, "source_id": saved["id"],
             **read_lines(text, line_start=args.line_start, max_lines=args.max_lines)},
@@ -64,33 +66,38 @@ def register_repository_research(catalog, sessions, selection, github, resources
 
     async def listing(args, execution):
         selected = await files(execution)
-        prefix = "" if args.path == "." else args.path.rstrip("/") + "/"
-        paths = [path for path in selected if path.startswith(prefix)]
+        directory = "." if args.path == "." else args.path.rstrip("/")
+        require_directory(selected, None if directory == "." else directory)
+        paths = [path for path in selected if directory == "." or path.startswith(directory + "/")]
+        entries = overview(paths, directory, args.max_depth)
         preview = []
-        for path in paths:
-            if not _preview_fits({"paths": [*preview, path], "truncated": False}):
+        for entry in entries:
+            if not _preview_fits({"paths": [*preview, entry], "truncated": False}):
                 break
-            preview.append(path)
-        return ToolOutcome(status="ok", data={"paths": preview, "truncated": len(paths) > len(preview)}, cost_usd=Decimal(0))
+            preview.append(entry)
+        return ToolOutcome(status="ok", data={"paths": preview, "truncated": len(entries) > len(preview),
+                                              "total_entries": len(entries)}, cost_usd=Decimal(0))
 
     async def search(args, execution):
         selected = await files(execution)
+        require_directory(selected, args.path_prefix)
         matches, refs = [], []
         for path, data in selected.items():
+            if not in_directory(path, args.path_prefix):
+                continue
             try:
                 text = data.decode("utf-8")
             except UnicodeError:
                 continue
             source_id = None
-            for line, value in enumerate(text.splitlines(), 1):
-                if args.query.casefold() not in value.casefold():
-                    continue
+            for line, value, before, after in line_matches(text, args.query,
+                                                           case_sensitive=args.case_sensitive, context=args.context_lines):
                 # Source IDs are canonical UUID strings. Size the first match
                 # before writing a source that the bounded result cannot return.
-                candidate = {"path": path, "line": line, "text": value[:300],
+                candidate = {**match_record(path, line, value, before, after),
                     "source_id": source_id or "00000000-0000-0000-0000-000000000000"}
                 candidate_refs = refs if source_id else [*refs, candidate["source_id"]]
-                if len(matches) >= 30 or not _preview_fits({"matches": [*matches, candidate], "truncated": False}, candidate_refs):
+                if len(matches) >= args.max_results or not _preview_fits({"matches": [*matches, candidate], "truncated": False}, candidate_refs):
                     return ToolOutcome(status="ok", data={"matches": matches, "truncated": True},
                         evidence_ids=tuple(refs), cost_usd=Decimal(0))
                 if source_id is None:

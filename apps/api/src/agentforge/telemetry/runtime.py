@@ -6,18 +6,21 @@ class ObservedModel:
     def __init__(self, model, telemetry, store):
         self.model, self.telemetry, self.store = model, telemetry, store
         self.model_id = model.model_id
+        # Harness hints some models expose; absent on fixture models.
+        self.context_budget_bytes = getattr(model, 'context_budget_bytes', None)
+        self.strict_tools = bool(getattr(model, 'strict_tools', False))
 
     def maximum_request_cost(self, messages, tools):
         return self.model.maximum_request_cost(messages, tools)
 
-    async def complete(self, messages, tools, on_text=None):
+    async def complete(self, messages, tools, on_text=None, tool_choice=None):
         self.store.progress("model.started", {"model": self.model_id})
         with self.telemetry.span("model_request", kind="LLM") as span:
             if span is not None:
                 span.set_attribute("task_id", str(self.store.lease.task_id))
                 span.set_attribute("llm.model", self.model_id)
-            response = await (self.model.complete(messages, tools, on_text=on_text) if on_text is not None
-                              else self.model.complete(messages, tools))
+            extra = {key: value for key, value in (('on_text', on_text), ('tool_choice', tool_choice)) if value is not None}
+            response = await self.model.complete(messages, tools, **extra)
             if span is not None:
                 span.set_attribute("gen_ai.usage.input_tokens", response.usage.input_tokens)
                 span.set_attribute("gen_ai.usage.output_tokens", response.usage.output_tokens)
@@ -37,7 +40,12 @@ def observed_tool(tool, telemetry, store):
                 span.set_attribute("task_id", str(store.lease.task_id))
                 span.set_attribute("spawn_id", str(execution.agent_run_id))
                 span.set_attribute("tool.name", tool.name)
-            outcome = await tool.handler(arguments, execution)
+            try:
+                outcome = await tool.handler(arguments, execution)
+            except Exception:
+                # A typed rejection (missing file, ambiguous edit) is still a finished step for the timeline.
+                store.progress("tool.finished", {"tool": tool.name, "status": "error", "evidence_ids": [], "artifact_ids": []})
+                raise
             if span is not None:
                 span.set_attribute("status", outcome.status)
         store.progress("tool.finished", {"tool": tool.name, "status": outcome.status,

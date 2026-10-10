@@ -22,6 +22,7 @@ from agentforge.repositories.jobs import JobRepository, LeaseLost, TaskCancelled
 from agentforge.settings import get_settings
 from agentforge.subagents.budget import BudgetService
 from agentforge.telemetry.neatlogs_setup import Telemetry
+from agentforge.workers.asyncio_run import run_async
 from .leases import supervise
 from .reconciliation import reconcile
 
@@ -133,7 +134,9 @@ async def execute(settings, sessions, saver, telemetry, jobs, lease):
         # Provider/DB errors can include private request/connection details.
         # Attempt a truthful receipt; if DB unavailable retain the lease/job for
         # later reconciliation rather than pretending persistence succeeded.
-        logger.error("Worker task failed; task_id=%s", lease.task_id)
+        # The traceback goes only to the operator's log, never to the task or its events; without it a
+        # failure that happens before any child starts is undiagnosable (it left no run or tool rows).
+        logger.error("Worker task failed; task_id=%s", lease.task_id, exc_info=True)
         try:
             reconcile(store, BudgetService(sessions))
             store.finish("PARTIAL", "The workflow stopped before verified delivery. Review task history before starting another task.", error_code="CHILD_RUNTIME_ERROR")
@@ -190,7 +193,7 @@ def main():
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
     try:
-        asyncio.run(run(once=args.once))
+        run_async(run(once=args.once))
     except KeyboardInterrupt:
         pass
     except Exception:

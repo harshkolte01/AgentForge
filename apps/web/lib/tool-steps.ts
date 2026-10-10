@@ -14,6 +14,7 @@ const labels: Record<string, readonly [string, string, string]> = {
   get_pr_status: ["Checking a pull request", "Checked a pull request", "Couldn't check the pull request"],
   read_sandbox_file: ["Reading code", "Read code", "Couldn't read code"],
   write_sandbox_file: ["Editing code", "Edited code", "Couldn't edit code"],
+  edit_sandbox_file: ["Editing code", "Edited code", "Couldn't edit code"],
   git_diff: ["Reviewing changes", "Reviewed changes", "Couldn't review changes"],
   run_tests: ["Running tests", "Ran tests", "Tests couldn't run"],
   run_sandbox_command: ["Running a command", "Ran a command", "Command failed"],

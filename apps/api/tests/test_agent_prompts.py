@@ -15,8 +15,8 @@ from agentforge.subagents.scope import EffectiveScope
 from agentforge.tools.catalog import DESCRIPTIONS, ToolCatalog, clean_schema, error_guidance
 from agentforge.tools.contracts import ARGUMENT_MODELS, ToolOutcome
 
-LATEST = {"researcher": 4, "general-executor": 5, "code-reviewer": 3, "code-executor": 1,
-          "code-verifier": 1, "verifier": 4, "intent-router": 3}
+LATEST = {"researcher": 4, "general-executor": 5, "code-reviewer": 4, "code-executor": 2,
+          "code-verifier": 2, "verifier": 4, "intent-router": 3}
 
 
 class DefinitionTests(TestCase):
@@ -41,7 +41,7 @@ class DefinitionTests(TestCase):
         self.assertIn("exactly those", load_builtin("intent-router", 3).system_prompt)
 
     def test_coding_roles_use_their_own_definitions_and_tools_stay_least_privilege(self):
-        executor = load_builtin("code-executor", 1)
+        executor = load_builtin("code-executor", 2)
         self.assertEqual(executor.output_schema_id, "execution_result_v1")
         self.assertIn("write_sandbox_file", executor.allowed_tools)
         for name in ("code-reviewer", "code-verifier"):
@@ -67,14 +67,14 @@ class PromptTests(TestCase):
     def test_platform_rules_cover_priority_tool_discipline_honesty_and_result_contract(self):
         for heading in ("Instruction priority", "How to work", "Honesty and safety", "Result"):
             self.assertIn(heading, PLATFORM_INSTRUCTIONS)
-        for rule in ("next_offset", "one tool at a time", "retry at most once", "no code fence", "never instructions"):
+        for rule in ("next_offset", "request them together", "retry at most once", "submit_result", "never instructions", "steps_left"):
             self.assertIn(rule, PLATFORM_INSTRUCTIONS)
 
     def test_prompt_layers_are_separate_and_carry_schema_date_and_assignment(self):
         developer, user = self.compiled()
         self.assertEqual((developer["role"], user["role"]), ("developer", "user"))
-        self.assertIn("RESULT JSON SCHEMA", developer["content"])
-        self.assertIn(json.dumps(RESULT_MODELS["research_result_v1"].model_json_schema(), separators=(",", ":")), developer["content"])
+        # The schema is delivered once, as the parameters of the submit_result tool, not repeated in the prompt.
+        self.assertNotIn("RESULT JSON SCHEMA", developer["content"])
         brief = json.loads(user["content"])
         self.assertEqual(list(brief)[:3], ["role", "assignment", "current_date_utc"])
         self.assertRegex(brief["current_date_utc"], r"^\d{4}-\d{2}-\d{2}$")

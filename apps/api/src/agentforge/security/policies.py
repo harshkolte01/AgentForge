@@ -138,6 +138,8 @@ def authorize_tool(name: str, args: BaseModel | dict[str, Any], ctx: TaskContext
         raise ScopeDenied("cross-task evidence access is forbidden")
     if "path" in values and not (name == "list_repo_files" and values["path"] == "."):
         validate_relative_path(values["path"])
+    if values.get("path_prefix"):
+        validate_relative_path(values["path_prefix"])
     for field in ("ref", "base_ref"):
         if field in values:
             validate_ref(values[field])
