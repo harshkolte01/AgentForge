@@ -8,7 +8,10 @@ conversation/custom-agent/general/research and continuation code plus its UI wer
 published as `cb7bbfa7fb8c2f6a3aab4a20610d7841a9b0c633`, with remote SHA verified.
 The Phase5 security follow-up is `93dd311`. Phase7 release
 configuration, CI, evaluation runner and runbooks are implemented. **External
-gates P5, P6 and P7 remain open.**
+gates P5, P6 and P7 remain open.** Phase7 release commit `fa559e1` was
+published and remote-verified. Its [hosted Release checks run](https://github.com/harshkolte01/AgentForge/actions/runs/38056877597)
+completed successfully with both API and web jobs passing. This closes the hosted
+CI check only; the other qualification gates below remain open.
 
 The final unit suite passed 67 checks; the frozen release runner passed 65 unit
 checks plus five disposable PostgreSQL

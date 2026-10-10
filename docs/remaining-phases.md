@@ -9,7 +9,7 @@ Updated 10 October 2026. This tracker separates implemented code from locally ch
 | Phase 5 frontend | Frontend/publication agent | Implemented; lint/types/build passed | Authenticated browser connection/approval/publication flow |
 | Phase 6: sessions, general tasks, custom agents and coding continuation | Sessions/general-agents agent | Published `cb7bbfa`; disposable persistence/runtime and isolated publication checks passed | Live model/custom-agent traces, process-interruption recovery |
 | Phase 6 frontend | Frontend/publication agent | Published `cb7bbfa`; lint/types/build passed | Authenticated browser interaction evidence |
-| Phase 7: release hardening, evidence and deployment | Release agent + coordinator | CI/config/runner/ops/backup/docs implemented; 67 final unit checks; frozen65-test/five-workflow receipt passed; local DB0007 and HTTP handoff checked | Hosted CI, container build/start, TLS/auth/SSE, restore drill, actual partner evidence and submission |
+| Phase 7: release hardening, evidence and deployment | Release agent + coordinator | CI/config/runner/ops/backup/docs implemented; 67 final unit checks; frozen65-test/five-workflow receipt passed; local DB0007 and HTTP handoff checked; [hosted API/web CI passed for `fa559e1`](https://github.com/harshkolte01/AgentForge/actions/runs/38056877597) | Container build/start, TLS/auth/SSE, restore drill, actual partner evidence and submission |
 
 
 ## Publication

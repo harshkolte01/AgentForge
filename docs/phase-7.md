@@ -8,7 +8,8 @@ actual hackathon submission.
 
 - SHA-pinned GitHub Actions checkouts/tool setup, locked dependencies, Python
   unit checks and uniquely named disposable PostgreSQL workflows, frontend
-  lint/route-types/TypeScript/build. CI needs an actual hosted run after push.
+  lint/route-types/TypeScript/build. [Hosted Release checks passed](https://github.com/harshkolte01/AgentForge/actions/runs/38056877597)
+  for release commit `fa559e1495a391715bb9cfed23516a3fd78ba840`, with both API and web jobs successful.
 - `scripts/release_checks.py`: repeatable checks with private logs, log hashes,
   commit/dirty-tree identity and explicit unverified gates in a JSON receipt.
 - Nonroot API/worker/web images, same-origin TLS proxy, bounded request sizes,
@@ -32,7 +33,8 @@ passed63 core tests plus fixtures and frontend lint/types/build.
 
 Compose `config --quiet`, shell syntax, Python compilation and whitespace checks
 passed. Backup tests preserve originally stopped services on success and dump
-failure. Hosted CI, container builds and public deployment were not run.
+failure. Hosted API/web CI passed for the release commit above. Container builds
+and public deployment remain unqualified.
 
 ## Authorized local runtime handoff
 
@@ -85,7 +87,8 @@ snapshot is SELECT-only and refuses to infer idle worker liveness.
 
 ## Exit gates
 
-Before public intake, collect a clean checkout receipt and hosted CI result, build
+Before public intake, retain the passing hosted CI result, collect a clean
+checkout receipt, build
 and scan deployment images, qualify the protected new-volume restore drill, verify
 TLS/cookies/OAuth/install/expiry/revocation and repository selection, prove SSE
 stream/reconnect/logout behavior, and run controlled canary tasks with actual
