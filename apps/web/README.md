@@ -14,9 +14,16 @@ pnpm dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
-The home page shows AgentForge AI and a health status placeholder. It does not call a backend health endpoint yet.
+The home page fetches `/api/v1/health/live` and `/api/v1/health/ready` from the browser. `next.config.ts` rewrites `/api/:path*` to `http://localhost:8000/api/:path*`.
 
-`next.config.ts` proxies `/api/:path*` to `http://localhost:8000/api/:path*`, preserving the path and query string. Browser API calls should use relative `/api/...` URLs. Start the FastAPI service on port 8000 when its routes are implemented.
+Start the API first:
+
+```powershell
+cd C:\Coding\AgentForge\apps\api
+uv run uvicorn agentforge.main:app --app-dir src --reload --port 8000
+```
+
+Then open [http://localhost:3000](http://localhost:3000). Direct API checks: [http://localhost:8000/api/v1/health/live](http://localhost:8000/api/v1/health/live), [http://localhost:8000/api/v1/health/ready](http://localhost:8000/api/v1/health/ready), [http://localhost:8000/docs](http://localhost:8000/docs).
 
 ## Checks
 

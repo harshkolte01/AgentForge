@@ -1,13 +1,6 @@
-import { Activity, Sparkles } from "lucide-react";
+import { Sparkles } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { SystemHealth } from "@/components/system-health";
 
 export default function Home() {
   return (
@@ -25,24 +18,7 @@ export default function Home() {
           </p>
         </header>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Activity aria-hidden="true" className="size-4" />
-              <h2>System health</h2>
-            </CardTitle>
-            <CardDescription>Service health status will appear here.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Badge variant="outline" className="gap-2">
-              <span aria-hidden="true" className="size-2 rounded-full bg-amber-500" />
-              Not checked
-            </Badge>
-            <p className="mt-3 text-sm text-muted-foreground">
-              Waiting for the health check connection.
-            </p>
-          </CardContent>
-        </Card>
+        <SystemHealth />
       </div>
     </main>
   );

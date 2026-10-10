@@ -132,3 +132,40 @@ uv run alembic check
 The equivalent `py -3.12 -m uv run alembic ...` commands were used for the verified upgrades because existing shells may not have refreshed the uv PATH entry. Both invoke the same installed uv tool.
 
 No blockers remain for Step 1.5. FastAPI bootstrap/health routes and CI remain for Steps 1.6 and 1.7.
+
+## Step 1.6 — FastAPI bootstrap + health
+
+Completed on 10 October 2026. Phase 1 as a whole is still incomplete.
+
+Implemented:
+
+- `apps/api/src/agentforge/main.py`: FastAPI factory with lifespan-managed SQLAlchemy engine, CORS from `ALLOWED_ORIGINS` (default `http://localhost:3000`), and OpenAPI at `/docs`.
+- `apps/api/src/agentforge/api/routes_health.py`: `GET /api/v1/health/live` returns `{ "status": "ok" }` without touching the database. `GET /api/v1/health/ready` pings PostgreSQL with `SELECT 1` and returns `ready` (HTTP 200) or `degraded` (HTTP 503). Checkpointer and worker are reported as `not_configured`; they are not required for Phase 1 readiness. Database errors are mapped to `database_unreachable` without leaking connection URLs.
+- `apps/api/src/agentforge/database/engine.py`: pooled engine with `pool_pre_ping` and a 5-second connect timeout.
+- `apps/web/components/system-health.tsx`: client fetch of `/api/v1/health/live` and `/api/v1/health/ready` through the Next.js rewrite. `app/page.tsx` renders that card. No login, task, or agent routes were added.
+
+Verification:
+
+- `GET http://localhost:8000/api/v1/health/live`: HTTP 200 `{"status":"ok"}`.
+- `GET http://localhost:8000/api/v1/health/ready`: HTTP 200 `{"status":"ready","checks":{"database":{"status":"ok"},"checkpointer":{"status":"not_configured"},"worker":{"status":"not_configured"}}}`.
+- `GET http://localhost:8000/docs`: HTTP 200 Swagger UI for AgentForge AI API, listing the two health operations.
+- Next.js rewrite: `GET http://localhost:3000/api/v1/health/live` and `/ready` both returned the same payloads as the API.
+- CORS: request with `Origin: http://localhost:3000` received `Access-Control-Allow-Origin: http://localhost:3000`.
+- Browser on `http://localhost:3000`: System health showed Live and Ready with database ok.
+- `pnpm lint` and `pnpm exec tsc --noEmit`: exit code 0.
+
+Local commands (use `py -3.12 -m uv` if `uv` is not on PATH):
+
+```powershell
+cd C:\Coding\AgentForge\apps\api
+py -3.12 -m uv run uvicorn agentforge.main:app --app-dir src --reload --port 8000
+```
+
+```powershell
+cd C:\Coding\AgentForge\apps\web
+pnpm dev
+```
+
+Open `http://localhost:3000`, `http://localhost:8000/api/v1/health/live`, `http://localhost:8000/api/v1/health/ready`, and `http://localhost:8000/docs`.
+
+No blockers remain for Step 1.6. CI belongs to Step 1.7.

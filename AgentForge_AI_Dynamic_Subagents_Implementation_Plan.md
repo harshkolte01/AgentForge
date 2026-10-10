@@ -2084,7 +2084,7 @@ GitHub Actions job outline:
 | 1.3 | `apps/web/` | Scaffold Next.js/Tailwind/shadcn | **Complete (10 October 2026):** `http://localhost:3000` returns HTTP 200; install, lint, production build and API rewrite checks pass. See [phase-status.md](phase-status.md). |
 | 1.4 | Local PostgreSQL, `.env`, `infra/README.md` (Docker Compose skipped) | Create `agentforge` on the existing local PostgreSQL service and configure both database URLs | **Complete (10 October 2026):** `psql` and API SQLAlchemy/psycopg connections return `1` for `SELECT 1`; native checkpoint URL verified. See [phase-status.md](phase-status.md). |
 | 1.5 | `database/*`, Alembic | Migrate only users/projects/tasks/definitions and definition versions | **Complete (10 October 2026):** revision `0001_phase1` creates the five Phase 1 tables; `psql` lists them, repeat upgrade is a no-op, and `alembic check` reports no drift. See [phase-status.md](phase-status.md). |
-| 1.6 | `main.py`, `/health` | FastAPI bootstrap, CORS/proxy | Health status and OpenAPI reachable |
+| 1.6 | `main.py`, `/health` | FastAPI bootstrap, CORS/proxy | **Complete (10 October 2026):** live/ready health, OpenAPI `/docs`, CORS, and Next.js `/api` rewrite to FastAPI all verified. See [phase-status.md](phase-status.md). |
 | 1.7 | `.github/workflows/ci.yml` | Lint/test/typecheck placeholders become real jobs | CI green for implemented tests |
 
 **Gate P1:** Local web communicates with API; migrations pass; Entire active.
