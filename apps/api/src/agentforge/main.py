@@ -95,8 +95,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response = await call_next(request)
         if request.url.path.startswith("/api/v1/") and not request.url.path.startswith("/api/v1/health/"):
             # Never cacheable. A route that already chose its own non-caching policy keeps it: the event stream needs
-            # `no-transform`, or an intermediary (the web app's proxy) compresses it and holds back live updates.
-            if "no-store" not in response.headers.get("Cache-Control", ""):
+            # `no-transform`, or an intermediary (the web app's proxy) compresses it and holds back live updates. The one
+            # exception is the app's public client metadata document, which authorization servers fetch and are meant to cache.
+            if "no-store" not in response.headers.get("Cache-Control", "") and request.url.path != "/api/v1/plugins/oauth/client.json":
                 response.headers["Cache-Control"] = "no-store"
             response.headers["X-Content-Type-Options"] = "nosniff"
         return response

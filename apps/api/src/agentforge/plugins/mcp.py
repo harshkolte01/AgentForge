@@ -15,8 +15,8 @@ import re
 import socket
 import ssl
 from dataclasses import dataclass
-from ipaddress import ip_address
-from typing import Any
+from ipaddress import ip_address, ip_network
+from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 import httpx
@@ -25,6 +25,8 @@ PROTOCOL_VERSION = "2025-06-18"
 SUPPORTED_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
 CLIENT_NAME, CLIENT_VERSION = "AgentForge", "0.1.0"
 MAX_RESPONSE_BYTES = 4_000_000
+# A token sent as a header can be long (a signed token carries claims); this is far above any real one and below what servers accept.
+MAX_CREDENTIAL_CHARS = 8200
 MAX_PAGES, MAX_LISTED = 10, 500
 HEADER_NAME = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,64}$")
 RESERVED_HEADERS = frozenset({"host", "content-length", "content-type", "accept", "accept-encoding", "mcp-session-id", "mcp-protocol-version",
@@ -87,8 +89,16 @@ def validate_url(url: str, *, allow_private: bool) -> tuple[str, str, int, bool]
     return url, host, port or (443 if secure else 80), secure
 
 
+NAT64 = ip_network("64:ff9b::/96")
+
+
 def _public(address: str) -> bool:
     ip = ip_address(address)
+    # On an IPv6-only network a resolver (DNS64) gives IPv4-only hosts synthesized addresses in 64:ff9b::/96 (RFC 6052), which
+    # carry the IPv4 address in their last 32 bits. What matters is that address: a public one is as reachable as any, and one that
+    # names a private or local machine stays refused.
+    if ip.version == 6 and ip in NAT64:
+        return _public(str(ip_address(int(ip) & 0xFFFFFFFF)))
     return ip.is_global and not (ip.is_multicast or ip.is_unspecified or ip.is_reserved or (ip.version == 6 and ip.ipv4_mapped))
 
 
@@ -108,16 +118,31 @@ async def resolve_target(url: str, *, allow_private: bool) -> Target:
     return Target(url, host, port, secure, tuple(addresses))
 
 
-def clean_headers(headers: dict[str, str]) -> dict[str, str]:
+def clean_headers(headers: dict[str, str], *, limit: int = 4096) -> dict[str, str]:
     """Credential headers, checked: a plain header name and a value that cannot break out of its line."""
     out: dict[str, str] = {}
     for name, value in headers.items():
         if not isinstance(name, str) or not HEADER_NAME.fullmatch(name) or name.lower() in RESERVED_HEADERS:
             raise McpError("PLUGIN_URL_REJECTED", "That header name cannot be used.")
-        if not isinstance(value, str) or not value or len(value) > 4096 or any(ord(char) < 32 or ord(char) == 127 for char in value):
+        if not isinstance(value, str) or not value or len(value) > limit or any(ord(char) < 32 or ord(char) == 127 for char in value):
             raise McpError("PLUGIN_AUTH_INVALID", "The credential contains characters that cannot be sent.")
         out[name] = value
     return out
+
+
+_PARAM = re.compile(r'([A-Za-z0-9_-]+)\s*=\s*(?:"((?:[^"\\]|\\.)*)"|([^\s,]+))')
+
+
+def challenge_params(values: list[str]) -> dict[str, str]:
+    """`resource_metadata`, `scope`, `error` and the like from the Bearer challenge(s) of a 401/403 (RFC 6750 section 3)."""
+    found: dict[str, str] = {}
+    for value in values:
+        start = value.lower().find("bearer")
+        if start < 0:
+            continue
+        for match in _PARAM.finditer(value[start + 6:]):
+            found.setdefault(match.group(1).lower(), (match.group(2) if match.group(2) is not None else match.group(3)).replace('\\"', '"'))
+    return found
 
 
 def normalize_result(result: Any) -> dict[str, Any]:
@@ -143,12 +168,28 @@ def normalize_result(result: Any) -> dict[str, Any]:
             "structured": structured if isinstance(structured, (dict, list)) else None}
 
 
+class TokenSource(Protocol):
+    """Credentials that change over time, such as an OAuth access token."""
+
+    async def headers(self) -> dict[str, str]:
+        """The credential header for the next request. McpError when there is none that can be used."""
+
+    async def rejected(self) -> bool:
+        """The server answered 401 to what `headers` gave. Gets a new credential if it can; True when asking again is worthwhile."""
+
+    async def insufficient(self, scope: str | None) -> None:
+        """The server answered 403 `insufficient_scope`: the sign-in does not cover what was asked (`scope` is what it needs)."""
+
+
 class McpClient:
     """One connection to one server. Initializes lazily, keeps its session between calls, and starts a new one if it expires."""
 
-    def __init__(self, url: str, *, headers: dict[str, str] | None = None, allow_private: bool = False, timeout: float = 60) -> None:
+    def __init__(self, url: str, *, headers: dict[str, str] | None = None, allow_private: bool = False, timeout: float = 60,
+                 auth: "TokenSource | None" = None) -> None:
         self.url, self.allow_private, self.timeout = url, allow_private, timeout
         self.headers = clean_headers(headers or {})
+        # A source of credentials that change over time (an OAuth token): asked for the header on every request.
+        self.auth = auth
         self.session_id: str | None = None
         self.version: str | None = None
         self.server_name: str | None = None
@@ -158,23 +199,24 @@ class McpClient:
         self._init_lock = asyncio.Lock()
 
     # --- transport ---------------------------------------------------------------------------------------------------
-    def _request_headers(self, target: Target, bare: bool = False) -> dict[str, str]:
+    def _request_headers(self, target: Target, bare: bool = False, extra: dict[str, str] | None = None) -> dict[str, str]:
         headers = {"Host": target.host_header, "User-Agent": f"{CLIENT_NAME}/{CLIENT_VERSION}", "Content-Type": "application/json",
-                   "Accept": "application/json, text/event-stream", **self.headers}
+                   "Accept": "application/json, text/event-stream", **self.headers, **(extra or {})}
         if self.version and not bare:
             headers["MCP-Protocol-Version"] = self.version
         if self.session_id and not bare:
             headers["Mcp-Session-Id"] = self.session_id
         return headers
 
-    async def _post(self, target: Target, address: str, body: bytes | None, method: str, expect_id: int | None, bare: bool) -> tuple[int, httpx.Headers, Any]:
+    async def _post(self, target: Target, address: str, body: bytes | None, method: str, expect_id: int | None, bare: bool,
+                    extra: dict[str, str] | None = None) -> tuple[int, httpx.Headers, Any]:
         url = httpx.URL(target.url).copy_with(host=address.split("%", 1)[0])
         extensions = {"sni_hostname": target.host} if target.secure else {}
         transport = httpx.AsyncHTTPTransport(verify=_tls(), retries=0, trust_env=False,
                                              limits=httpx.Limits(max_connections=1, max_keepalive_connections=0))
         timeout = httpx.Timeout(connect=10, read=self.timeout, write=10, pool=10)
         async with httpx.AsyncClient(transport=transport, trust_env=False, timeout=timeout, follow_redirects=False) as client:
-            async with client.stream(method, url, content=body, headers=self._request_headers(target, bare), extensions=extensions) as response:
+            async with client.stream(method, url, content=body, headers=self._request_headers(target, bare, extra), extensions=extensions) as response:
                 status, headers = response.status_code, response.headers
                 if status >= 300 or expect_id is None:
                     # Nothing useful is read from an error or a notification's acknowledgement beyond a small bounded amount.
@@ -225,13 +267,15 @@ class McpClient:
 
     async def _send(self, payload: dict | None, *, method: str = "POST", expect_id: int | None = None, bare: bool = False) -> tuple[int, httpx.Headers, Any]:
         body = json.dumps(payload, separators=(",", ":")).encode() if payload is not None else None
+        # A credential that changes (an OAuth token) is read fresh for every request, so a refreshed one is used at once.
+        extra = clean_headers(await self.auth.headers(), limit=MAX_CREDENTIAL_CHARS) if self.auth is not None else None
         try:
             async with asyncio.timeout(self.timeout + 15):
                 target = await resolve_target(self.url, allow_private=self.allow_private)
                 failure: Exception | None = None
                 for address in target.addresses:
                     try:
-                        return await self._post(target, address, body, method, expect_id, bare)
+                        return await self._post(target, address, body, method, expect_id, bare, extra)
                     except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
                         failure = exc  # that address did not answer; the rest were checked just as carefully
                 raise McpError("PLUGIN_UNREACHABLE", "The server could not be reached.") from failure
@@ -268,10 +312,18 @@ class McpClient:
     async def _initialize(self) -> None:
         """Starts a session. The one being replaced (if any) stays in use until the new one is agreed, so calls that overlap
         this never go out without a session."""
-        request_id = next(self._ids)
-        status, headers, message = await self._send({"jsonrpc": "2.0", "id": request_id, "method": "initialize", "params": {
-            "protocolVersion": PROTOCOL_VERSION, "capabilities": {}, "clientInfo": {"name": CLIENT_NAME, "version": CLIENT_VERSION}}},
-            expect_id=request_id, bare=True)
+        retried = False
+        while True:
+            request_id = next(self._ids)
+            status, headers, message = await self._send({"jsonrpc": "2.0", "id": request_id, "method": "initialize", "params": {
+                "protocolVersion": PROTOCOL_VERSION, "capabilities": {}, "clientInfo": {"name": CLIENT_NAME, "version": CLIENT_VERSION}}},
+                expect_id=request_id, bare=True)
+            if status == 401 and self.auth is not None and not retried:
+                retried = True
+                if await self.auth.rejected():
+                    continue
+            break
+        await self._after_challenge(status, headers)
         self._check_status(status, session=False)
         result = self._result(message)
         version = result.get("protocolVersion") if isinstance(result, dict) else None
@@ -302,22 +354,40 @@ class McpClient:
             async with self._init_lock:
                 if not self._ready:
                     await self._initialize()
-        for attempt in (1, 2):
+        new_session = new_token = False
+        while True:
             request_id = next(self._ids)
             payload: dict[str, Any] = {"jsonrpc": "2.0", "id": request_id, "method": method}
             if params is not None:
                 payload["params"] = params
             session = self.session_id
-            status, _, message = await self._send(payload, expect_id=request_id)
-            if status == 404 and session and attempt == 1:
+            status, headers, message = await self._send(payload, expect_id=request_id)
+            if status == 404 and session and not new_session:
                 # The session expired: start another, once. A call that overlapped this one may already have done it.
+                new_session = True
                 async with self._init_lock:
                     if self.session_id == session:
                         await self._initialize()
                 continue
+            if status == 401 and self.auth is not None and not new_token:
+                # The token was refused (revoked, or expired sooner than it said): get another, once, and try again.
+                new_token = True
+                if await self.auth.rejected():
+                    continue
+            await self._after_challenge(status, headers)
             self._check_status(status, session=bool(session))
             return self._result(message)
-        raise McpError("PLUGIN_PROTOCOL_ERROR", "The server did not accept a new session.")
+
+    async def _after_challenge(self, status: int, headers: httpx.Headers) -> None:
+        """What a 401 or 403 means for a client that signs in with OAuth: sign in again, or sign in with more access."""
+        if self.auth is None or status not in (401, 403):
+            return
+        challenge = challenge_params(headers.get_list("www-authenticate"))
+        if status == 403 and challenge.get("error") == "insufficient_scope":
+            await self.auth.insufficient(challenge.get("scope"))
+            raise McpError("PLUGIN_SCOPE_INSUFFICIENT", "This needs more access than was granted. Open the plugin and choose Reconnect to grant it.")
+        if status == 401:
+            raise McpError("PLUGIN_REAUTHORIZE", "The server no longer accepts this sign-in. Open the plugin and choose Reconnect.")
 
     async def list_tools(self) -> list[dict]:
         tools: list[dict] = []

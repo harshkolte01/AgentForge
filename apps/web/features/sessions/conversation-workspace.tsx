@@ -1,12 +1,12 @@
 "use client";
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Menu, PanelLeftClose, SquarePen } from "lucide-react";
+import { useParams, usePathname, useRouter } from "next/navigation";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Menu, PanelLeftClose, Plug, SquarePen } from "lucide-react";
 import { ScrollToBottom } from "@/features/sessions/scroll-to-bottom";
 import { SidebarAccountMenu } from "@/features/sessions/sidebar-account-menu";
 import { ResizableSidebar } from "@/features/sessions/resizable-sidebar";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { SessionHistory } from "@/features/sessions/session-history";
 import { ConversationComposer } from "@/features/sessions/conversation-composer";
 import { ConversationThread, DraftThread } from "@/features/sessions/conversation-thread";
@@ -29,10 +29,14 @@ import type { ConversationSession, RepositorySelection, TurnInput, WorkspaceConf
 
 const APP_NAME = "AgentForge";
 
-/** The URL is the source of truth: `/chat` is a new conversation, `/chat/<id>` an existing one. */
-export function ConversationWorkspace() {
+/**
+ * The URL is the source of truth: `/chat` is a new conversation, `/chat/<id>` an existing one, and `/plugins` is a page of its
+ * own (`children`) shown in place of the thread, with the same sidebar.
+ */
+export function ConversationWorkspace({ children }: { children?: ReactNode }) {
   const router = useRouter();
   const { controller: scrollController, attach: scrollerRef } = useConversationScroll();
+  const page = usePathname().startsWith(routes.plugins());
   const params = useParams<{ id?: string }>();
   const routeId = typeof params.id === "string" ? params.id.toLowerCase() : null;
   const [sessions, setSessions] = useState<ConversationSession[]>([]);
@@ -40,7 +44,6 @@ export function ConversationWorkspace() {
   const [draftSequence, setDraftSequence] = useState(0);
   const [draftRepository, setDraftRepository] = useState<RepositorySelection | null>(null);
   // The plugins chosen for a conversation not created yet; null until the person chooses (it then starts with the ones left on in Settings).
-  const [draftPlugins, setDraftPlugins] = useState<string[] | null>(null);
   const [config, setConfig] = useState<WorkspaceConfiguration | null>(null);
   const [sidebar, setSidebar] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
@@ -62,7 +65,8 @@ export function ConversationWorkspace() {
   const navigation = useRef<HTMLElement>(null);
   const [retryPending, setRetryPending] = useState(0);
   const routeRef = useRef(routeId);
-  useEffect(() => { routeRef.current = routeId; rememberChat(routeId ? routes.conversation(routeId) : routes.newConversation); }, [routeId]);
+  // The chat "Back to chat" from Settings returns to is the last conversation shown, not the Plugins page.
+  useEffect(() => { routeRef.current = routeId; if (!page) rememberChat(routeId ? routes.conversation(routeId) : routes.newConversation); }, [routeId, page]);
   useEffect(() => {
     const controller = new AbortController();
     void (async () => {
@@ -132,9 +136,9 @@ export function ConversationWorkspace() {
     });
     return () => controller.abort();
   }, [routeId, known, refresh]);
-  useDocumentTitle(`${missing ? "Conversation not found" : selected?.title ?? "New conversation"} · ${APP_NAME}`);
+  useDocumentTitle(`${page ? "Plugins & skills" : missing ? "Conversation not found" : selected?.title ?? "New conversation"} · ${APP_NAME}`);
   /** Resets draft state for a fresh conversation; navigation is done by the caller's link or router call. */
-  function newChat() { if (busy) return false; setDraftRepository(null); setDraftPlugins(null); setDraftSequence((value) => value + 1); pendingSession.current = null; setSidebar(false); setError(""); return true; }
+  function newChat() { if (busy) return false; setDraftRepository(null); setDraftSequence((value) => value + 1); pendingSession.current = null; setSidebar(false); setError(""); return true; }
   function select() { setSidebar(false); pendingSession.current = null; setError(""); }
   // Stable (it only uses state setters): the thread's store keeps the first one it is given.
   // A read that changes nothing (every poll of an idle conversation) keeps the same list, so nothing re-renders.
@@ -164,10 +168,6 @@ export function ConversationWorkspace() {
       const updated = await api<ConversationSession>(`/sessions/${selected.id}`, { method: "PATCH", body: JSON.stringify({ repository }) });
       updateSession(updated);
     } finally { setBusy(false); }
-  }
-  async function changePlugins(ids: string[]) {
-    if (!selected) { setDraftPlugins(ids); return; }
-    updateSession(await api<ConversationSession>(`/sessions/${selected.id}`, { method: "PATCH", body: JSON.stringify({ plugins: ids }) }));
   }
   async function stop() {
     if (selected?.active_task_id) updateSession(await api<ConversationSession>(`/sessions/${selected.id}/queue/stop`, {
@@ -226,12 +226,13 @@ export function ConversationWorkspace() {
   // The composer sits under the thread once there is one (or a draft of it); before that it is centred in the empty chat.
   const docked = !!selected || !!draft;
   const composerKey = selected ? (adopted?.sessionId === selected.id ? adopted.composerKey : selected.id) : `new-${draftSequence}`;
-  const composer = <ConversationComposer queue={selected && !!selected.queued_count ? <ConversationQueue key={selected.id} session={selected} onChange={updateSession} /> : null} menuSide={docked ? "top" : "bottom"} key={composerKey} sessionId={selected?.id ?? null} contextRevision={selected ? `${selected.revision ?? selected.last_sequence}:${selected.active_task_id ?? ""}` : "new"} onNewConversation={() => { if (newChat()) router.push(routes.newConversation); }} repository={selected ? selected.repository : draftRepository} repositoryLocked={!!selected?.queued_count} onRepositoryChange={changeRepository} plugins={selected ? selected.plugins ?? [] : draftPlugins} onPluginsChange={changePlugins} config={config} disabled={loading || busy} running={!!selected?.active_task_id} runId={selected?.active_task_id ?? null} onStop={stop} archived={selected?.archived ?? false} onSend={send} docked={docked} below={docked ? undefined : <FirstRun config={config} />} />;
+  const composer = <ConversationComposer queue={selected && !!selected.queued_count ? <ConversationQueue key={selected.id} session={selected} onChange={updateSession} /> : null} menuSide={docked ? "top" : "bottom"} key={composerKey} sessionId={selected?.id ?? null} contextRevision={selected ? `${selected.revision ?? selected.last_sequence}:${selected.active_task_id ?? ""}` : "new"} onNewConversation={() => { if (newChat()) router.push(routes.newConversation); }} repository={selected ? selected.repository : draftRepository} repositoryLocked={!!selected?.queued_count} onRepositoryChange={changeRepository} config={config} disabled={loading || busy} running={!!selected?.active_task_id} runId={selected?.active_task_id ?? null} onStop={stop} archived={selected?.archived ?? false} onSend={send} docked={docked} below={docked ? undefined : <FirstRun config={config} />} />;
   return <ConversationScrollContext value={scrollController}><DeliveryProvider sessionId={selected?.id ?? null} hasRepository={!!selected?.repository} activeTaskId={selected?.active_task_id ?? null} onAskAgent={askAgent}><div data-conversation-root className="relative top-[var(--visible-top,0px)] flex h-[var(--visible-height,100dvh)] min-h-0 overflow-hidden bg-background selection:bg-foreground/15">
     {sidebar ? <button className="fixed inset-0 z-30 bg-foreground/20 lg:hidden" aria-label="Close navigation" onClick={() => setSidebar(false)} /> : null}
     <ResizableSidebar collapsed={collapsed} ref={navigation} id="workspace-navigation" className={`fixed inset-y-0 left-0 z-40 flex shrink-0 flex-col border-r bg-sidebar px-3 pb-3 pt-3 transition-transform motion-reduce:transition-none lg:translate-x-0 ${sidebar ? "translate-x-0" : "-translate-x-full max-lg:invisible"} ${collapsed ? "lg:hidden" : ""}`} aria-label="Workspace navigation" role={sidebar ? "dialog" : undefined} aria-modal={sidebar || undefined}>
       <div className="mb-5 flex min-h-9 items-center justify-between px-1"><Link href={routes.newConversation} onClick={(event) => { if (!newChat()) event.preventDefault(); }} className="inline-flex items-center gap-2 rounded text-[13px] font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring/60"><BrandMark />AgentForge</Link><Button variant="ghost" size="icon-sm" className="size-11 sm:size-8" aria-label="Collapse sidebar" onClick={() => { setSidebar(false); setCollapsed(true); }}><PanelLeftClose className="size-3.5" /></Button></div>
       <Button variant="ghost" className="mb-3 min-h-11 justify-start gap-2 px-2 text-[13px] sm:min-h-9" onClick={() => { if (newChat()) router.push(routes.newConversation); }} disabled={busy}><SquarePen className="size-4" />New conversation</Button>
+      <Link href={routes.plugins()} aria-current={page ? "page" : undefined} onClick={() => setSidebar(false)} className={buttonVariants({ variant: "ghost", className: `mb-3 min-h-11 w-full justify-start gap-2 px-2 text-[13px] sm:min-h-9 ${page ? "bg-muted text-foreground" : ""}` })}><Plug className="size-4" aria-hidden="true" />Plugins</Link>
       <SessionHistory sessions={sessions} selectedId={selected?.id ?? null} loading={loading} disabled={busy} onSelect={select} onChange={updateSession} />
       <div className="border-t pt-2"><SidebarAccountMenu /></div>
     </ResizableSidebar>
@@ -239,13 +240,14 @@ export function ConversationWorkspace() {
       <header className={`flex min-h-12 shrink-0 items-center px-3 sm:px-4 ${collapsed ? "" : "lg:hidden"}`}><Button ref={navigationTrigger} variant="ghost" size="icon" aria-label="Open navigation" aria-expanded={sidebar} aria-controls="workspace-navigation" className={`size-11 sm:size-8 ${collapsed ? "" : "lg:hidden"}`} onClick={() => { setCollapsed(false); setSidebar(!window.matchMedia("(min-width: 1024px)").matches); }}><Menu className="size-4" /></Button>
       </header>
       {/* No title bar: the sidebar and the tab already name the conversation. What is left floats: its delivery status, and a quiet note when archived. */}
-      <h1 className="sr-only">{missing ? "Conversation not found" : failure ? "Unavailable" : selected?.title ?? (resolving ? "Loading…" : "New conversation")}</h1>
+      {page ? null : <h1 className="sr-only">{missing ? "Conversation not found" : failure ? "Unavailable" : selected?.title ?? (resolving ? "Loading…" : "New conversation")}</h1>}
       <div className="absolute right-3 top-3 z-20 flex items-center gap-2 sm:right-4">
-        {selected?.archived ? <span className="rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground">Archived</span> : null}<DeliveryChip />
+        {selected?.archived ? <span className="rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground">Archived</span> : null}{page ? null : <DeliveryChip />}
       </div>
       {error ? <div role="alert" className="mx-5 mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border px-3 py-2 text-xs text-destructive"><p>{error}</p><Button variant="outline" size="sm" onClick={() => { setLookupFailure(null); setRefresh((value) => value + 1); setRetryPending((value) => value + 1); }}>Retry</Button></div> : null}
       {/* The scrollbar is hidden (wheel, touch, keys and the jump-to-latest button still scroll); the top padding keeps the floating status clear of the thread. */}
-      <main ref={scrollerRef} data-conversation-scroll className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overscroll-contain [overflow-anchor:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${collapsed ? "" : "lg:pt-12"}`}>
+      <main ref={page ? undefined : scrollerRef} data-conversation-scroll={page ? undefined : ""} className={`relative flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overscroll-contain [overflow-anchor:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${collapsed || page ? "" : "lg:pt-12"}`}>
+        {page ? children : <>
         {failure && !failure.missing ? <div role="alert" className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center gap-3 px-5 pb-10 text-center sm:px-8"><h2 className="text-2xl font-medium tracking-tight">Couldn&apos;t load this conversation</h2><p className="text-sm leading-6 text-muted-foreground">Check your connection and try again.</p><div><Button onClick={() => { setLookupFailure(null); setRefresh((value) => value + 1); }}>Try again</Button></div></div>
         : missing ? <div role="alert" className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center gap-3 px-5 pb-10 text-center sm:px-8"><h2 className="text-2xl font-medium tracking-tight">Conversation not found</h2><p className="text-sm leading-6 text-muted-foreground">It may have been deleted, or the link belongs to a different account.</p><div><Link href={routes.newConversation} onClick={(event) => { if (!newChat()) event.preventDefault(); }} className="inline-flex min-h-11 items-center rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground outline-none hover:bg-primary/85 focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:min-h-9">Start a new conversation</Link></div></div>
         : draft ? <DraftThread pending={draft} />
@@ -261,6 +263,7 @@ export function ConversationWorkspace() {
             {composer}
           </div>
         </div> : null}
+        </>}
       </main>
     </DeliverySplit></div>
   </div></DeliveryProvider></ConversationScrollContext>;

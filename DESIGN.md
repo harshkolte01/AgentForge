@@ -279,3 +279,7 @@ The auth panel is wired to the existing session handlers. It reads `/auth/sessio
 - **Don't** invent a password form, fake OAuth state, repository permission claim, testimonial, benchmark, or live run result in the public surfaces. Keep the existing GitHub and local-token handlers authoritative.
 - **Don't** promote public dark variables into workspace components or change unrelated authenticated workspace styling while extending this system.
 - **Don't** treat `.impeccable/review/desktop.png` as a post-fix or cross-device qualification. It is a pre-fix desktop composition reference; mobile, auth visual, and live OAuth visual checks remain unresolved.
+
+## Workspace empty conversation background
+
+The authenticated `/chat` welcome surface uses the plain workspace background in both themes. Keep the heading and composer as the focal points, with generous uninterrupted negative space. The user rejected both the layered waves and the oversized corner arc; do not add decorative landscape shapes, gradients, or background animation here. The decorative component and its animation rules have been removed. Preserve the existing composer layout and conversation behavior.

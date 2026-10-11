@@ -107,6 +107,12 @@ class Settings(BaseSettings):
     plugin_allow_private_network: bool = False
     plugin_call_timeout_sec: float = Field(default=60, gt=0, le=300)
     plugin_max_connections: int = Field(default=20, ge=1, le=100)
+    # OAuth sign-in for plugins that support it (MCP authorization). The redirect URI is
+    # API_PUBLIC_BASE_URL + /api/v1/plugins/oauth/callback; it must be reachable by the person's browser. Tokens are stored encrypted
+    # with the plugin key. "auto" registers this app with a server through a Client ID Metadata Document when the server supports
+    # one (and API_PUBLIC_BASE_URL is https), otherwise through Dynamic Client Registration; "dcr" always uses the latter.
+    plugin_oauth_enabled: bool = True
+    plugin_oauth_registration: Literal["auto", "dcr"] = "auto"
     # Skills: written playbooks the agent loads when a request fits (built in, and the person's own, kept in Settings).
     skills_enabled: bool = True
     skill_max_per_user: int = Field(default=50, ge=1, le=200)

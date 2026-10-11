@@ -94,25 +94,36 @@ def estimated_tokens(connections) -> int:
     return total
 
 
-def register_plugins(catalog: ToolCatalog, connections, settings, wrap=None) -> PluginRuntime:
+def register_plugins(catalog: ToolCatalog, connections, settings, wrap=None, sessions=None) -> PluginRuntime:
     """Registers every offered tool of `connections` (rows from service.connections_for_task) into `catalog`.
 
-    `wrap(name, handler)` may return a traced version of a tool's handler."""
+    `wrap(name, handler)` may return a traced version of a tool's handler. `sessions` is the database, which a connection that
+    signed in with OAuth needs to read (and renew) its tokens."""
     runtime = PluginRuntime()
     cipher = cipher_for(settings)
     clients: dict[object, McpClient | None] = {}
     for row, name, spec in offered_tools(connections):
         if row.id not in clients:
-            try:
-                headers = auth_headers(row, cipher)
-            except PluginError:
-                # Its credential cannot be read (the key changed): offer nothing from it rather than call it without one.
-                log.warning("plugin credential unreadable: connection=%s", row.id)
-                runtime.skipped.append(row.name)
-                clients[row.id] = None
-                continue
+            auth = None
+            if row.auth_kind == "oauth":
+                if sessions is None or cipher is None:
+                    log.warning("plugin sign-in cannot be used: connection=%s", row.id)
+                    runtime.skipped.append(row.name)
+                    clients[row.id] = None
+                    continue
+                from .oauth_service import OAuthTokens
+                headers, auth = {}, OAuthTokens(sessions, settings, row.id)
+            else:
+                try:
+                    headers = auth_headers(row, cipher)
+                except PluginError:
+                    # Its credential cannot be read (the key changed): offer nothing from it rather than call it without one.
+                    log.warning("plugin credential unreadable: connection=%s", row.id)
+                    runtime.skipped.append(row.name)
+                    clients[row.id] = None
+                    continue
             clients[row.id] = McpClient(row.server_url, headers=headers, allow_private=settings.plugin_allow_private_network,
-                                        timeout=settings.plugin_call_timeout_sec)
+                                        timeout=settings.plugin_call_timeout_sec, auth=auth)
             runtime.clients.append(clients[row.id])
         client = clients[row.id]
         if client is None:

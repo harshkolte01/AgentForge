@@ -62,9 +62,9 @@ export function EmptyState({ icon, title, children, action }: { icon: ReactNode;
 }
 
 /** An on/off setting. A native checkbox (so it is a form control to every assistive tool) drawn as a switch. */
-export function Switch({ checked, onChange, describedBy, label }: { checked: boolean; onChange: (checked: boolean) => void; describedBy?: string; label: string }) {
-  return <span className="relative inline-flex shrink-0">
-    <input type="checkbox" role="switch" checked={checked} onChange={(event) => onChange(event.target.checked)} aria-label={label} aria-describedby={describedBy} className="peer absolute inset-0 z-10 size-full cursor-pointer opacity-0" />
+export function Switch({ checked, onChange, describedBy, label, disabled = false }: { checked: boolean; onChange: (checked: boolean) => void; describedBy?: string; label: string; disabled?: boolean }) {
+  return <span className={`relative inline-flex shrink-0 ${disabled ? "opacity-50" : ""}`}>
+    <input type="checkbox" role="switch" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} aria-label={label} title={label} aria-describedby={describedBy} className="peer absolute inset-0 z-10 size-full cursor-pointer opacity-0 disabled:cursor-not-allowed" />
     <span aria-hidden="true" className="h-6 w-10 rounded-full border bg-muted transition-colors before:absolute before:left-0.5 before:top-0.5 before:size-5 before:rounded-full before:bg-muted-foreground/70 before:shadow-sm before:transition-all peer-checked:border-transparent peer-checked:bg-primary peer-checked:before:translate-x-4 peer-checked:before:bg-primary-foreground peer-focus-visible:ring-2 peer-focus-visible:ring-ring/60 peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-background motion-reduce:transition-none motion-reduce:before:transition-none" />
   </span>;
 }

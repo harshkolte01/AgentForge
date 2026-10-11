@@ -117,7 +117,7 @@ def compose_runtime(settings, sessions, telemetry, store) -> Runtime:
             connections = connections_for_task(sessions, store.lease.task_id, task.created_by)
             if connections:
                 from types import SimpleNamespace
-                plugins = register_plugins(catalog, connections, settings,
+                plugins = register_plugins(catalog, connections, settings, sessions=sessions,
                     wrap=lambda name, handler: observed_tool(SimpleNamespace(name=name, handler=handler), telemetry, store))
         except Exception:  # noqa: BLE001
             import logging

@@ -66,8 +66,11 @@ try:
     app.dependency_overrides[current_user] = lambda: identity
     with TestClient(app) as client:
         overview = client.get("/api/v1/plugins").json()
-        assert [item["key"] for item in overview["catalog"]] == ["deepwiki", "context7", "github", "linear"], "catalog changed"
+        keys = [item["key"] for item in overview["catalog"]]
+        assert {"deepwiki", "context7", "github", "linear"} <= set(keys) and len(keys) == len(set(keys)), "catalog changed"
+        assert all("oauth" in item and item["server_url"].startswith("https://") for item in overview["catalog"]), "catalog entries are incomplete"
         assert overview["connections"] == [] and overview["credentials"] is True and overview["enabled"] is True
+        assert overview["oauth"] is True and overview["oauth_redirect_uri"].endswith("/api/v1/plugins/oauth/callback"), overview
 
         # --- connecting ----------------------------------------------------------------------------------------------
         response = client.post("/api/v1/plugins", json={"plugin_key": "custom", "name": "Open Demo", "server_url": open_server.url})

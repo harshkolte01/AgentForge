@@ -59,15 +59,16 @@ def view(row: PluginConnection) -> dict[str, Any]:
     tools = [{"name": tool["name"], "title": tool.get("title") or "", "description": (tool.get("description") or "")[:300],
               "read_only": bool(tool.get("read_only")), "enabled": tool["name"] not in disabled} for tool in row.tools_json or []]
     return {"id": str(row.id), "plugin_key": row.plugin_key, "name": row.name, "server_url": row.server_url,
-            "description": catalog.description if catalog else None, "auth": "none" if row.auth_kind == "none" else "token",
-            "has_credential": bool(row.credential_encrypted), "enabled": row.enabled, "status": row.status, "last_error": row.last_error,
+            "description": catalog.description if catalog else None,
+            "auth": "none" if row.auth_kind == "none" else "oauth" if row.auth_kind == "oauth" else "token",
+            "has_credential": bool(row.credential_encrypted) or row.auth_kind == "oauth", "enabled": row.enabled, "status": row.status, "last_error": row.last_error,
             "server_name": row.server_name, "tools": tools, "tool_count": len(tools), "enabled_tool_count": sum(tool["enabled"] for tool in tools),
             "tools_synced_at": row.tools_synced_at.isoformat() if row.tools_synced_at else None, "created_at": row.created_at.isoformat() if row.created_at else None}
 
 
-async def probe(url: str, headers: dict[str, str], settings) -> tuple[str | None, list[dict]]:
+async def probe(url: str, headers: dict[str, str], settings, auth=None) -> tuple[str | None, list[dict]]:
     """Connects, and returns the server's name and its usable tools. McpError on any failure."""
-    client = McpClient(url, headers=headers, allow_private=settings.plugin_allow_private_network, timeout=min(30, settings.plugin_call_timeout_sec))
+    client = McpClient(url, headers=headers, allow_private=settings.plugin_allow_private_network, timeout=min(30, settings.plugin_call_timeout_sec), auth=auth)
     try:
         specs = tool_specs(await client.list_tools())
         if not specs:
@@ -103,8 +104,11 @@ class PluginService:
                                                     .order_by(PluginConnection.created_at, PluginConnection.id))]
 
     def capabilities(self) -> dict[str, Any]:
-        return {"enabled": self.settings.plugins_enabled, "credentials": cipher_for(self.settings) is not None,
-                "max_connections": self.settings.plugin_max_connections}
+        from .oauth import callback_url
+        encrypted = cipher_for(self.settings) is not None
+        # `oauth_redirect_uri` is what a person registers when they sign in with an OAuth app of their own.
+        return {"enabled": self.settings.plugins_enabled, "credentials": encrypted, "max_connections": self.settings.plugin_max_connections,
+                "oauth": self.settings.plugin_oauth_enabled and encrypted, "oauth_redirect_uri": callback_url(self.settings)}
 
     # --- connecting --------------------------------------------------------------------------------------------------
     def _plan(self, user_id: UUID, body) -> dict[str, Any]:
@@ -155,6 +159,8 @@ class PluginService:
         try:
             server_name, specs = await probe(plan["url"], headers, self.settings)
         except McpError as error:
+            if error.code == "PLUGIN_AUTH_FAILED" and not plan["token"] and self.settings.plugin_oauth_enabled:
+                await self._offer_oauth(plan["url"])
             raise _failure(error) from None
         encrypted = cipher.encrypt(plan["token"]) if cipher and plan["token"] else None
         with self.sessions() as db, db.begin():
@@ -175,10 +181,24 @@ class PluginService:
             db.refresh(row)
             return view(row)
 
+    async def _offer_oauth(self, url: str) -> None:
+        """A server that turned a request without a credential away: when it signs people in with OAuth, say so, so the app can
+        send the person to sign in (the request is answered 409 `plugin_oauth_required`)."""
+        from .oauth import OAuthError, discover
+        try:
+            await discover(url, allow_private=self.settings.plugin_allow_private_network)
+        except OAuthError:
+            return
+        if cipher_for(self.settings) is None:
+            raise PluginError(409, "plugin_encryption_not_configured",
+                              "This server signs in with OAuth, which needs an encryption key to keep the tokens. Ask the operator to set PLUGIN_ENCRYPTION_KEY.")
+        raise PluginError(409, "plugin_oauth_required", "This server signs in with OAuth. Continue to sign in.")
+
     # --- changing ----------------------------------------------------------------------------------------------------
     async def refresh(self, user_id: UUID, connection_id: UUID) -> dict:
         """Reads the server's tools again. A failure is recorded on the connection (the tools it had stay), not raised."""
         self._require_enabled()
+        auth = None
         with self.sessions() as db:
             row = self._owned(db, user_id, connection_id)
             url, cipher = row.server_url, cipher_for(self.settings)
@@ -186,8 +206,11 @@ class PluginService:
                 headers = auth_headers(row, cipher)
             except PluginError as error:
                 return self._record_failure(user_id, connection_id, error.code, error.message)
+            if row.auth_kind == "oauth":
+                from .oauth_service import OAuthTokens
+                auth = OAuthTokens(self.sessions, self.settings, connection_id)
         try:
-            server_name, specs = await probe(url, headers, self.settings)
+            server_name, specs = await probe(url, headers, self.settings, auth)
         except McpError as error:
             return self._record_failure(user_id, connection_id, error.code.lower(), error.message)
         with self.sessions() as db, db.begin():
@@ -201,7 +224,9 @@ class PluginService:
     def _record_failure(self, user_id: UUID, connection_id: UUID, code: str, message: str) -> dict:
         with self.sessions() as db, db.begin():
             row = self._owned(db, user_id, connection_id, lock=True)
-            row.status, row.last_error = "error", message
+            # A sign-in that no longer works is not the server being down: the person is asked to sign in again.
+            row.status = "reauthorize" if code in ("plugin_reauthorize", "plugin_scope_insufficient") else "error"
+            row.last_error = message
             return view(row)
 
     async def update(self, user_id: UUID, connection_id: UUID, patch) -> dict:
@@ -211,8 +236,10 @@ class PluginService:
         if token:
             with self.sessions() as db:
                 row = self._owned(db, user_id, connection_id)
+                if row.auth_kind == "oauth":
+                    raise PluginError(422, "plugin_token_not_used", "This plugin signs in with OAuth. Choose Reconnect to sign in again.")
                 listed = BY_KEY.get(row.plugin_key)
-                if listed is not None and listed.auth == "none":
+                if listed is not None and listed.auth == "none" and not listed.oauth:
                     raise PluginError(422, "plugin_token_not_used", "This plugin does not use a credential.")
                 url, kind, header = row.server_url, row.auth_kind, row.auth_header
             cipher = cipher_for(self.settings)
@@ -238,13 +265,20 @@ class PluginService:
                 row.disabled_tools = [name for name in row.disabled_tools or [] if name in {tool["name"] for tool in specs}]
             return view(row)
 
-    def delete(self, user_id: UUID, connection_id: UUID) -> None:
+    def delete(self, user_id: UUID, connection_id: UUID):
+        """Removes a connection. Returns what it takes to tell the authorization server to forget its tokens (for a connection
+        that signed in with OAuth), to be sent after the response: removing never waits on, or fails because of, that."""
+        revocation = None
         with self.sessions() as db, db.begin():
             row = self._owned(db, user_id, connection_id, lock=True)
+            if row.auth_kind == "oauth":
+                from .oauth_service import revocation_for
+                revocation = revocation_for(db, connection_id, self.settings)
             db.delete(row)
             # Conversations that listed it no longer do.
             db.execute(update(Conversation).where(Conversation.owner_id == user_id, func.jsonb_typeof(Conversation.plugins_json) == "array")
                        .values(plugins_json=Conversation.plugins_json.op("-")(cast(str(connection_id), Text))))
+        return revocation
 
 
 # --- conversations ---------------------------------------------------------------------------------------------------

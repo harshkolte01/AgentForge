@@ -19,6 +19,7 @@ browser's Back and Forward buttons.
 | `/chat/<conversation-id>` | An existing conversation. Unknown, malformed or other-account ids show "Conversation not found" instead of a blank page |
 | `/chat/<conversation-id>/runs/<task-id>` | Run details for one reply, inside the same sidebar shell. "Back to conversation" returns to the thread |
 | `/tasks`, `/tasks/<task-id>` | Standalone task list/detail for work that is not part of a conversation (for example custom-agent tests) |
+| `/plugins`, `/plugins?tab=skills` | Plugins and skills, as two tabs of one page drawn inside the same sidebar shell (the sidebar's **Plugins** button opens it) |
 | `/settings?section=…` | Settings |
 
 > The `/chat/<id>/runs/<task-id>` and `/tasks…` pages listed above no longer exist: a reply's activity is shown inline in

@@ -8,6 +8,8 @@ export const routes = {
   signUp: "/sign-up",
   newConversation: "/chat",
   conversation: (sessionId: string) => `/chat/${sessionId}`,
+  /** Plugins and skills, inside the workspace shell beside the conversations. */
+  plugins: (tab?: string) => tab ? `/plugins?tab=${tab}` : "/plugins",
   settings: (section?: string) => section ? `/settings?section=${section}` : "/settings",
 } as const;
 
