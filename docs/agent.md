@@ -34,6 +34,7 @@ high enough never to refuse anything.
 | Sandbox (needs `E2B_API_KEY`) | `bash`, `read`, `write`, `edit`, `grep`, `find`, `ls` |
 | Pull request (needs GitHub App + `ENABLE_GITHUB_WRITES`) | `create_pull_request` |
 | Files and history | `create_task_artifact`, `read_task_artifact`, `search_conversation_history`, `read_context_resource` |
+| Plugins (per conversation) | `slug__tool`, from the MCP servers the person connected; see [plugins](plugins.md) |
 
 The sandbox (`integrations/e2b_sandbox.py`, `tools/sandbox_shell.py`) is created on first use and kept for the
 conversation: files and installed packages stay between messages. It has internet access and holds no secrets. When a
@@ -49,6 +50,8 @@ A global setting (`GET/PUT /api/v1/settings/approval-mode`, default `ask`) appli
   the pull request with every file it changes. It waits as long as it takes. Declining returns a normal tool result
   telling the agent the person said no. A command too long to show in full is refused before anyone is asked.
 * **Approve for me**: nothing asks.
+
+A plugin tool also asks in **Ask me** mode unless its server declares it read-only.
 
 The mode is read before each call, so switching it releases a waiting card. Answers: `POST /api/v1/tool-approvals/{id}`.
 Implementation: `tools/approvals.py`, hooked into `tools/gateway.py`.

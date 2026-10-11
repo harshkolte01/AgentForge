@@ -11,6 +11,12 @@ class ToolArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True, allow_inf_nan=False)
 
 
+class PluginArguments(BaseModel):
+    """The arguments of a plugin's tool. Their shape belongs to the plugin's server, so any JSON object is accepted here and the
+    server checks it; they never reach the built-in tools' path, repository or URL rules."""
+    model_config = ConfigDict(extra="allow", frozen=True, allow_inf_nan=False)
+
+
 ResourceId = Annotated[str, Field(min_length=1, max_length=256)]
 Path = Annotated[str, Field(min_length=1, max_length=1024)]
 Ref = Annotated[str, Field(min_length=1, max_length=256)]

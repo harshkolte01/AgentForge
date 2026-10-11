@@ -22,6 +22,7 @@ from agentforge.api.routes_context import router as context_router
 from agentforge.api.routes_agents import router as agents_router
 from agentforge.api.routes_activity import router as activity_router
 from agentforge.api.routes_attachments import router as attachments_router
+from agentforge.api.routes_plugins import router as plugins_router
 from agentforge.database.engine import create_db_engine
 from agentforge.settings import Settings, get_settings, validation_summary
 from agentforge.security.request_limits import RequestBodyLimitMiddleware
@@ -84,6 +85,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(conversation_events_router)
     app.include_router(context_router)
     app.include_router(agents_router)
+    app.include_router(plugins_router)
     @app.middleware("http")
     async def private_response_headers(request, call_next):
         response = await call_next(request)

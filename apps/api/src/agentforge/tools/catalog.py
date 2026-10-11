@@ -1,12 +1,15 @@
 """A closed catalog whose capabilities exist only when an adapter is registered."""
 
 import json
+import re
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
-from .contracts import ARGUMENT_MODELS, ToolArguments, ToolOutcome
+from pydantic import BaseModel
+
+from .contracts import ARGUMENT_MODELS, PluginArguments, ToolArguments, ToolOutcome
 from .schema import drop_fields, to_strict_schema
 
 if TYPE_CHECKING:
@@ -129,6 +132,7 @@ ERROR_GUIDANCE = {
     "SANDBOX_CREATE_FAILED": "The sandbox could not be created. Retry once; if it fails again, tell the person.",
     "SANDBOX_CONNECT_FAILED": "The conversation's sandbox could not be reached. Retry once; if it fails again, tell the person.",
     "SANDBOX_COMMAND_FAILED": "The sandbox did not answer. Retry once with a simpler command; if it fails again, tell the person.",
+    "ARGUMENTS_TOO_LONG": "That call is too long for the person to review. Make it smaller, or split it into several calls.",
     "COMMAND_TOO_LONG": "Put the long script in a file with write, then run that file with a short bash command.",
     "SANDBOX_DISCONNECTED":"The connection dropped mid-call. Inspect the effect (ls, read, git status) before repeating anything; "
                             "if the sandbox keeps failing, tell the person.",
@@ -140,6 +144,11 @@ ERROR_GUIDANCE = {
     "GITHUB_WRITE_FAILED": "GitHub publication could not be confirmed. A branch or pull request may already exist. Report the uncertainty; do not claim nothing was published or retry blindly.",
     "DECLINED": "The person said no to this action and nothing was run. Do not try to do the same thing another way; say what you were about to do and ask how to continue.",
     "DEFERRED": "That call was not run because its result would not fit in the context window with this turn's other results. Ask for it again in a later turn, a few at a time.",
+    "PLUGIN_TOOL_ERROR": "The plugin's tool reported a problem. Read the detail; correct the arguments if they were at fault, otherwise tell the person.",
+    "PLUGIN_AUTH_FAILED": "The plugin rejected the person's credential. Do not retry; tell them to reconnect the plugin in Settings → Plugins.",
+    "PLUGIN_TIMEOUT": "The plugin did not answer in time. Retry once with a narrower request. An action that changes something may still have happened: check before repeating it.",
+    "PLUGIN_UNREACHABLE": "The plugin's server could not be reached. Retry once; if it fails again, continue without it and tell the person.",
+    "PLUGIN_RATE_LIMITED": "The plugin is limiting requests. Wait by working on something else, then retry once.",
     "INVALID_ARGUMENT": "A value is not acceptable for this tool. Read the detail, correct the arguments, and retry once.",
 }
 GENERIC_ERROR_GUIDANCE = "The call did not succeed. Do not repeat it unchanged; adjust the arguments, try another approach, or record the gap."
@@ -148,6 +157,8 @@ GENERIC_ERROR_GUIDANCE = "The call did not succeed. Do not repeat it unchanged; 
 def error_guidance(code: str | None) -> str:
     if code in ERROR_GUIDANCE:
         return ERROR_GUIDANCE[code]
+    if code and code.startswith("PLUGIN_"):
+        return "The plugin could not do that. Read the detail; fix the call once if it was at fault, otherwise continue without the plugin and tell the person."
     if code and code.startswith("FETCH_"):
         return "The page could not be fetched (blocked, missing, too large or not text). Try another source, or record the page as inaccessible."
     return GENERIC_ERROR_GUIDANCE
@@ -219,12 +230,15 @@ ASKS_BEFORE = frozenset({"bash", "write", "edit", "create_pull_request"})
 APPROVAL_DETAIL_BYTES = 13000
 
 
-def approval_summary(name: str, args, extra: str = "") -> tuple[str, bool]:
+def approval_summary(name: str, args, extra: str = "", plugin: "PluginTool | None" = None) -> tuple[str, bool]:
     """What the approval card shows, exactly as the call will use it: the whole command, the file and its whole new content,
     the text an edit replaces and its replacement, the pull request's title and description (and `extra`, the files it
     changes). Nothing is redacted, since a rewritten command is not the command that runs. The flag says the text had to be
     cut to fit the card."""
-    if name == "bash":
+    if plugin is not None:
+        arguments = json.dumps(args.model_dump(mode="json"), indent=2, ensure_ascii=False)
+        text = f"{plugin.plugin_name}: {plugin.title or plugin.remote_name}\n\n{arguments}"
+    elif name == "bash":
         text = args.command
     elif name == "write":
         text = f"{args.path}\n\n{args.content}"
@@ -258,6 +272,10 @@ def safe_arguments(args) -> dict:
     """A bounded audit record of what a call asked for, without free text, queries or file content."""
     from urllib.parse import urlsplit
     record: dict = {}
+    if isinstance(args, PluginArguments):
+        # The names of the fields a plugin call carried, never what they held: its arguments are free text and file content.
+        fields = args.model_dump(mode="json")
+        return {"argument_count": len(fields), "fields": [str(key)[:40] for key in list(fields)[:20]]}
     for key, value in args.model_dump(mode="json").items():
         if value is None:
             continue
@@ -277,23 +295,45 @@ class ToolUnavailable(ValueError):
 
 
 @dataclass(frozen=True)
+class PluginTool:
+    """A tool offered by a plugin's server: what the model is told, and what the server calls it."""
+    plugin_id: str
+    plugin_name: str
+    remote_name: str
+    title: str
+    description: str
+    input_schema: dict[str, Any]
+    read_only: bool
+
+
+@dataclass(frozen=True)
 class RegisteredTool:
     name: str
     handler: ToolHandler
     max_cost_usd: Decimal
     timeout_sec: float
     preview: ToolPreview | None = None
+    plugin: PluginTool | None = None
 
     @property
-    def input_model(self) -> type[ToolArguments]:
-        return ARGUMENT_MODELS[self.name]
+    def input_model(self) -> type[BaseModel]:
+        return PluginArguments if self.plugin is not None else ARGUMENT_MODELS[self.name]
 
     @property
     def has_effects(self) -> bool:
-        return self.name in EFFECT_TOOLS
+        # A plugin tool that does not say it only reads is assumed to change something outside this app.
+        return self.name in EFFECT_TOOLS or (self.plugin is not None and not self.plugin.read_only)
+
+    @property
+    def asks_before(self) -> bool:
+        return self.name in ASKS_BEFORE or (self.plugin is not None and not self.plugin.read_only)
 
     def provider_schema(self, *, hide: frozenset[str] | set[str] = frozenset(), strict: bool = False) -> dict[str, Any]:
         """The schema the model sees. `hide` removes fields the harness binds itself."""
+        if self.plugin is not None:
+            # The server's own schema, cleaned when it was saved. Not offered in strict form: it is not ours to rewrite.
+            description = f"[{self.plugin.plugin_name}] {self.plugin.description or self.plugin.title or self.plugin.remote_name}"
+            return {"type": "function", "function": {"name": self.name, "description": description[:1600], "parameters": self.plugin.input_schema}}
         parameters = drop_fields(clean_schema(self.input_model.model_json_schema()), hide)
         function: dict[str, Any] = {"name": self.name, "description": DESCRIPTIONS[self.name]}
         if strict:
@@ -304,7 +344,8 @@ class RegisteredTool:
 
 
 class ToolCatalog:
-    """Only trusted composition code registers adapters; there is no plugin API.
+    """Only trusted composition code registers adapters. A plugin's tools are registered the same way, per run, by
+    `register_plugin`, from servers the person connected: they get no built-in tool's privileges.
 
     Implementations must enforce DNS/redirect isolation for network tools and E2B
     isolation, command argument constraints and base hashes for sandbox tools.
@@ -328,6 +369,16 @@ class ToolCatalog:
         if not 0 < timeout_sec:
             raise ValueError("adapter requires a positive timeout")
         self._tools[name] = RegisteredTool(name, handler, max_cost_usd, timeout_sec, preview)
+
+    def register_plugin(self, name: str, handler: ToolHandler, plugin: PluginTool, *, timeout_sec: float) -> None:
+        if not re.fullmatch(r"[a-z][a-z0-9-]*__[a-z0-9_-]+", name) or len(name) > 64 or name in ARGUMENT_MODELS:
+            raise ToolUnavailable("plugin tool name is not allowed")
+        if name in self._tools:
+            raise ValueError("tool adapter is already registered")
+        self._tools[name] = RegisteredTool(name, handler, Decimal(0), timeout_sec, None, plugin)
+
+    def plugin_tool_names(self) -> tuple[str, ...]:
+        return tuple(name for name, tool in self._tools.items() if tool.plugin is not None)
 
     def get(self, name: str) -> RegisteredTool:
         try:

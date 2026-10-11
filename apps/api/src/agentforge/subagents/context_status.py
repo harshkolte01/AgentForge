@@ -46,9 +46,10 @@ def level_for(percent: float) -> str:
     return "high" if percent >= HIGH_PERCENT else "notice" if percent >= NOTICE_PERCENT else "ok"
 
 
-def build_status(*, model, provider, window, max_output, usage, history_budget_chars) -> ContextStatus:
-    """`usage` is SessionRepository.context_usage output (or EMPTY_USAGE for a conversation not yet created)."""
-    baseline = entry_overhead_tokens()
+def build_status(*, model, provider, window, max_output, usage, history_budget_chars, extra_baseline=0) -> ContextStatus:
+    """`usage` is SessionRepository.context_usage output (or EMPTY_USAGE for a conversation not yet created).
+    `extra_baseline` is what the conversation's plugin tools add to every request."""
+    baseline = entry_overhead_tokens() + extra_baseline
     history = usage.get("history_tokens", estimate_tokens(usage["history_chars"])) if usage["messages_total"] else 0
     start = baseline + history
     last = usage.get("last_run")

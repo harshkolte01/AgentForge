@@ -25,7 +25,7 @@ from agentforge.subagents.resources import ResourceResolver
 from agentforge.subagents.scope import EffectiveScope, ScopeDenied, TaskContext
 
 from .catalog import (
-    ASKS_BEFORE, BINDABLE_FIELDS, EFFECT_TOOLS, ToolCatalog, ToolUnavailable, activity_detail, approval_summary, safe_arguments,
+    BINDABLE_FIELDS, EFFECT_TOOLS, ToolCatalog, ToolUnavailable, activity_detail, approval_summary, safe_arguments,
 )
 from .contracts import ARGUMENT_MODELS, ToolOutcome
 from .errors import ToolError, render_issues, validation_issues
@@ -97,9 +97,15 @@ class ToolGateway:
         except ToolUnavailable:
             return False
 
+    def _changes_things(self, name: str) -> bool:
+        try:
+            return self.catalog.get(name).has_effects
+        except ToolUnavailable:
+            return name in EFFECT_TOOLS
+
     def is_parallel_safe(self, name: str) -> bool:
         """Read-only and free, so it may run alongside other reads."""
-        return name in self.scope.allowed_tools and name not in EFFECT_TOOLS and not self._is_paid(name)
+        return name in self.scope.allowed_tools and not self._changes_things(name) and not self._is_paid(name)
 
     # --- argument handling ------------------------------------------------------------------
     @staticmethod
@@ -136,7 +142,7 @@ class ToolGateway:
 
     # --- execution --------------------------------------------------------------------------
     async def execute(self, name: str, raw_args: str, provider_call_id: str) -> ToolOutcome:
-        if name in EFFECT_TOOLS or self._is_paid(name):
+        if self._changes_things(name) or self._is_paid(name):
             async with self._lock:
                 return await self._run(name, raw_args, provider_call_id)
         async with self._reads:
@@ -175,7 +181,8 @@ class ToolGateway:
                 raise ScopeDenied("tool is not authorized for this run")
             args = self._parse(name, tool, raw_args)
             arguments = safe_arguments(args)
-            events.detail = activity_detail(name, args)
+            plugin = tool.plugin
+            events.detail = activity_detail(name, args) if plugin is None else (plugin.title or plugin.remote_name)[:120]
             web_url, web_hosts = None, ()
             if name in ("fetch_webpage", "browser_public_page"):
                 resolver = getattr(self.resources, "resolve_web_url", None)
@@ -183,9 +190,13 @@ class ToolGateway:
                     raise ScopeDenied("trusted network resource resolver is unavailable")
                 async with asyncio.timeout(min(15, tool.timeout_sec)):
                     web_url, web_hosts = await resolver(self.ctx, name, args, self.scope)
-            authorize_tool(name, args, self.ctx, self.scope, resolved_web_url=web_url)
+            # A plugin's arguments are its server's business: the built-in tools' path, repository and URL rules do not
+            # apply to them (a plugin tool may legitimately take a "path" or "url"), and it is reached only through the
+            # allowlist above, never through the sandbox or the repository.
+            if plugin is None:
+                authorize_tool(name, args, self.ctx, self.scope, resolved_web_url=web_url)
             await self.resources.verify_tool_inputs(self.ctx, name, args)
-            if self.approvals is not None and name in ASKS_BEFORE:
+            if self.approvals is not None and tool.asks_before:
                 extra = ""
                 asks = getattr(self.approvals, "asks", None)
                 if tool.preview is not None and (asks is None or await asks(self.ctx)):
@@ -197,7 +208,7 @@ class ToolGateway:
                         raise
                     except Exception:
                         extra = "(The list of changed files could not be read.)"
-                summary, truncated = approval_summary(name, args, extra)
+                summary, truncated = approval_summary(name, args, extra, plugin)
                 if not await self.approvals.allows(self.ctx, operation_key=operation_key, tool=name, summary=summary,
                         truncated=truncated, detail=arguments, check=self.reauthorize):
                     raise ToolError("DECLINED", "The person declined this action, so nothing was run. Do not do it another way "

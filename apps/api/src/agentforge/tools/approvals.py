@@ -106,6 +106,10 @@ class ToolApprovals:
         if truncated and tool == "bash":
             raise ToolError("COMMAND_TOO_LONG", "This command is too long to show in full for approval. Write the script to a file "
                             "with write (the person sees its content), then run that file with a short bash command.")
+        if truncated and "__" in tool:
+            # A plugin call is approved from the arguments shown, so arguments too long to show are refused, not approved unseen.
+            raise ToolError("ARGUMENTS_TOO_LONG", "These arguments are too long to show in full for approval. Make a smaller call "
+                            "(less text, fewer items) and the person can approve it.")
         approval_id, state, created = await asyncio.to_thread(self._open, ctx, operation_key, tool, summary, detail)
         payload = {"approval_id": str(approval_id), "tool": tool, "detail": summary, "state": "PENDING",
                    **({"truncated": True} if truncated else {})}

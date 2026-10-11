@@ -221,6 +221,13 @@ class ReplayTests(Case):
             await self.approvals.allows(self.ctx, operation_key="op-1", tool="bash", summary="x" * 100, truncated=True,
                                         detail={}, check=AsyncMock())
         self.assertEqual(caught.exception.code, "COMMAND_TOO_LONG")
+
+    async def test_plugin_arguments_too_long_to_show_are_refused_not_approved_unseen(self):
+        with self.assertRaises(ToolError) as caught:
+            await self.approvals.allows(self.ctx, operation_key="op-1", tool="linear__create_issue", summary="x" * 100, truncated=True,
+                                        detail={}, check=AsyncMock())
+        self.assertEqual(caught.exception.code, "ARGUMENTS_TOO_LONG")
+        self.assertEqual(self.events, [])
         self.assertEqual((self.events, self.table.rows), ([], {}))
 
     async def test_a_cut_file_is_shown_with_its_cut_marked(self):

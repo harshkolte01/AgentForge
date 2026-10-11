@@ -14,6 +14,8 @@ class SessionCreate(BaseModel):
     title: str = Field(default="New session", min_length=1, max_length=120)
     mode: Literal["research", "general", "coding"] = "general"
     repository: RepoSelection | None = None
+    # Plugin connections the conversation may use. Omitted: the ones its owner left switched on. A list (possibly empty) is exact.
+    plugins: list[UUID] | None = Field(default=None, max_length=100)
     idempotency_key: UUID | None = None
 
 class SessionPatch(BaseModel):
@@ -21,6 +23,7 @@ class SessionPatch(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=120)
     archived: bool | None = None
     repository: RepoSelection | None = None
+    plugins: list[UUID] | None = Field(default=None, max_length=100)
 
 class SessionView(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -34,6 +37,8 @@ class SessionView(BaseModel):
     created_at: datetime
     updated_at: datetime
     repository: RepoSelection | None = None
+    # The plugin connections this conversation may use.
+    plugins: list[UUID] = []
     continuation_task_id: UUID | None = None
     queue_paused: bool = False
     queued_count: int = 0

@@ -26,6 +26,11 @@ async def context_status(request: Request, session_id: UUID | None = None, user:
             usage = await run_in_threadpool(SessionRepository(sessions(request), context_budget=budget).context_usage, session_id, user.id)
         except TaskNotFound:
             raise HTTPException(404, "session_not_found") from None
+    extra = 0
+    if getattr(settings, "plugins_enabled", False):
+        from agentforge.plugins.runtime import estimated_tokens
+        from agentforge.plugins.service import connections_for_conversation
+        extra = estimated_tokens(await run_in_threadpool(connections_for_conversation, sessions(request), user.id, session_id))
     return build_status(model=settings.llm_model or None, provider=getattr(settings, "llm_provider", "openai"),
         window=settings.llm_context_window_tokens, max_output=settings.llm_max_output_tokens,
-        usage=usage, history_budget_chars=budget)
+        usage=usage, history_budget_chars=budget, extra_baseline=extra)

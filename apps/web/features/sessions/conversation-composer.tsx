@@ -8,6 +8,9 @@ import { ApprovalModePicker } from "@/features/sessions/approval-mode-picker";
 import { iconButtonClass } from "@/features/sessions/composer-styles";
 import { ContextStatusButton } from "@/features/sessions/context-status";
 import { ModelPicker } from "@/features/sessions/model-picker";
+import { PluginPicker } from "@/features/plugins/plugin-picker";
+import { pluginsStore } from "@/features/plugins/use-plugins";
+import { effectiveSelection } from "@/lib/plugins-api";
 import { RepositoryPicker } from "@/features/sessions/repository-picker";
 import { estimateDraftTokens } from "@/lib/context";
 import { useConversationDraft } from "@/features/sessions/use-conversation-draft";
@@ -33,7 +36,7 @@ const sendClass = "inline-flex size-11 shrink-0 items-center justify-center roun
  * `below` renders under the composer without taking part in its layout (the empty chat's setup list and example prompts), so
  * what it shows, and when, never moves the composer. It is handed a function that puts text in the message field.
  */
-export function ConversationComposer({ queue, repository, onRepositoryChange, config, disabled, repositoryLocked = false, running = false, runId = null, onStop, archived, onSend, menuSide = "top", sessionId = null, contextRevision = "new", onNewConversation, below, docked = false }: { queue?: ReactNode; sessionId?: string | null; docked?: boolean; contextRevision?: string; onNewConversation?: () => void; running?: boolean; runId?: string | null; onStop?: () => Promise<void>; menuSide?: "top" | "bottom"; repository: RepositorySelection | null; onRepositoryChange: (repository: RepositorySelection | null) => Promise<void>; config: WorkspaceConfiguration | null; disabled: boolean; repositoryLocked?: boolean; archived: boolean; onSend: (input: TurnInput) => Promise<void>; below?: (fill: (text: string) => void) => ReactNode }) {
+export function ConversationComposer({ queue, repository, onRepositoryChange, plugins = null, onPluginsChange, config, disabled, repositoryLocked = false, running = false, runId = null, onStop, archived, onSend, menuSide = "top", sessionId = null, contextRevision = "new", onNewConversation, below, docked = false }: { queue?: ReactNode; sessionId?: string | null; docked?: boolean; contextRevision?: string; onNewConversation?: () => void; running?: boolean; runId?: string | null; onStop?: () => Promise<void>; menuSide?: "top" | "bottom"; repository: RepositorySelection | null; onRepositoryChange: (repository: RepositorySelection | null) => Promise<void>; plugins?: readonly string[] | null; onPluginsChange?: (ids: string[]) => Promise<void>; config: WorkspaceConfiguration | null; disabled: boolean; repositoryLocked?: boolean; archived: boolean; onSend: (input: TurnInput) => Promise<void>; below?: (fill: (text: string) => void) => ReactNode }) {
   const { goal, setGoal, attachments, setAttachments, clearDraft, flushDraft } = useConversationDraft(sessionId);
   // A conversation's layout (settings in the bottom row, no header) from the moment the composer docks under a thread, even
   // while that first message is still creating the conversation: the layout must not change once the thread opens.
@@ -140,7 +143,10 @@ export function ConversationComposer({ queue, repository, onRepositoryChange, co
     event.preventDefault(); setError("");
     if (upload.current) return;
     if (blocked !== null && blocked !== "empty") return;
-    const input: Omit<TurnInput, "idempotency_key"> = { routing: "auto", goal: attachmentGoal(goal, attachments), repository, allowed_web_hosts: [], attachments };
+    // A first message creates its conversation with the plugins on screen (the ones left on in Settings unless the person chose).
+    const overview = pluginsStore.getSnapshot().overview;
+    const startingPlugins = !sessionId && overview?.enabled ? effectiveSelection(overview.connections, plugins) : undefined;
+    const input: Omit<TurnInput, "idempotency_key"> = { routing: "auto", goal: attachmentGoal(goal, attachments), repository, ...(startingPlugins ? { plugins: startingPlugins } : {}), allowed_web_hosts: [], attachments };
     if (input.goal.length < 1) { setError("Enter a message to send."); return; }
     submission.current = nextSubmission(submission.current, input, () => crypto.randomUUID());
     setBusy(true);
@@ -200,6 +206,7 @@ export function ConversationComposer({ queue, repository, onRepositoryChange, co
         <div className="flex min-w-0 flex-1 items-center gap-0.5 sm:gap-1">
           <button type="button" className={iconButtonClass} aria-label="Attach files" title="Attach PDFs, images, or text files" disabled={locked || uploading} onClick={() => fileInput.current?.click()}><Paperclip className="size-4" aria-hidden="true" /></button>
           <input ref={fileInput} type="file" multiple accept={ATTACHMENT_ACCEPT} disabled={locked || uploading} className="hidden" tabIndex={-1} onChange={(event) => void attach(Array.from(event.target.files ?? []))} />
+          {onPluginsChange ? <PluginPicker selected={plugins} disabled={locked || archived} onChange={onPluginsChange} side={menuSide} /> : null}
         </div>
         <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
           {conversation ? <ContextStatusButton sessionId={sessionId} revision={contextRevision} live={running} draftTokens={estimateDraftTokens(goal, attachments)} side="top" onNewConversation={onNewConversation} /> : null}

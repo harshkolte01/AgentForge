@@ -36,6 +36,8 @@ export function ConversationWorkspace() {
   const [lookupFailure, setLookupFailure] = useState<{ id: string; missing: boolean } | null>(null);
   const [draftSequence, setDraftSequence] = useState(0);
   const [draftRepository, setDraftRepository] = useState<RepositorySelection | null>(null);
+  // The plugins chosen for a conversation not created yet; null until the person chooses (it then starts with the ones left on in Settings).
+  const [draftPlugins, setDraftPlugins] = useState<string[] | null>(null);
   const [config, setConfig] = useState<WorkspaceConfiguration | null>(null);
   const [sidebar, setSidebar] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
@@ -129,7 +131,7 @@ export function ConversationWorkspace() {
   }, [routeId, known, refresh]);
   useDocumentTitle(`${missing ? "Conversation not found" : selected?.title ?? "New conversation"} · ${APP_NAME}`);
   /** Resets draft state for a fresh conversation; navigation is done by the caller's link or router call. */
-  function newChat() { if (busy) return false; setDraftRepository(null); setDraftSequence((value) => value + 1); pendingSession.current = null; setSidebar(false); setError(""); return true; }
+  function newChat() { if (busy) return false; setDraftRepository(null); setDraftPlugins(null); setDraftSequence((value) => value + 1); pendingSession.current = null; setSidebar(false); setError(""); return true; }
   function select() { setSidebar(false); pendingSession.current = null; setError(""); }
   // Stable (it only uses state setters): the thread's store keeps the first one it is given.
   // A read that changes nothing (every poll of an idle conversation) keeps the same list, so nothing re-renders.
@@ -159,6 +161,10 @@ export function ConversationWorkspace() {
       const updated = await api<ConversationSession>(`/sessions/${selected.id}`, { method: "PATCH", body: JSON.stringify({ repository }) });
       updateSession(updated);
     } finally { setBusy(false); }
+  }
+  async function changePlugins(ids: string[]) {
+    if (!selected) { setDraftPlugins(ids); return; }
+    updateSession(await api<ConversationSession>(`/sessions/${selected.id}`, { method: "PATCH", body: JSON.stringify({ plugins: ids }) }));
   }
   async function stop() {
     if (selected?.active_task_id) updateSession(await api<ConversationSession>(`/sessions/${selected.id}/queue/stop`, {
@@ -215,7 +221,7 @@ export function ConversationWorkspace() {
   // The composer sits under the thread once there is one (or a draft of it); before that it is centred in the empty chat.
   const docked = !!selected || !!draft;
   const composerKey = selected ? (adopted?.sessionId === selected.id ? adopted.composerKey : selected.id) : `new-${draftSequence}`;
-  const composer = <ConversationComposer queue={selected && !!selected.queued_count ? <ConversationQueue key={selected.id} session={selected} onChange={updateSession} /> : null} menuSide={docked ? "top" : "bottom"} key={composerKey} sessionId={selected?.id ?? null} contextRevision={selected ? `${selected.revision ?? selected.last_sequence}:${selected.active_task_id ?? ""}` : "new"} onNewConversation={() => { if (newChat()) router.push(routes.newConversation); }} repository={selected ? selected.repository : draftRepository} repositoryLocked={!!selected?.queued_count} onRepositoryChange={changeRepository} config={config} disabled={loading || busy} running={!!selected?.active_task_id} runId={selected?.active_task_id ?? null} onStop={stop} archived={selected?.archived ?? false} onSend={send} docked={docked} below={docked ? undefined : (fill) => <FirstRun config={config} onExample={fill} />} />;
+  const composer = <ConversationComposer queue={selected && !!selected.queued_count ? <ConversationQueue key={selected.id} session={selected} onChange={updateSession} /> : null} menuSide={docked ? "top" : "bottom"} key={composerKey} sessionId={selected?.id ?? null} contextRevision={selected ? `${selected.revision ?? selected.last_sequence}:${selected.active_task_id ?? ""}` : "new"} onNewConversation={() => { if (newChat()) router.push(routes.newConversation); }} repository={selected ? selected.repository : draftRepository} repositoryLocked={!!selected?.queued_count} onRepositoryChange={changeRepository} plugins={selected ? selected.plugins ?? [] : draftPlugins} onPluginsChange={changePlugins} config={config} disabled={loading || busy} running={!!selected?.active_task_id} runId={selected?.active_task_id ?? null} onStop={stop} archived={selected?.archived ?? false} onSend={send} docked={docked} below={docked ? undefined : (fill) => <FirstRun config={config} onExample={fill} />} />;
   return <ConversationScrollContext value={scrollController}><div data-conversation-root className="relative top-[var(--visible-top,0px)] flex h-[var(--visible-height,100dvh)] min-h-0 overflow-hidden bg-background selection:bg-foreground/15">
     {sidebar ? <button className="fixed inset-0 z-30 bg-foreground/20 lg:hidden" aria-label="Close navigation" onClick={() => setSidebar(false)} /> : null}
     <ResizableSidebar collapsed={collapsed} ref={navigation} id="workspace-navigation" className={`fixed inset-y-0 left-0 z-40 flex shrink-0 flex-col border-r bg-sidebar px-3 pb-3 pt-3 transition-transform motion-reduce:transition-none lg:translate-x-0 ${sidebar ? "translate-x-0" : "-translate-x-full max-lg:invisible"} ${collapsed ? "lg:hidden" : ""}`} aria-label="Workspace navigation" role={sidebar ? "dialog" : undefined} aria-modal={sidebar || undefined}>

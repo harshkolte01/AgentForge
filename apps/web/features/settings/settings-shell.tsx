@@ -20,6 +20,7 @@ function SectionPlaceholder() {
   return <div role="status" className={`${sectionClass} animate-pulse motion-reduce:animate-none`}><span className="sr-only">Loading…</span><div className="space-y-2" aria-hidden="true"><div className="h-7 w-32 rounded bg-muted" /><div className="h-5 w-72 max-w-full rounded bg-muted" /></div></div>;
 }
 const GitHubConnection = dynamic(() => import("@/features/github/github-connection").then((module) => module.GitHubConnection), { loading: SectionPlaceholder });
+const PluginSettings = dynamic(() => import("@/features/plugins/plugin-settings").then((module) => module.PluginSettings), { loading: SectionPlaceholder });
 const AgentManager = dynamic(() => import("@/features/agents/agent-manager").then((module) => module.AgentManager), { loading: SectionPlaceholder });
 
 const noSubscription = () => () => {};
@@ -47,6 +48,7 @@ export function SettingsWorkspace({ section, initialCreate = false, agentId }: {
           : section === "agent" ? <AgentSettings />
             : section === "status" ? <StatusSettings />
               : section === "github" ? <div className={sectionClass}><GitHubConnection embedded /></div>
+                : section === "plugins" ? <PluginSettings />
                 : section === "conversations" ? <ConversationSettings />
                   : section === "appearance" ? <AppearanceSettings />
                     : <AgentManager key={`${agentId ?? "list"}-${initialCreate ? "new" : "view"}`} initialCreate={initialCreate} initialAgentId={agentId} embedded />}</div>

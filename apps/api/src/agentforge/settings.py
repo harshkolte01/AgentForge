@@ -98,6 +98,15 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("GITHUB_TOKEN_ENCRYPTION_KEY", "ENCRYPTION_KEY", "github_token_encryption_key"))
     github_oauth_callback_url: HttpUrl | None = None
     enable_github_writes: bool = False
+    # Plugins: MCP servers a person connects in Settings so the agent can use their tools. Secrets (tokens) are stored
+    # encrypted with PLUGIN_ENCRYPTION_KEY, or with the GitHub token key when that is set; without either key only
+    # plugins that need no credential can be connected.
+    plugins_enabled: bool = True
+    plugin_encryption_key: SecretStr | None = Field(default=None, repr=False)
+    # Development only: lets a plugin server live on localhost or a private network (never allowed in production).
+    plugin_allow_private_network: bool = False
+    plugin_call_timeout_sec: float = Field(default=60, gt=0, le=300)
+    plugin_max_connections: int = Field(default=20, ge=1, le=100)
     github_api_version: str = Field(default="2026-03-10", pattern=r"^\d{4}-\d{2}-\d{2}$")
     public_signup_enabled: bool = True
     # GitHub logins allowed to sign in (case-insensitive); they get an account on first sign-in even with public
@@ -153,9 +162,20 @@ class Settings(BaseSettings):
                     problems.append(f"APP_ENV=production requires an https {name.upper()}")
             if any(not value.startswith("https://") for value in self.allowed_origins):
                 problems.append("APP_ENV=production requires every ALLOWED_ORIGINS entry to use https")
+        for name in ("plugin_encryption_key",):
+            key = getattr(self, name)
+            if key is not None and len(key.get_secret_value()) < 32:
+                problems.append(f"{name.upper()} must be at least 32 characters")
+        if self.app_env == "production" and self.plugin_allow_private_network:
+            problems.append("APP_ENV=production forbids PLUGIN_ALLOW_PRIVATE_NETWORK")
         if problems:
             raise ValueError("; ".join(problems))
         return self
+
+    @property
+    def plugin_secret(self) -> SecretStr | None:
+        """The key that encrypts plugin credentials: its own, or the GitHub token key when only that is set."""
+        return self.plugin_encryption_key or self.github_token_encryption_key
 
 
 def origin(url: HttpUrl) -> str:

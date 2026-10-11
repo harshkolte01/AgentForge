@@ -4,15 +4,17 @@ from hashlib import sha256
 from cryptography.fernet import Fernet, InvalidToken
 
 class CredentialCipher:
-    def __init__(self, secret):
+    def __init__(self, secret, *, domain: str = "github"):
+        self.domain = domain
         if secret is None:
-            raise ValueError("github_encryption_not_configured")
+            raise ValueError(f"{domain}_encryption_not_configured")
         raw = secret.get_secret_value().encode()
         if len(raw) < 32:
-            raise ValueError("github_encryption_key_too_short")
+            raise ValueError(f"{domain}_encryption_key_too_short")
         # Accept existing deployment key material as well as Fernet keys. Domain
-        # separation keeps this key distinct from an operator's other uses.
-        self.fernet = Fernet(base64.urlsafe_b64encode(sha256(b"agentforge:github:v1:" + raw).digest()))
+        # separation keeps this key distinct from an operator's other uses, and keeps
+        # each kind of credential (GitHub tokens, plugin secrets) unreadable by the other.
+        self.fernet = Fernet(base64.urlsafe_b64encode(sha256(f"agentforge:{domain}:v1:".encode() + raw).digest()))
 
     def encrypt(self, value: str) -> str:
         return "v1:" + self.fernet.encrypt(value.encode()).decode("ascii")
@@ -23,4 +25,4 @@ class CredentialCipher:
                 raise ValueError()
             return self.fernet.decrypt(value[3:].encode()).decode()
         except (InvalidToken, UnicodeError, ValueError):
-            raise ValueError("github_credentials_unavailable") from None
+            raise ValueError(f"{self.domain}_credentials_unavailable") from None

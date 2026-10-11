@@ -106,11 +106,14 @@ export async function deliverIntent(record: PendingTurn, signal?: AbortSignal): 
   let session: ConversationSession | null = null;
   if (!record.sessionId) {
     session = await api<ConversationSession>("/sessions", { signal, method: "POST", body: JSON.stringify({
-      idempotency_key: record.input.idempotency_key, title: record.input.goal.slice(0, 80), repository: record.input.repository }) });
+      idempotency_key: record.input.idempotency_key, title: record.input.goal.slice(0, 80), repository: record.input.repository, plugins: record.input.plugins }) });
     record = { ...record, sessionId: session.id };
     await persist(record);
   }
-  const result = await api<TurnResult>(`/sessions/${record.sessionId}/turns`, { signal, method: "POST", body: JSON.stringify(record.input) });
+  // The plugin choice belongs to the conversation (sent above when it was created), not to a turn.
+  const turn: Partial<TurnInput> = { ...record.input };
+  delete turn.plugins;
+  const result = await api<TurnResult>(`/sessions/${record.sessionId}/turns`, { signal, method: "POST", body: JSON.stringify(turn) });
   // The admission is authoritative. A later refresh failure cannot resend it as new work.
   const draftId = record.draftId ?? `${record.account}:${record.sessionId ?? "new"}`;
   const db = await openDatabase();

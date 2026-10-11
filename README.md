@@ -21,8 +21,10 @@ and [qualification tracker](docs/remaining-phases.md) for tested boundaries.
 Start a conversation and describe the work. The composer has an optional
 repository selection that defaults to No repo, and the Ask me / Approve for me
 switch. The sidebar focuses on conversations. Account, model/limits, GitHub
-connections and custom-agent management live in Settings. See
+connections, plugins and custom-agent management live in Settings. See
 [conversation behavior and migration](docs/conversation-ux.md) for the details.
+Plugins (remote MCP servers the person connects, chosen per conversation from the composer) are described in
+[plugins](docs/plugins.md).
 Durable queued follow-ups, source-linked conversation summaries, original-input
 retrieval and deployment requirements are documented in
 [conversation reliability](docs/conversation-reliability.md).

@@ -342,8 +342,13 @@ class SessionRepository:
                 raise TaskNotFound("project_not_found")
             if len(list(session.scalars(select(Conversation.id).where(Conversation.owner_id == owner_id).limit(501)))) >= 500:
                 raise TaskConflict("session_limit_reached")
+            from agentforge.plugins.service import PluginError, checked_selection, default_selection
+            try:
+                chosen = default_selection(session, owner_id) if request.plugins is None else checked_selection(session, owner_id, request.plugins)
+            except PluginError as exc:
+                raise TaskNotFound(exc.code) from None
             row = Conversation(owner_id=owner_id, project_id=project.id, title=request.title,
-                mode=request.mode, archived=False, last_sequence=0,
+                mode=request.mode, archived=False, last_sequence=0, plugins_json=chosen,
                 repository_json=request.repository.model_dump(mode="json") if request.repository else None)
             session.add(row)
             session.flush()
@@ -416,7 +421,13 @@ class SessionRepository:
                 if selection != row.repository_json:
                     row.repository_since_sequence = row.last_sequence
                 row.repository_json = selection
-            for key, value in request.model_dump(exclude_none=True, exclude={"repository"}).items():
+            if request.plugins is not None:
+                from agentforge.plugins.service import PluginError, checked_selection
+                try:
+                    row.plugins_json = checked_selection(session, owner_id, request.plugins)
+                except PluginError as exc:
+                    raise TaskNotFound(exc.code) from None
+            for key, value in request.model_dump(exclude_none=True, exclude={"repository", "plugins"}).items():
                 setattr(row, key, value)
             row.updated_at = datetime.now(timezone.utc)
             bump_conversation(session, row)
@@ -502,6 +513,8 @@ class SessionRepository:
     @staticmethod
     def request_digest(request):
         payload = request.model_dump(mode="json")
+        if isinstance(request, SessionCreate) and request.plugins is None:
+            payload.pop("plugins", None)  # as before plugins existed, so a creation retried across an upgrade still matches
         if isinstance(request, AutoTurnCreate) and "repository" not in request.model_fields_set:
             payload["repository"] = {"inherit_session_selection": True}
         if isinstance(request, AutoTurnCreate) and "continue_from_task_id" not in request.model_fields_set:

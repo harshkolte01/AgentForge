@@ -87,8 +87,21 @@ export function humanizeTool(tool: string): string {
   return tool.replaceAll(/[_-]+/g, " ").trim().toLowerCase();
 }
 
-/** The generic spec for a tool the registry does not list: "Used <tool name>". */
+/**
+ * The plugin a tool belongs to, as a name to show: plugin tools are named `<plugin>__<tool>` (the part before is the plugin's
+ * short name, chosen when it was connected). Null for any other tool.
+ */
+export function pluginName(tool: string): string | null {
+  const index = tool.indexOf("__");
+  if (index < 1 || index + 2 >= tool.length) return null;
+  const name = tool.slice(0, index).replaceAll("-", " ");
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+/** The generic spec for a tool the registry does not list: "Used <tool name>", or "Used <plugin>" for a plugin's tool. */
 function genericSpec(tool: string): ToolSpec {
+  const plugin = pluginName(tool);
+  if (plugin) return { presentation: "status", base: `use ${plugin}`, labels: [`Using ${plugin}`, `Used ${plugin}`, `Couldn't use ${plugin}`] };
   const name = humanizeTool(tool);
   return {
     presentation: "status", base: `use ${name}`,

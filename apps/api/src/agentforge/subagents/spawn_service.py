@@ -93,6 +93,11 @@ class SpawnService:
         await self.authorizer.check_context(ctx)
         resolved = await self.registry.resolve_for_task(request.type, request.version, ctx)
         scope = intersect_and_validate(resolved.definition, ctx, request.context_refs)
+        # The tools of the plugins this conversation uses were registered for this run alone, from servers its owner connected
+        # and chose; they are offered to whichever agent runs, beside the tools its definition allows.
+        plugin_tools = self.catalog.plugin_tool_names()
+        if plugin_tools:
+            scope = replace(scope, allowed_tools=(*scope.allowed_tools, *plugin_tools))
         available = self.catalog.available(scope.allowed_tools)
         if not available:
             return SubagentResult(status="FAIL", error_code="TOOL_UNAVAILABLE", summary="No tools are available for this agent, so it cannot run.")

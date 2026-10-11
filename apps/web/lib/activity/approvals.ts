@@ -3,6 +3,7 @@
  * and the chat shows an Approve / Decline card. The card is not stored anywhere on its own: it is derived from the run's events
  * (`approval.required` with no `approval.decided` after it), so a reload, a second tab or a late reader sees the same cards.
  */
+import { pluginName } from "@/lib/activity/presentation";
 import type { TaskEvent } from "@/lib/task-api";
 
 export type PendingApproval = {
@@ -53,7 +54,7 @@ export function approvalTitle(tool: string): string {
     case "write": return "Write this file?";
     case "edit": return "Edit this file?";
     case "create_pull_request": return "Open this pull request?";
-    default: return "Allow this action?";
+    default: return pluginName(tool) ? `Allow ${pluginName(tool)} to do this?` : "Allow this action?";
   }
 }
 

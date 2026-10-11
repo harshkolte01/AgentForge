@@ -22,6 +22,8 @@ class Conversation(Base):
     last_sequence: Mapped[int] = mapped_column(BigInteger, server_default=text("0"))
     summary_json: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
     repository_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # Ids of the plugin connections this conversation may use. None (every conversation before plugins existed) means none.
+    plugins_json: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     # The persistent sandbox the agent works in for this conversation (created on first use).
     sandbox_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     repository_since_sequence: Mapped[int] = mapped_column(BigInteger, server_default=text("0"))
@@ -36,6 +38,10 @@ class Conversation(Base):
     @property
     def repository(self):
         return self.repository_json
+
+    @property
+    def plugins(self) -> list[str]:
+        return [item for item in self.plugins_json if isinstance(item, str)] if isinstance(self.plugins_json, list) else []
 
 
 class ConversationMessage(Base):

@@ -31,8 +31,11 @@ class Runtime:
     service: SpawnService
     models: ModelRouter
     repository_github: object | None = None
+    plugins: object | None = None
 
     async def close(self):
+        if self.plugins is not None:
+            await self.plugins.aclose()
         close = getattr(self.models.model, "aclose", None)
         if close is not None:
             await close()
@@ -75,6 +78,21 @@ def compose_runtime(settings, sessions, telemetry, store) -> Runtime:
     for tool in base_catalog.available(DESCRIPTIONS):
         catalog.register(tool.name, observed_tool(tool, telemetry, store),
             max_cost_usd=tool.max_cost_usd, timeout_sec=tool.timeout_sec)
+    plugins = None
+    if conversation_task and settings.plugins_enabled:
+        # The plugins this conversation may use, as the person set them (see plugins/service.py). A failure here must not
+        # stop the conversation: the turn simply runs without them.
+        try:
+            from agentforge.plugins.runtime import register_plugins
+            from agentforge.plugins.service import connections_for_task
+            connections = connections_for_task(sessions, store.lease.task_id, task.created_by)
+            if connections:
+                from types import SimpleNamespace
+                plugins = register_plugins(catalog, connections, settings,
+                    wrap=lambda name, handler: observed_tool(SimpleNamespace(name=name, handler=handler), telemetry, store))
+        except Exception:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning("plugins unavailable for this run: task_id=%s", store.lease.task_id, exc_info=True)
     authorizer = AuthorizationService(sessions)
     service = SpawnService(registry=AgentRegistry(sessions, authorizer), authorizer=authorizer,
         budgets=BudgetService(sessions), runs=AgentRunRepository(sessions),
@@ -83,4 +101,4 @@ def compose_runtime(settings, sessions, telemetry, store) -> Runtime:
         lifecycle=store.progress, approvals=ToolApprovals(sessions, store.progress), sessions=sessions)
     service.spawn_subagent = telemetry.decorate(service.spawn_subagent,
         kind="AGENT", name="spawn_subagent")
-    return Runtime(service, models, repository_github)
+    return Runtime(service, models, repository_github, plugins)

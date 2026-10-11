@@ -182,11 +182,14 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   });
   if (!response.ok) {
     const body = await response.json().catch(() => null) as { detail?: unknown } | null;
-    const detail = typeof body?.detail === "string" ? body.detail : "";
+    // Most errors name a code; plugin errors also carry a sentence written for the person ({code, message}).
+    const written = body?.detail && typeof body.detail === "object" ? body.detail as { code?: unknown; message?: unknown } : null;
+    const detail = typeof body?.detail === "string" ? body.detail : typeof written?.code === "string" ? written.code : "";
+    const sentence = typeof written?.message === "string" && written.message ? written.message : undefined;
     if (response.status === 401 && path !== "/auth/session") {
       window.dispatchEvent(new Event("agentforge-session-expired"));
     }
-    throw new ApiError(response.status, friendlyErrors[detail] ??
+    throw new ApiError(response.status, friendlyErrors[detail] ?? sentence ??
       (response.status === 422 ? "Check the message, attachments and repository, then try again." :
         `The request could not be completed (HTTP ${response.status}). Try again.`), detail || undefined);
   }
