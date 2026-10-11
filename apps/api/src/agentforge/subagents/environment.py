@@ -3,17 +3,44 @@
 Everything here is read from the database (never from the model or a tool result) and is short, so it costs a few dozen
 tokens. Nothing is started to find it out: a sandbox that does not exist yet is described as such, not created.
 """
+import logging
 from uuid import UUID
 
 from sqlalchemy import select
 
+from agentforge.database.delivery import ConversationDelivery
 from agentforge.database.models import Task
 from agentforge.database.sessions import Conversation, TurnExecution
 from agentforge.integrations.e2b_sandbox import WORKSPACE
 from agentforge.tools.approvals import get_mode
 from agentforge.tools.catalog import ASKS_BEFORE
 
+log = logging.getLogger(__name__)
 WORKSPACE_TOOLS = frozenset({"bash", "read", "write", "edit", "grep", "find", "ls"})
+
+
+def delivery_description(delivery: ConversationDelivery) -> str | None:
+    """One short line on where this conversation's work stands on GitHub, or None if nothing has been published or is waiting."""
+    pr, waiting = delivery.pr_json or {}, delivery.unpublished_json
+    parts = []
+    if delivery.branch and delivery.head_sha:
+        parts.append(f"published to branch {delivery.branch}")
+    if delivery.pr_number:
+        checks = pr.get("checks") or {}
+        detail = [pr.get("state") or "open"]
+        if checks.get("state") in {"failing", "pending", "passing"}:
+            detail.append(f"checks {checks['state']}" + (f" ({checks.get('failed')} failed)" if checks.get("failed") else ""))
+        if pr.get("mergeable") == "conflicting":
+            detail.append("merge conflicts")
+        if (pr.get("reviews") or {}).get("decision") == "changes_requested":
+            detail.append("changes requested")
+        parts.append(f"pull request #{delivery.pr_number} ({', '.join(detail)}); get_pr_status shows the checks")
+    if waiting:
+        parts.append(f"{waiting.get('files', 0)} changed files are not pushed yet")
+    if not parts:
+        return None
+    return ("; ".join(parts) + ". create_pull_request adds a commit to that branch and pull request (it never opens a second one). "
+            "The person merges from the Changes panel; you cannot.")
 
 
 def turn_environment(sessions, *, task_id: UUID, user_id: UUID, tools: tuple[str, ...]) -> dict[str, str]:
@@ -22,6 +49,15 @@ def turn_environment(sessions, *, task_id: UUID, user_id: UUID, tools: tuple[str
         grants = db.scalar(select(Task.permissions_json).where(Task.id == task_id)) or {}
         sandbox_id = db.scalar(select(Conversation.sandbox_id).join(TurnExecution, TurnExecution.session_id == Conversation.id)
                                .where(TurnExecution.task_id == task_id))
+        try:
+            delivery = db.scalar(select(ConversationDelivery).join(TurnExecution, TurnExecution.session_id == ConversationDelivery.conversation_id)
+                                 .where(TurnExecution.task_id == task_id, ConversationDelivery.status == "active"))
+            delivery_fact = delivery_description(delivery) if delivery is not None else None
+        except Exception:
+            # An extra line of context must never cost the turn its whole environment block (e.g. a database not yet migrated).
+            db.rollback()
+            log.warning("delivery facts unavailable: task_id=%s", task_id, exc_info=True)
+            delivery_fact = None
     facts: dict[str, str] = {}
     if WORKSPACE_TOOLS & set(tools):
         facts["Workspace"] = (f"{WORKSPACE}, a persistent Linux sandbox. " + (
@@ -36,6 +72,8 @@ def turn_environment(sessions, *, task_id: UUID, user_id: UUID, tools: tuple[str
         ref = str(repository.get("ref") or "")
         facts["Repository"] = repository["repo_id"] + (f" at commit {ref[:12]}" if ref else "") + (
             ", checked out at the workspace root (base tag agentforge-base)" if WORKSPACE_TOOLS & set(tools) else "")
+    if delivery_fact and "create_pull_request" in tools:
+        facts["GitHub delivery"] = delivery_fact
     plugins: dict[str, int] = {}
     for name in tools:
         if "__" in name:

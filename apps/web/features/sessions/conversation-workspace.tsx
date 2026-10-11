@@ -12,6 +12,9 @@ import { ConversationComposer } from "@/features/sessions/conversation-composer"
 import { ConversationThread, DraftThread } from "@/features/sessions/conversation-thread";
 import { ConversationScrollContext, useConversationScroll } from "@/features/sessions/use-conversation-scroll";
 import { ConversationQueue } from "@/features/sessions/conversation-queue";
+import { DeliveryChip } from "@/features/delivery/delivery-chip";
+import { DeliveryProvider } from "@/features/delivery/delivery-provider";
+import { DeliverySplit } from "@/features/delivery/delivery-split";
 import { BrandMark } from "@/components/brand-mark";
 import { FirstRun } from "@/features/sessions/first-run";
 import { mergeSessions, upsertSession } from "@/lib/conversation-order";
@@ -29,7 +32,7 @@ const APP_NAME = "AgentForge";
 /** The URL is the source of truth: `/chat` is a new conversation, `/chat/<id>` an existing one. */
 export function ConversationWorkspace() {
   const router = useRouter();
-  const scrollController = useConversationScroll();
+  const { controller: scrollController, attach: scrollerRef } = useConversationScroll();
   const params = useParams<{ id?: string }>();
   const routeId = typeof params.id === "string" ? params.id.toLowerCase() : null;
   const [sessions, setSessions] = useState<ConversationSession[]>([]);
@@ -216,13 +219,15 @@ export function ConversationWorkspace() {
   const retry = (goal: string) => {
     void send({ routing: "auto", idempotency_key: crypto.randomUUID(), goal, repository: selected ? selected.repository : null, allowed_web_hosts: [], attachments: [] }).catch(() => {});
   };
+  // The delivery panel's "Fix checks" and friends: a canned message through the same send path as anything you type.
+  const askAgent = (goal: string) => send({ routing: "auto", idempotency_key: crypto.randomUUID(), goal, repository: selected ? selected.repository : null, allowed_web_hosts: [], attachments: [] });
   // A first message being sent: shown at once in a draft of its thread, until the conversation it creates opens.
   const draft = !selected && pending && (routeId === null || pending.sessionId === routeId) ? pending : null;
   // The composer sits under the thread once there is one (or a draft of it); before that it is centred in the empty chat.
   const docked = !!selected || !!draft;
   const composerKey = selected ? (adopted?.sessionId === selected.id ? adopted.composerKey : selected.id) : `new-${draftSequence}`;
-  const composer = <ConversationComposer queue={selected && !!selected.queued_count ? <ConversationQueue key={selected.id} session={selected} onChange={updateSession} /> : null} menuSide={docked ? "top" : "bottom"} key={composerKey} sessionId={selected?.id ?? null} contextRevision={selected ? `${selected.revision ?? selected.last_sequence}:${selected.active_task_id ?? ""}` : "new"} onNewConversation={() => { if (newChat()) router.push(routes.newConversation); }} repository={selected ? selected.repository : draftRepository} repositoryLocked={!!selected?.queued_count} onRepositoryChange={changeRepository} plugins={selected ? selected.plugins ?? [] : draftPlugins} onPluginsChange={changePlugins} config={config} disabled={loading || busy} running={!!selected?.active_task_id} runId={selected?.active_task_id ?? null} onStop={stop} archived={selected?.archived ?? false} onSend={send} docked={docked} below={docked ? undefined : (fill) => <FirstRun config={config} onExample={fill} />} />;
-  return <ConversationScrollContext value={scrollController}><div data-conversation-root className="relative top-[var(--visible-top,0px)] flex h-[var(--visible-height,100dvh)] min-h-0 overflow-hidden bg-background selection:bg-foreground/15">
+  const composer = <ConversationComposer queue={selected && !!selected.queued_count ? <ConversationQueue key={selected.id} session={selected} onChange={updateSession} /> : null} menuSide={docked ? "top" : "bottom"} key={composerKey} sessionId={selected?.id ?? null} contextRevision={selected ? `${selected.revision ?? selected.last_sequence}:${selected.active_task_id ?? ""}` : "new"} onNewConversation={() => { if (newChat()) router.push(routes.newConversation); }} repository={selected ? selected.repository : draftRepository} repositoryLocked={!!selected?.queued_count} onRepositoryChange={changeRepository} plugins={selected ? selected.plugins ?? [] : draftPlugins} onPluginsChange={changePlugins} config={config} disabled={loading || busy} running={!!selected?.active_task_id} runId={selected?.active_task_id ?? null} onStop={stop} archived={selected?.archived ?? false} onSend={send} docked={docked} below={docked ? undefined : <FirstRun config={config} />} />;
+  return <ConversationScrollContext value={scrollController}><DeliveryProvider sessionId={selected?.id ?? null} hasRepository={!!selected?.repository} activeTaskId={selected?.active_task_id ?? null} onAskAgent={askAgent}><div data-conversation-root className="relative top-[var(--visible-top,0px)] flex h-[var(--visible-height,100dvh)] min-h-0 overflow-hidden bg-background selection:bg-foreground/15">
     {sidebar ? <button className="fixed inset-0 z-30 bg-foreground/20 lg:hidden" aria-label="Close navigation" onClick={() => setSidebar(false)} /> : null}
     <ResizableSidebar collapsed={collapsed} ref={navigation} id="workspace-navigation" className={`fixed inset-y-0 left-0 z-40 flex shrink-0 flex-col border-r bg-sidebar px-3 pb-3 pt-3 transition-transform motion-reduce:transition-none lg:translate-x-0 ${sidebar ? "translate-x-0" : "-translate-x-full max-lg:invisible"} ${collapsed ? "lg:hidden" : ""}`} aria-label="Workspace navigation" role={sidebar ? "dialog" : undefined} aria-modal={sidebar || undefined}>
       <div className="mb-5 flex min-h-9 items-center justify-between px-1"><Link href={routes.newConversation} onClick={(event) => { if (!newChat()) event.preventDefault(); }} className="inline-flex items-center gap-2 rounded text-[13px] font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring/60"><BrandMark />AgentForge</Link><Button variant="ghost" size="icon-sm" className="size-11 sm:size-8" aria-label="Collapse sidebar" onClick={() => { setSidebar(false); setCollapsed(true); }}><PanelLeftClose className="size-3.5" /></Button></div>
@@ -230,12 +235,17 @@ export function ConversationWorkspace() {
       <SessionHistory sessions={sessions} selectedId={selected?.id ?? null} loading={loading} disabled={busy} onSelect={select} onChange={updateSession} />
       <div className="border-t pt-2"><SidebarAccountMenu /></div>
     </ResizableSidebar>
-    <div inert={sidebar} className="flex min-w-0 flex-1 flex-col">
-      <header className="flex min-h-14 shrink-0 items-center gap-2 px-4 sm:px-6"><Button ref={navigationTrigger} variant="ghost" size="icon" aria-label="Open navigation" aria-expanded={sidebar} aria-controls="workspace-navigation" className={`size-11 sm:size-8 ${collapsed ? "" : "lg:hidden"}`} onClick={() => { setCollapsed(false); setSidebar(!window.matchMedia("(min-width: 1024px)").matches); }}><Menu className="size-4" /></Button>
-        <h1 className="min-w-0 flex-1 truncate text-xs font-normal text-muted-foreground">{missing ? "Conversation not found" : failure ? "Unavailable" : selected?.title ?? (resolving ? "Loading…" : "New conversation")}</h1>
-        {selected?.archived ? <span className="text-xs text-muted-foreground">Archived</span> : null}</header>
+    <div inert={sidebar} className="flex min-w-0 flex-1"><DeliverySplit>
+      <header className={`flex min-h-12 shrink-0 items-center px-3 sm:px-4 ${collapsed ? "" : "lg:hidden"}`}><Button ref={navigationTrigger} variant="ghost" size="icon" aria-label="Open navigation" aria-expanded={sidebar} aria-controls="workspace-navigation" className={`size-11 sm:size-8 ${collapsed ? "" : "lg:hidden"}`} onClick={() => { setCollapsed(false); setSidebar(!window.matchMedia("(min-width: 1024px)").matches); }}><Menu className="size-4" /></Button>
+      </header>
+      {/* No title bar: the sidebar and the tab already name the conversation. What is left floats: its delivery status, and a quiet note when archived. */}
+      <h1 className="sr-only">{missing ? "Conversation not found" : failure ? "Unavailable" : selected?.title ?? (resolving ? "Loading…" : "New conversation")}</h1>
+      <div className="absolute right-3 top-3 z-20 flex items-center gap-2 sm:right-4">
+        {selected?.archived ? <span className="rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground">Archived</span> : null}<DeliveryChip />
+      </div>
       {error ? <div role="alert" className="mx-5 mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border px-3 py-2 text-xs text-destructive"><p>{error}</p><Button variant="outline" size="sm" onClick={() => { setLookupFailure(null); setRefresh((value) => value + 1); setRetryPending((value) => value + 1); }}>Retry</Button></div> : null}
-      <main data-conversation-scroll className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overscroll-contain [overflow-anchor:none]">
+      {/* The scrollbar is hidden (wheel, touch, keys and the jump-to-latest button still scroll); the top padding keeps the floating status clear of the thread. */}
+      <main ref={scrollerRef} data-conversation-scroll className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overscroll-contain [overflow-anchor:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${collapsed ? "" : "lg:pt-12"}`}>
         {failure && !failure.missing ? <div role="alert" className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center gap-3 px-5 pb-10 text-center sm:px-8"><h2 className="text-2xl font-medium tracking-tight">Couldn&apos;t load this conversation</h2><p className="text-sm leading-6 text-muted-foreground">Check your connection and try again.</p><div><Button onClick={() => { setLookupFailure(null); setRefresh((value) => value + 1); }}>Try again</Button></div></div>
         : missing ? <div role="alert" className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center gap-3 px-5 pb-10 text-center sm:px-8"><h2 className="text-2xl font-medium tracking-tight">Conversation not found</h2><p className="text-sm leading-6 text-muted-foreground">It may have been deleted, or the link belongs to a different account.</p><div><Link href={routes.newConversation} onClick={(event) => { if (!newChat()) event.preventDefault(); }} className="inline-flex min-h-11 items-center rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground outline-none hover:bg-primary/85 focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:min-h-9">Start a new conversation</Link></div></div>
         : draft ? <DraftThread pending={draft} />
@@ -252,6 +262,6 @@ export function ConversationWorkspace() {
           </div>
         </div> : null}
       </main>
-    </div>
-  </div></ConversationScrollContext>;
+    </DeliverySplit></div>
+  </div></DeliveryProvider></ConversationScrollContext>;
 }

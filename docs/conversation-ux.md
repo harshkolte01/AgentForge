@@ -13,18 +13,45 @@ browser's Back and Forward buttons.
 
 | URL | Shows |
 | --- | --- |
+| `/` | The public landing page. Anyone can read it; for someone already signed in, its buttons open the workspace |
+| `/sign-in`, `/sign-up` | Sign in and sign-up, public. There are no passwords: on a hosted workspace both start the same GitHub sign-in (the first one creates the account), and a local workspace shows the bootstrap-token form. Someone already signed in is sent on to `?next=` or `/chat` |
 | `/chat` | A new conversation (empty state and composer) |
 | `/chat/<conversation-id>` | An existing conversation. Unknown, malformed or other-account ids show "Conversation not found" instead of a blank page |
 | `/chat/<conversation-id>/runs/<task-id>` | Run details for one reply, inside the same sidebar shell. "Back to conversation" returns to the thread |
 | `/tasks`, `/tasks/<task-id>` | Standalone task list/detail for work that is not part of a conversation (for example custom-agent tests) |
 | `/settings?section=…` | Settings |
 
+> The `/chat/<id>/runs/<task-id>` and `/tasks…` pages listed above no longer exist: a reply's activity is shown inline in
+> the thread. What the agent did to a repository is reviewed, published and merged from the conversation's **Changes
+> panel** (header chip and the card under the reply) — see [delivery](delivery.md).
+
 `/workspace` and `/workspace?session=<id>` (the original URLs) redirect to `/chat` and
-`/chat/<id>`; the GitHub sign-in return and `auth_error` flag use `/chat`. The shell lives in
+`/chat/<id>`; the GitHub sign-in return and `auth_error` flag use `/chat`. Anyone who is not signed in
+and opens `/chat`, `/chat/<id>` or `/settings` is sent to `/sign-in?next=<that page>` (with the
+`auth_error` code, or `reason=expired` after a session ends), so they come back to the same place after
+signing in; the API's `/chat?auth_error=…` redirects keep working because the workspace forwards them.
+Signing out returns to `/`. The shell lives in
 `app/chat/layout.tsx`, so moving between conversations or opening run details never reloads
 the sidebar, history or in-progress thread. The first message of a new conversation moves the
 URL to its `/chat/<id>`. Browser tab titles follow the conversation title. The REST API is
 unchanged (`/api/v1/sessions…`, `/api/v1/tasks…`); browser URL constants live in `apps/web/lib/routes.ts`.
+
+## Scrolling
+
+One scroll controller owns the thread (`apps/web/lib/scroll-controller.ts`, rules and tests; `lib/scroll.ts` and
+`features/sessions/use-conversation-scroll.ts` are its browser side).
+
+- **Sending a message** brings that message to the top of the view with a small gap, and the reply is written beneath it. The
+  room under the latest turn is reserved so this works even when the thread is short. The view starts following the live edge
+  only once the reply outgrows that room.
+- **The pin is a state, not a one-off scroll.** It is kept until the view is actually there, so a smooth scroll cut short by
+  anything (a focus change, a layout shift) is finished instead of leaving the new message under the composer. Anything that
+  moves focus in the thread after a send must use `focus({ preventScroll: true })`.
+- **The reader always wins.** Wheel, touch, keys, the scrollbar, selecting text and opening a step pause following and keep the
+  reader's place; "Jump to latest" or scrolling back to the end resumes it.
+- **Opening a conversation** lands on its latest content, or on the start of the turn that is still running.
+- The controller is bound to the mounted scroller through a ref callback, because the subtree holding it is remounted when the
+  conversation changes (including a first message creating one).
 
 ## Conversation titles
 
@@ -113,6 +140,12 @@ the actual authenticated identity and logout action. Model/limit information
 comes from the server configuration; no usage totals or live-provider success is
 invented. GitHub retains account connection, installation/access management,
 repository access listing and refresh.
+
+Every section is built from the same pieces in `features/settings/settings-ui.tsx`: a header, then groups (a small
+heading above a bordered card of rows), at one width, so moving between sections never shifts the page. The section list
+carries an icon per section and becomes one scrolling row of pills on a narrow screen. Custom agents are a grid of cards;
+opening one shows its instructions, tools and source domains, a test form, version history and, behind a disclosure,
+disabling, with "All agents" to go back. Creating or editing a version has a Cancel that returns to where you were.
 
 Custom agents are listed across the owner's existing internal scopes, with
 bounded pagination. New agents automatically use the default workspace. Editing

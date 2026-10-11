@@ -25,6 +25,16 @@ class SessionPatch(BaseModel):
     repository: RepoSelection | None = None
     plugins: list[UUID] | None = Field(default=None, max_length=100)
 
+class DeliverySummary(BaseModel):
+    """Where a conversation's work stands on GitHub, in the few facts the sidebar's mark is drawn from (see docs/delivery.md)."""
+    state: Literal["none", "branch", "pull_request"] = "none"
+    pr_state: Literal["draft", "open", "merged", "closed"] | None = None
+    checks: Literal["none", "pending", "passing", "failing", "unavailable"] | None = None
+    review: Literal["none", "approved", "changes_requested", "review_required"] | None = None
+    mergeable: Literal["mergeable", "conflicting", "unknown"] | None = None
+    unpublished: bool = False
+
+
 class SessionView(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
@@ -48,6 +58,8 @@ class SessionView(BaseModel):
     # queued message could not start, "unread" when a reply finished that the owner has not seen yet, otherwise "idle".
     status: Literal["idle", "running", "waiting_approval", "failed", "unread"] = "idle"
     read_sequence: int = 0
+    # The pull request (or branch, or unpushed work) this conversation produced; absent when it has produced nothing for GitHub.
+    delivery: DeliverySummary | None = None
 
 
 class ReadReceipt(BaseModel):

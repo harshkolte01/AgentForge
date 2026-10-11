@@ -127,20 +127,23 @@ class FakeSessions:
                 sql, params, row = str(compiled), compiled.params, outer.row
                 outer.writes.append(sql.split()[0])
                 outer.last_values = params
+                # A live tool call also names itself (tool, call_id, detail); a row without one carries no such keys.
+                named = {key: params[key] for key in ("tool", "call_id", "detail") if params.get(key) is not None}
                 if sql.startswith("INSERT"):
                     outer.row = {"epoch": 1 if row is None else row["epoch"] + 1, "revision": 0 if row is None else row["revision"] + 1,
-                                 "kind": params["kind"], "text": params["text"]}
+                                 "kind": params["kind"], "text": params["text"], **named}
                     outer.history.append(outer.row)
                     return NS(one=lambda: NS(epoch=outer.row["epoch"], revision=outer.row["revision"]))
                 if row is None:
                     return NS(rowcount=0)
+                plain = {key: value for key, value in row.items() if key not in ("tool", "call_id", "detail")}
                 if "task_streams.revision +" in sql:  # clear_stream
-                    outer.row = {**row, "revision": row["revision"] + 1, "kind": params["kind"], "text": params["text"]}
+                    outer.row = {**plain, "revision": row["revision"] + 1, "kind": params["kind"], "text": params["text"]}
                     outer.history.append(outer.row)
                     return NS(rowcount=1)
                 if row["epoch"] != params["epoch_1"] or row["revision"] > params["revision_1"]:
                     return NS(rowcount=0)  # fenced out by a newer epoch or revision
-                outer.row = {**row, "revision": params["revision"], "kind": params["kind"], "text": params["text"]}
+                outer.row = {**plain, "revision": params["revision"], "kind": params["kind"], "text": params["text"], **named}
                 outer.history.append(outer.row)
                 return NS(rowcount=1)
         return Session()

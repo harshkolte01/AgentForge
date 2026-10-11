@@ -6,19 +6,54 @@ written out as the model produces it.
 
 ```
 model call ──text next to tool calls──▶ note   ──▶ assistant.message event (kept, in order)
-           ──tool calls───────────────▶ steps  ──▶ tool.started / tool.finished events
-           ──submit_result.summary─────▶ reply ──▶ live text row ──▶ saved message when the task ends
+           ──tool calls───────────────▶ steps  ──▶ drawn live while written ─▶ tool.started / tool.finished events
+                                                                       └─▶ a command's output live while it runs
+           ──text without tool calls───▶ reply ──▶ live text row ──▶ saved message when the task ends
 ```
 
-## The three kinds of output
+## The kinds of output
 
 | Output | Where it comes from | How it reaches the browser | Kept afterwards |
 | --- | --- | --- | --- |
 | **Note** | plain text a model writes in a turn that also calls tools (`on_narration` in `llm/openai_adapter.py`) | live as it is written (`message.delta`), then saved as an `assistant.message` event | yes, as an event, in order with the steps |
+| **Call being written** | the JSON arguments of a long tool call (`on_tool`), for the tools in `DRAFTS` (`orchestration/stream.py`) | live as it is written (`message.delta`, kind `tool`) | no: its row takes over when the call starts |
 | **Step** | each tool call (`tools/gateway.py`, reported through `tools/lifecycle.py`) | `tool.started` just before the adapter runs, `tool.finished` once the outcome is saved | yes, as events and in `tool_calls` |
-| **Reply** | the `summary` / `response` field of `submit_result` (`llm/streaming.py` extracts it from the streaming JSON) | live as it is written (`message.delta`) | as the assistant message when the task ends |
+| **Output of a running command** | `bash` (`on_output` in `integrations/e2b_sandbox.py`) | live as it prints (`message.delta`, kind `output`) | no: the finished row opens the saved, redacted output |
+| **Reply** | the model's text in a turn without tool calls | live as it is written (`message.delta`) | as the assistant message when the task ends |
 
-Text next to the typed result, or text that looks like JSON, is never treated as a note.
+The agent is told to write one short sentence before the first tool call of a turn (`PLATFORM_INSTRUCTIONS`), which is what
+makes a note appear before its steps. A model can still skip it; nothing invents one, so the step simply shows by itself.
+
+## Tool calls shown live
+
+Without this a step appeared only after the model had finished its whole reply (a `write` of a long file is tens of seconds
+of arguments), and a command showed nothing until it ended.
+
+- **While the model writes a call.** The adapter reports each fragment of a tool call (`on_tool(index, call id, name,
+  arguments piece)`). `ReplyStream.feed_tool` shows the calls in `DRAFTS` (`bash`, `write`, `edit`, `create_pull_request`,
+  `create_task_artifact`, `delegate_task`) as soon as they are named: `text` is the argument that is the call's text (the
+  command, the file content; the start of it, up to `DRAFT_CHARS`) and `detail` the one that says what it is about (the path
+  or title). The arguments are parsed with `jiter` in partial mode, so escapes and half-written strings never show as
+  garbage. The note written before the call is saved first (`commit_narration`), so the call shows after it, in order. Calls
+  with short arguments are not drawn: they run the moment the reply ends.
+- **When the call starts.** The gateway has computed the same id the loop used (`legacy_call_id(f"{run}:tool:{provider id}")`,
+  the `call_id` of `tool.started`). It then replaces the drawing: a command opens its `output` row (a new epoch), every other
+  tool clears the drawing. Either way the real row, not the drawing, is what stays.
+- **While a command runs.** `Workspace.run(on_output=...)` hands each piece of stdout and stderr to `ReplyStream.output`.
+  What is shown is the end of the output (`OUTPUT_CHARS`, whole lines), redacted with the same `redact_output` as the saved
+  result. It is a moving window, so once it is full every flush is a replacement (a new revision), not an append.
+- **When it settles.** The gateway clears the row after the outcome is saved and `tool.finished` is sent (also when the call
+  was refused or failed), so the output never goes while the row still says "running".
+
+`task_streams` carries it with `kind` `tool` (being written) or `output` (running), plus `tool`, `call_id` and `detail`
+(migration `0016_tool_stream`). Only the run the person is watching does this: a delegated subagent's stream has no live
+view, and its notes and steps stay inside its panel.
+
+On the page (`features/sessions/run-steps.tsx`, `timeline-model.ts`): a call being written is a row of its own, "Writing a
+file `src/a.py`", with its text in a bounded monospace block that follows the newest text until the reader scrolls up. It never
+says "running" (`describeDraft`). It is hidden once the call's real row exists (matched by `call_id`) and while an Approve /
+Decline card waits for it (the card carries the exact text). A running command's output sits under its own row and goes when
+the row settles. Neither is held through the end of a run, and neither is prose: they never reach the answer area.
 
 ## Backend
 

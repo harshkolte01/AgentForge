@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  RECONNECT_ATTEMPTS, activityAnnouncement, activityLabel, currentCallId, endEntries, formatDuration, heldAsLive, holdLive, runDuration, sectionsOf, summarizeEntries, syncNotice,
+  RECONNECT_ATTEMPTS, activityAnnouncement, activityLabel, approvalSource, chunkRows, currentCallId, endEntries, fleetSummary, formatDuration, heldAsLive, holdLive, runDuration,
+  sectionsOf, subagentNow, subagentSteps, subagentStatus, subagentsByRun, summarizeEntries, syncNotice,
 } from "../features/sessions/timeline-model.ts";
 import { createActivityState, reduceActivity, selectEntries } from "../lib/activity/reducer.ts";
 import { builder, researchRun } from "./fixtures/streams.mjs";
@@ -185,4 +186,78 @@ test("text cleared at the end of the run is kept until the saved answer takes ov
 test("a newer segment replaces what is held even after the end", () => {
   const held = holdLive(null, live("old", 1, "progress"), false);
   assert.deepEqual(holdLive(held, live("new", 2), true), { epoch: 2, kind: "answer", text: "new" });
+});
+
+// Subagents --------------------------------------------------------------------------------------------------------------
+
+let clock = 0;
+const stamp = () => new Date(Date.UTC(2026, 9, 11, 0, 0, ++clock)).toISOString();
+const ev = (event_type, payload) => ({ task_id: "task-1", sequence: ++clock, event_type, payload, created_at: stamp() });
+const start = (tool, id, extra = {}) => ev("tool.started", { tool, tool_call_id: id, agent_run_id: "parent", ...extra });
+const finish = (tool, id, outcome = "completed") => ev("tool.finished", { tool, tool_call_id: id, agent_run_id: "parent", outcome });
+const delegation = (n, title) => start("delegate_task", `d${n}`, { child_run_id: `child-${n}`, detail: title });
+
+test("delegations that stand next to each other are one team; every other step keeps its own row, in order", () => {
+  clock = 0;
+  const entries = entriesOf([start("read", "r1"), delegation(1, "Auth"), delegation(2, "Billing"), start("web_search", "w1"), delegation(3, "Search")]);
+  const chunks = chunkRows(entries);
+  assert.deepEqual(chunks.map((chunk) => chunk.kind), ["entry", "subagents", "entry", "subagents"]);
+  assert.deepEqual(chunks[1].calls.map((call) => call.detail), ["Auth", "Billing"]);
+  assert.deepEqual(chunks[3].calls.map((call) => call.detail), ["Search"]);
+  assert.equal(chunks[1].key, chunks[1].calls[0].key, "the team keeps the first card's key, so it does not remount as members join");
+  assert.deepEqual(chunkRows(entriesOf([])), []);
+});
+
+test("a team heading says how many and how they stand, and never claims they ran together", () => {
+  clock = 0;
+  const running = entriesOf([delegation(1, "A"), delegation(2, "B"), delegation(3, "C"), finish("delegate_task", "d1")]);
+  assert.equal(fleetSummary(running), "3 subagents · 2 working");
+  clock = 0;
+  assert.equal(fleetSummary(entriesOf([delegation(1, "A"), delegation(2, "B"), finish("delegate_task", "d1"), finish("delegate_task", "d2")])), "2 subagents · all finished");
+  clock = 0;
+  assert.equal(fleetSummary(entriesOf([delegation(1, "A"), delegation(2, "B"), finish("delegate_task", "d1"), finish("delegate_task", "d2", "failed")])), "2 subagents · 1 finished, 1 didn't finish");
+  clock = 0;
+  assert.equal(fleetSummary(entriesOf([delegation(1, "A"), delegation(2, "B"), finish("delegate_task", "d1", "failed"), finish("delegate_task", "d2", "cancelled")])), "2 subagents · none finished");
+});
+
+test("what a running subagent is doing: its open call, else its latest note, else that it is starting", () => {
+  // Events are made after the delegation, as in a run: a child's events always follow the call that started it.
+  const child = (type, payload) => () => ev(type, { agent_run_id: "child-1", parent_run_id: "parent", ...payload });
+  const card = (...later) => { clock = 0; const first = delegation(1, "Auth"); return entriesOf([first, ...later.map((make) => make())])[0]; };
+  assert.equal(subagentNow(card()), "Getting started");
+  assert.equal(subagentNow(card(child("assistant.message", { text: "\n  Checking the session store.\nThen the tests." }))), "Checking the session store.");
+  assert.equal(subagentNow(card(child("tool.started", { tool: "web_search", tool_call_id: "c1", detail: "cookies" }))), "Searching the web · “cookies”");
+  assert.equal(subagentNow(card(child("tool.started", { tool: "web_search", tool_call_id: "c1" }), child("tool.started", { tool: "read_repo_file", tool_call_id: "c2" }))), "Reading a file", "the newest open call");
+  assert.equal(subagentNow(card(child("tool.started", { tool: "web_search", tool_call_id: "c1" }), child("tool.finished", { tool: "web_search", tool_call_id: "c1", outcome: "completed" }), child("assistant.message", { text: "Summarising." }))), "Summarising.");
+  assert.equal(subagentNow(card(() => finish("delegate_task", "d1"))), null, "nothing is 'now' once it is over");
+});
+
+test("a run that did not report its subagent's progress shows no line instead of an invented one", () => {
+  clock = 0;
+  const [legacy] = entriesOf([start("delegate_task", "d1", { detail: "Old run" })]);
+  assert.equal(subagentNow(legacy), null);
+  assert.equal(subagentSteps(legacy), null);
+});
+
+test("steps are counted in words, and not at all until there is one", () => {
+  clock = 0;
+  const child = (id) => ev("tool.started", { tool: "web_search", tool_call_id: id, agent_run_id: "child-1", parent_run_id: "parent" });
+  const steps = (...ids) => subagentSteps(entriesOf([delegation(1, "A"), ...ids.map(child)])[0]);
+  assert.equal(steps(), null);
+  assert.equal(steps("a"), "1 step");
+  assert.equal(steps("a", "b", "c"), "3 steps");
+});
+
+test("every outcome has words of its own", () => {
+  assert.deepEqual(["running", "completed", "failed", "blocked", "cancelled", "unknown"].map(subagentStatus),
+    ["Working", "Finished", "Couldn't finish", "Blocked", "Stopped", "Interrupted"]);
+});
+
+test("an approval card says which assignment it is from, and says nothing for the main agent's own", () => {
+  clock = 0;
+  const subagents = subagentsByRun(entriesOf([delegation(1, "Auth"), start("web_search", "w1")]));
+  assert.deepEqual([...subagents.keys()], ["child-1"]);
+  assert.equal(approvalSource("child-1", subagents), "Subagent · Auth");
+  assert.equal(approvalSource("child-9", subagents), "Subagent", "a card whose assignment is not on screen still says whose kind it is");
+  assert.equal(approvalSource(undefined, subagents), undefined);
 });

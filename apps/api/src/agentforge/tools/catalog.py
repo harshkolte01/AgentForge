@@ -21,6 +21,17 @@ ToolPreview = Callable[[ToolArguments, "ToolExecutionContext"], Awaitable[str]]
 
 # What the model reads for each tool: purpose, when to use it, how to continue, and its limits.
 DESCRIPTIONS = {
+    "delegate_task": (
+        "Delegate a focused assignment to an isolated subagent and wait for its result. Use for substantial research, "
+        "review or a self-contained implementation, not simple questions. Include all relevant context in prompt. "
+        "research is read-only; work can edit the shared workspace and run commands with the same approvals as you. "
+        "When several assignments are independent, launch them together: call delegate_task once for each in the same reply and "
+        "they run in parallel, each in its own context. You get every report back once all of them have finished, so do not wait "
+        "for one before briefing the next. Parallel work assignments share one workspace: give each different files. "
+        "Delegations are never left running in the background; the child cannot delegate or publish a pull request. "
+        "Read each result, verify important findings and integrate them into your answer. When truncated, read report_resource_id with read_context_resource for the full report. "
+        "A failed assignment may include progress_notes: build on them instead of starting over. Up to 8 assignments per turn; "
+        "each has at most 40 model steps, 80 tool calls, 10 minutes and $5 of configured usage. A failure is not success."),
     "search_conversation_history": (
         "Find earlier completed messages and attachment/deliverable references in this conversation. "
         "Use before asking the person to repeat a detail absent from the summary. Empty query lists messages. "
@@ -93,13 +104,15 @@ DESCRIPTIONS = {
     "ls": (
         "List the files and folders directly inside a workspace folder, with sizes. Use '.' for the workspace root."),
     "create_pull_request": (
-        "Open a draft pull request on GitHub with the changes you made in the workspace, compared with the repository's pinned commit. Use "
-        "it when the person asks to push, publish, or open a pull request. It uses the already selected repository through the backend; "
-        "no sandbox git remote, git push, gh login, or credentials are needed. Explain that this creates a separate branch and draft PR, "
-        "not a direct update to the default branch. Returns the pull request URL. Check your work with bash first. The person is "
-        "asked to approve it unless they chose to approve everything."),
+        "Publish the changes you made in the workspace to GitHub: they are committed to this conversation's own branch (created on first use, "
+        "never the default branch) and a draft pull request is opened if there is none yet. Calling it again after more work adds a commit "
+        "to the same branch and pull request. Use it when the person asks to push, publish, or open a pull request. It goes through the "
+        "backend with the person's GitHub connection; no sandbox git remote, git push, gh login, or credentials are needed. Returns the "
+        "pull request URL. The person can also review, push, mark ready and merge from the Changes panel, so never merge or close. "
+        "Check your work with bash first. The person is asked to approve it unless they chose to approve everything."),
     "get_pr_status": (
-        "Read the state, checks and merge status of a pull request in the selected repository by number."),
+        "Read where a pull request in the selected repository stands, by number: its state, whether it can merge, the reviews, and every "
+        "check (with the reason each failed check gave). Use it after publishing, or when asked to fix failing checks."),
     "use_skill": (
         "Load a skill: written instructions for a kind of work. The skills you may use are listed in the system prompt, each with when to "
         "use it. Call this with a skill's exact name before starting work that skill covers, and whenever the person's message begins with "
@@ -111,6 +124,9 @@ DESCRIPTIONS = {
 }
 # Static, safe guidance shown with a tool error so the model can correct itself. No provider text crosses this boundary.
 ERROR_GUIDANCE = {
+    "DELEGATION_LIMIT": "Do not delegate again in this turn. Continue the work yourself using your available tools.",
+    "SUBAGENT_TIMEOUT": "The child reached its time limit. Review its recorded work before deciding what remains; do not repeat edits blindly.",
+    "SUBAGENT_LIMIT": "The child reached its usage limit. Review its recorded work and continue the remaining work yourself.",
     "SCOPE_DENIED": "This request is outside what the task may access: an id, path, ref, URL or input that does not exist or is not allowed. "
         "Do not retry the same arguments. Use identifiers exactly as given in the brief or returned by earlier tool results, or continue without it and note the gap.",
     "SCHEMA_INVALID": "The arguments did not match the tool's schema. The detail names each field that is wrong. "
@@ -144,8 +160,12 @@ ERROR_GUIDANCE = {
     "REPOSITORY_UNAVAILABLE": "The selected repository could not be loaded into the sandbox. Tell the person; work without it only if that makes sense.",
     "REPOSITORY_LOAD_FAILED": "The selected repository could not be unpacked in the sandbox. Tell the person.",
     "NO_REPOSITORY": "There is no checkout of a selected repository to compare against. Tell the person a repository must be selected first.",
-    "NOTHING_TO_COMMIT": "Nothing in the workspace differs from the repository's pinned commit. Make the change first, or tell the person there is nothing to open.",
-    "UNSUPPORTED_CHANGE": "That kind of change cannot be sent as a pull request from here. Leave it out and tell the person.",
+    "NOTHING_TO_COMMIT": "Nothing in the workspace differs from what is already published. Make the change first, or tell the person there is nothing new to push.",
+    "UNSUPPORTED_CHANGE": "That kind of change cannot be sent to GitHub from here. Leave it out and tell the person.",
+    "GITHUB_CONFLICT": "Some files were changed on GitHub since the last push and were left alone. Tell the person which; do not retry unchanged.",
+    "GITHUB_BASE_CHANGED": "The conversation's branch changed or is gone on GitHub. Your edits are kept in the sandbox. Tell the person; do not retry unchanged.",
+    "GITHUB_UNAVAILABLE": "GitHub could not be reached or the person's connection is not available. Tell the person; try once more only if it was a timeout.",
+    "PR_NOT_FOUND": "That pull request could not be read in the selected repository. Check the number, or ask the person for it.",
     "GITHUB_WRITE_FAILED": "GitHub publication could not be confirmed. A branch or pull request may already exist. Report the uncertainty; do not claim nothing was published or retry blindly.",
     "DECLINED": "The person said no to this action and nothing was run. Do not try to do the same thing another way; say what you were about to do and ask how to continue.",
     "DEFERRED": "That call was not run because its result would not fit in the context window with this turn's other results. Ask for it again in a later turn, a few at a time.",
@@ -197,6 +217,7 @@ def activity_detail(name: str, args) -> str | None:
     """
     from urllib.parse import urlsplit
     value = {
+        "delegate_task": lambda: args.title,
         "web_search": lambda: args.query,
         "search_repo": lambda: args.query,
         "fetch_webpage": lambda: _page_label(urlsplit(args.source_url)),
@@ -230,7 +251,7 @@ def activity_detail(name: str, args) -> str | None:
 
 # Offered to every conversation run beside the tools its agent definition lists, when an adapter for them is registered.
 AMBIENT_TOOLS = frozenset({"use_skill"})
-EFFECT_TOOLS = frozenset({"create_task_artifact", "bash", "write", "edit", "create_pull_request"})
+EFFECT_TOOLS = frozenset({"delegate_task", "create_task_artifact", "bash", "write", "edit", "create_pull_request"})
 # The calls that stop and ask the person first when they chose "Ask me" (see tools/approvals.py). Reads never ask.
 ASKS_BEFORE = frozenset({"bash", "write", "edit", "create_pull_request"})
 

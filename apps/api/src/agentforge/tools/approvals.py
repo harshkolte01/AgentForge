@@ -95,11 +95,12 @@ class ToolApprovals:
         return await asyncio.to_thread(get_mode, self.sessions, ctx.user_id) != "auto"
 
     async def allows(self, ctx, *, operation_key: str, tool: str, summary: str, detail: dict,
-                     check: Callable[[], Awaitable[None]], truncated: bool = False) -> bool:
+                     check: Callable[[], Awaitable[None]], truncated: bool = False, agent_run_id: str | None = None) -> bool:
         """True when the call may run. `check` raises when the run must stop (cancelled, access revoked), which ends the wait.
 
         `summary` is what the card shows, exactly as the call will run it; `truncated` says it had to be cut to fit. A
         command is never approved from part of its text: one too long to show is refused before anyone is asked.
+        `agent_run_id` names the subagent that asks, so the card can say whose it is; the main agent's own cards omit it.
         """
         if await asyncio.to_thread(get_mode, self.sessions, ctx.user_id) == "auto":
             return True
@@ -112,7 +113,7 @@ class ToolApprovals:
                             "(less text, fewer items) and the person can approve it.")
         approval_id, state, created = await asyncio.to_thread(self._open, ctx, operation_key, tool, summary, detail)
         payload = {"approval_id": str(approval_id), "tool": tool, "detail": summary, "state": "PENDING",
-                   **({"truncated": True} if truncated else {})}
+                   **({"truncated": True} if truncated else {}), **({"agent_run_id": agent_run_id} if agent_run_id else {})}
         if created:
             self.emit("approval.required", payload)
         pause = self.poll_seconds

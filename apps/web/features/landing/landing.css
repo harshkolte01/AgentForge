@@ -1,0 +1,58 @@
+/* Fixed public identity; the workspace's saved appearance preference is untouched. */
+@font-face {
+  font-family: "Manrope";
+  src: url("/fonts/manrope.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+}
+[data-public] {
+  --background: #0b0b0b;
+  --foreground: #f1f0ee;
+  --card: #171615;
+  --card-foreground: #f1f0ee;
+  --popover: #1b1a19;
+  --popover-foreground: #f1f0ee;
+  --primary: #eae8e4;
+  --primary-foreground: #181716;
+  --secondary: #252321;
+  --secondary-foreground: #efedeb;
+  --muted: #242220;
+  --muted-foreground: #aaa7a3;
+  --accent: #302d29;
+  --accent-foreground: #f1f0ee;
+  --border: #34312e;
+  --input: #615c56;
+  --ring: #c4bdb5;
+  --brand: #d5d0c9;
+  --brand-foreground: #181716;
+  --sidebar: #1a1917;
+  --sidebar-accent: #292622;
+  --destructive: #ffb4a8;
+  font-family: "Manrope", ui-sans-serif, system-ui, sans-serif;
+  color-scheme: dark;
+  accent-color: var(--brand);
+  caret-color: var(--foreground);
+  scrollbar-color: #615c56 var(--background);
+}
+[data-public] ::selection { background: #d3ccc4; color: #181716; }
+[data-public] :where(a, button, input, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 4px;
+}
+[data-public] :where(a, button, summary) { -webkit-tap-highlight-color: transparent; }
+[data-public] .bg-primary { transition: background-color 160ms ease-out, color 160ms ease-out; }
+@media (hover: hover) {
+  [data-public] .bg-primary:hover { background: #ffffff; color: #111111; }
+  [data-public] .lp-text-link:hover { color: var(--foreground); text-decoration: underline; text-underline-offset: 4px; }
+}
+.lp-backdrop-fade { background: linear-gradient(180deg, transparent 50%, #0b0b0b 100%); }
+.lp-window { border: 1px solid #3f3b36; background: #171615; }
+@keyframes lp-rise { from { opacity: .65; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+.lp-rise { animation: lp-rise 280ms cubic-bezier(.16,1,.3,1) both; }
+@media (prefers-reduced-motion: no-preference) {
+  html:has([data-landing]) { scroll-behavior: smooth; }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-public] *, [data-public] *::before, [data-public] *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}

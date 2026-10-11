@@ -2,6 +2,10 @@
 export const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export const routes = {
+  /** The public landing page. */
+  home: "/",
+  signIn: "/sign-in",
+  signUp: "/sign-up",
   newConversation: "/chat",
   conversation: (sessionId: string) => `/chat/${sessionId}`,
   settings: (section?: string) => section ? `/settings?section=${section}` : "/settings",

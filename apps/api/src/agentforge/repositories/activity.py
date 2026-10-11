@@ -19,7 +19,7 @@ from agentforge.contracts.activity import (
     ToolDetailFile, ToolDetailText)
 from agentforge.contracts.tasks import TERMINAL_STATUSES
 from agentforge.database.coding import CodingEvidence
-from agentforge.database.models import Project, Task, TaskEvent, ToolCall
+from agentforge.database.models import AgentRun, Project, Task, TaskEvent, ToolCall
 from agentforge.database.research_models import ResearchEvidence, ResearchSource
 from agentforge.database.sessions import ToolApproval, ToolResultSnapshot
 from agentforge.integrations.artifact_storage import ArtifactStorage
@@ -53,7 +53,8 @@ class ToolDetailUnavailable(LookupError):
 
 def _visible():
     """SQL form of `is_visible_call`."""
-    return and_(ToolCall.tool_name.notin_(HIDDEN_TOOLS),
+    return and_(ToolCall.agent_run_id.in_(select(AgentRun.id).where(AgentRun.parent_run_id.is_(None))),
+        ToolCall.tool_name.notin_(HIDDEN_TOOLS),
         or_(ToolCall.error_code.is_(None), ToolCall.error_code.notin_(SELF_CORRECTION_CODES)))
 
 
@@ -83,7 +84,7 @@ def activity_for_tasks(session: Session, task_ids: Iterable[UUID]) -> dict[UUID,
         return {}
     actions = action_counts(session, found)
     notes = _grouped(session, select(TaskEvent.task_id, func.count()).where(
-        TaskEvent.task_id.in_(found), TaskEvent.event_type == "assistant.message",
+        TaskEvent.task_id.in_(found), TaskEvent.event_type == "assistant.message", TaskEvent.payload["parent_run_id"].astext.is_(None),
         TaskEvent.payload["text"].astext != "").group_by(TaskEvent.task_id))
     pending = set(session.scalars(select(ToolApproval.task_id).where(
         ToolApproval.task_id.in_(found), ToolApproval.state == "PENDING").distinct()))

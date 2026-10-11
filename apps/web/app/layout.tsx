@@ -1,9 +1,17 @@
 import type { Metadata, Viewport } from "next";
 import { themeScript } from "@/lib/preferences";
+import { siteUrl } from "@/lib/site";
 import "./globals.css";
+
+const description = "Research the web, write and run code in a private cloud sandbox, and review changes with AgentForge. Choose Ask me mode to approve actions before they run.";
+
 export const metadata: Metadata = {
-  title: "AgentForge",
-  description: "Your workspace for coding, research, and problem solving.",
+  metadataBase: new URL(siteUrl),
+  title: { default: "AgentForge", template: "%s · AgentForge" },
+  description,
+  applicationName: "AgentForge",
+  openGraph: { type: "website", siteName: "AgentForge", title: "AgentForge: hand off the work, keep the final say", description },
+  twitter: { card: "summary_large_image", title: "AgentForge: hand off the work, keep the final say", description },
 };
 export const viewport: Viewport = {
   themeColor: [{ media: "(prefers-color-scheme: light)", color: "#ffffff" }, { media: "(prefers-color-scheme: dark)", color: "#0a0a0a" }],

@@ -15,6 +15,8 @@ type ToolSpec = {
   labels: readonly [running: string, done: string, failed: string];
   /** The action as an infinitive, for "Couldn't <base>: not allowed". */
   base: string;
+  /** What the row says while the model is still writing the call, before anything runs. Defaults to the running wording. */
+  drafting?: string;
   /** The line for `count` finished calls of this tool, when a run of them folds into one. */
   plural?: (count: number) => string;
   /** How evidence changes the label of a finished call. */
@@ -22,6 +24,7 @@ type ToolSpec = {
 };
 
 const registry: Record<string, ToolSpec> = {
+  delegate_task: { presentation: "subagent", labels: ["Subagent working", "Subagent finished", "Subagent couldn't finish"], base: "complete the assignment", drafting: "Briefing a subagent" },
   search_conversation_history: { presentation: "status", labels: ["Searching earlier messages", "Searched earlier messages", "Couldn't search earlier messages"], base: "search earlier messages" },
   read_context_resource: { presentation: "status", labels: ["Reading earlier context", "Read earlier context", "Couldn't read earlier context"], base: "read earlier context" },
   web_search: { presentation: "status", labels: ["Searching the web", "Searched the web", "Web search failed"], base: "search the web" },
@@ -41,16 +44,16 @@ const registry: Record<string, ToolSpec> = {
   run_sandbox_command: { presentation: "execution", labels: ["Running a command", "Ran a command", "Command failed"], base: "run a command", evidence: "command" },
   get_test_results: { presentation: "execution", labels: ["Checking test results", "Checked test results", "Couldn't check test results"], base: "check test results", plural: (count) => `Checked test results ${count} times`, evidence: "results" },
   // The coding tools, working in the conversation's sandbox. A command's own words and exit code say what happened.
-  bash: { presentation: "execution", labels: ["Running a command", "Ran a command", "Command failed"], base: "run a command", evidence: "command" },
-  read: { presentation: "status", labels: ["Reading a file", "Read a file", "Couldn't read the file"], base: "read the file", plural: (count) => `Read ${count} files` },
+  bash: { presentation: "execution", labels: ["Running a command", "Ran a command", "Command failed"], base: "run a command", evidence: "command", drafting: "Writing a command" },
+  read:{ presentation: "status", labels: ["Reading a file", "Read a file", "Couldn't read the file"], base: "read the file", plural: (count) => `Read ${count} files` },
   write: { presentation: "status", labels: ["Writing a file", "Wrote a file", "Couldn't write the file"], base: "write the file" },
   edit: { presentation: "status", labels: ["Editing a file", "Edited a file", "Couldn't edit the file"], base: "edit the file" },
   grep: { presentation: "status", labels: ["Searching the code", "Searched the code", "Couldn't search the code"], base: "search the code" },
   find: { presentation: "status", labels: ["Finding files", "Found files", "Couldn't find files"], base: "find files" },
   ls: { presentation: "status", labels: ["Listing files", "Listed files", "Couldn't list files"], base: "list files" },
-  create_pull_request: { presentation: "status", labels: ["Opening a pull request", "Opened a pull request", "Couldn't open the pull request"], base: "open the pull request" },
+  create_pull_request: { presentation: "status", labels: ["Publishing changes to GitHub", "Published changes to GitHub", "Couldn't publish the changes"], base: "publish the changes to GitHub", drafting: "Writing a pull request" },
   use_skill: { presentation: "status", labels: ["Loading a skill", "Loaded a skill", "Couldn't load the skill"], base: "load the skill" },
-  create_task_artifact: { presentation: "artifact", labels: ["Preparing a download", "Created a download", "Couldn't create the download"], base: "create the download" },
+  create_task_artifact: { presentation: "artifact", labels: ["Preparing a download", "Created a download", "Couldn't create the download"], base: "create the download", drafting: "Writing a document" },
   read_task_artifact: { presentation: "artifact", labels: ["Proofreading the document", "Proofread the document", "Couldn't proofread the document"], base: "proofread the document", plural: (count) => `Proofread the document ${count} times` },
 };
 
@@ -195,6 +198,17 @@ export function describeCall(facts: CallFacts, unlisted: UnlistedPolicy = "gener
   return { label, detail, tone: style.tone, icon: style.icon };
 }
 
+/**
+ * What a call says while the model is still writing it (`write` and the other tools whose arguments are long): its wording
+ * ("Writing a file") and what it is about (the path). Null for a hidden tool. Nothing runs yet, so it never reads as running.
+ */
+export function describeDraft(tool: string, detail: string | null | undefined, unlisted: UnlistedPolicy = "generic"): { label: string; detail?: string } | null {
+  if (toolPresentation(tool, unlisted) === "hidden") return null;
+  const spec = registry[tool] ?? genericSpec(tool);
+  const shown = formatDetail(tool, detail);
+  return { label: spec.drafting ?? spec.labels[0], ...(shown ? { detail: shown } : {}) };
+}
+
 /** Whether finished calls of a tool can fold into one counted line. */
 export function isGroupable(tool: string): boolean {
   return !!registry[tool]?.plural;
@@ -231,6 +245,7 @@ export function phaseLabel(type: string): string | null {
 
 /** Whether a call's details can be requested: an execution, diff or artifact call that has a persisted id and has settled. */
 export function isDetailable(presentation: PresentationKind, toolCallId: string | null, outcome: ToolCallOutcome): boolean {
+  if (presentation === "subagent") return !!toolCallId;
   return (presentation === "execution" || presentation === "diff" || presentation === "artifact") && !!toolCallId && outcome !== "running";
 }
 

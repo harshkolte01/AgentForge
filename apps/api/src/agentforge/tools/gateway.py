@@ -2,7 +2,7 @@
 
 Beyond authorization the gateway is what makes calls precise: it binds identifiers the task already
 fixes (repository, ref, sandbox), tells the model exactly which field of a call was wrong, and lets
-independent read-only calls run side by side while effectful ones stay strictly serial. It does not
+independent read-only calls and delegations run side by side while other effectful ones stay strictly serial. It does not
 count, cap or deduplicate calls: how many a run makes is the model's decision.
 """
 
@@ -28,10 +28,16 @@ from .catalog import (
     BINDABLE_FIELDS, EFFECT_TOOLS, ToolCatalog, ToolUnavailable, activity_detail, approval_summary, safe_arguments,
 )
 from .contracts import ARGUMENT_MODELS, ToolOutcome
+from .delegation import delegated_run_id
 from .errors import ToolError, render_issues, validation_issues
 from .lifecycle import CallLifecycle, LifecycleSink, execution_labels, outcome_from_row
 
 READ_CONCURRENCY = 4
+# The tools whose output is shown while they run: a command can take minutes, the others finish at once.
+STREAMED_OUTPUT = frozenset({"bash"})
+# Effect tools that do not wait for the run's other effects. A delegation runs under its own gateway, ledger and approvals, so
+# the assignments of one turn work side by side; `ChildRuntime` starts them together when a turn asks for several.
+CONCURRENT_EFFECTS = frozenset({"delegate_task"})
 
 
 class UnknownToolOutcome(RuntimeError):
@@ -48,6 +54,8 @@ class ToolExecutionContext:
     authorized_web_url: PublicURL | None = None
     authorized_web_hosts: tuple[str, ...] = ()
     authorize_current: Callable[[], Awaitable[None]] | None = None
+    # Where a running tool may send its output as it arrives (a command's lines); None: nothing is shown before it ends.
+    output: Callable[[str], None] | None = None
 
 
 class ToolGateway:
@@ -55,12 +63,15 @@ class ToolGateway:
                  budgets: BudgetService, resources: ResourceResolver,
                  reauthorize: Callable[[], Awaitable[None]], ctx: TaskContext,
                  scope: EffectiveScope, run_id: UUID, reservation_id: UUID,
-                 strict_tools: bool = False, lifecycle: LifecycleSink | None = None, approvals=None) -> None:
+                 strict_tools: bool = False, lifecycle: LifecycleSink | None = None, approvals=None, live=None) -> None:
         self.catalog, self.calls, self.budgets, self.resources = catalog, calls, budgets, resources
         # Asks the person before a tool that changes something runs (see tools/approvals.py); None: nothing asks.
         self.approvals = approvals
         # Receives tool.started / tool.finished (see tools/lifecycle.py); without one the gateway reports nothing.
         self.lifecycle = lifecycle
+        # The live view of the run (`ReplyStream`): shows a call being written until its row starts, and a command's
+        # output while it runs. None: only the saved events show anything.
+        self.live = live
         self.reauthorize, self.ctx, self.scope = reauthorize, ctx, scope
         self.run_id, self.reservation_id = run_id, reservation_id
         self.strict_tools = strict_tools
@@ -104,8 +115,8 @@ class ToolGateway:
             return name in EFFECT_TOOLS
 
     def is_parallel_safe(self, name: str) -> bool:
-        """Read-only and free, so it may run alongside other reads."""
-        return name in self.scope.allowed_tools and not self._changes_things(name) and not self._is_paid(name)
+        """Read-only and free, so it may run alongside other reads. A delegation may too: it only ever touches its own run."""
+        return name in self.scope.allowed_tools and (name in CONCURRENT_EFFECTS or (not self._changes_things(name) and not self._is_paid(name)))
 
     # --- argument handling ------------------------------------------------------------------
     @staticmethod
@@ -142,6 +153,8 @@ class ToolGateway:
 
     # --- execution --------------------------------------------------------------------------
     async def execute(self, name: str, raw_args: str, provider_call_id: str) -> ToolOutcome:
+        if name in CONCURRENT_EFFECTS:
+            return await self._run(name, raw_args, provider_call_id)
         if self._changes_things(name) or self._is_paid(name):
             async with self._lock:
                 return await self._run(name, raw_args, provider_call_id)
@@ -169,10 +182,14 @@ class ToolGateway:
         )
         events = CallLifecycle(self.lifecycle, tool=stored_name, tool_call_id=call_id,
                                agent_run_id=self.run_id, operation_key=operation_key)
+        if name == "delegate_task":
+            # Names the child so the chat can put its progress on this call's card (the child run id derives from the call).
+            events.extra = {"child_run_id": str(delegated_run_id(operation_key))}
         authorized = False
         entered_adapter = False
         tool = None
         arguments: dict = {}
+        live_call = events.ids["call_id"] if self.live is not None else None
         try:
             await self.reauthorize()
             self.budgets.check_active(self.reservation_id)
@@ -209,8 +226,10 @@ class ToolGateway:
                     except Exception:
                         extra = "(The list of changed files could not be read.)"
                 summary, truncated = approval_summary(name, args, extra, plugin)
+                # A subagent's card says whose it is: several can be waiting at once, with commands that look alike.
+                whose = {"agent_run_id": str(self.run_id)} if getattr(self.ctx, "parent_run_id", None) is not None else {}
                 if not await self.approvals.allows(self.ctx, operation_key=operation_key, tool=name, summary=summary,
-                        truncated=truncated, detail=arguments, check=self.reauthorize):
+                        truncated=truncated, detail=arguments, check=self.reauthorize, **whose):
                     raise ToolError("DECLINED", "The person declined this action, so nothing was run. Do not do it another way "
                                     "without asking: say what you were about to do and ask how they want to continue.")
                 # A call's duration is how long it ran, not how long it waited for the person.
@@ -222,17 +241,26 @@ class ToolGateway:
                                             tool.max_cost_usd, kind="tool")
             authorized = True
             entered_adapter = True
+            output = None
+            if live_call is not None:
+                # The call's own row now stands in for it being written. A command's output follows live, under that row.
+                if name in STREAMED_OUTPUT:
+                    output = self.live.output(live_call, name)
+                else:
+                    self.live.settle(live_call)
             async with asyncio.timeout(tool.timeout_sec):
                 raw_result = await tool.handler(args, ToolExecutionContext(
-                    self.ctx, self.run_id, operation_key, self.scope, web_url, web_hosts, self.reauthorize))
+                    self.ctx, self.run_id, operation_key, self.scope, web_url, web_hosts, self.reauthorize, output))
             # Revalidate model_copy/model_construct output from trusted
             # adapter code before handing any data or IDs to the child.
             if not isinstance(raw_result, ToolOutcome):
                 raise ValueError("invalid_adapter_result")
             result = ToolOutcome.model_validate_json(raw_result.model_dump_json())
+            stored_result = False
             saver = getattr(self.calls, "store_result", None)
             if saver is not None and name != "read_context_resource":
                 reference = saver(self.ctx.task_id, operation_key, result)
+                stored_result = True
                 result = result.model_copy(update={"data": {**result.data, "resource_id": reference}})
             self.budgets.record_usage(self.reservation_id, operation_key, result.cost_usd)
             authorized = False  # usage was durably recorded
@@ -240,7 +268,7 @@ class ToolGateway:
                 raise UnknownToolOutcome("adapter_cost_bound_exceeded")
             await self.resources.verify_references(self.ctx, evidence_ids=result.evidence_ids,
                                                    artifact_ids=result.artifact_ids)
-            if len(json.dumps(result.data, ensure_ascii=False).encode()) > 16000 and not (result.evidence_ids or result.artifact_ids):
+            if len(json.dumps(result.data, ensure_ascii=False).encode()) > 16000 and not (result.evidence_ids or result.artifact_ids or stored_result):
                 raise ValueError("large_adapter_output_requires_durable_reference")
             duration_ms = int((time.monotonic() - started) * 1000)
             labels = execution_labels(name, result.data)
@@ -305,3 +333,8 @@ class ToolGateway:
                 status="error", data={"issues": issues} if issues else {},
                 cost_usd=Decimal(0) if (not entered_adapter or definite) else None,
                 error_code=code, error_detail=detail)
+        finally:
+            # After the outcome is saved and reported, so the output never goes while the row still says "running". Also
+            # when the call never started (declined, refused): whatever showed it being written goes with it.
+            if live_call is not None:
+                self.live.settle(live_call)

@@ -9,6 +9,7 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from starlette.concurrency import run_in_threadpool
 from agentforge.api.dependencies import sessions
+from agentforge.api.repository_cache import RepositoryListCache
 from agentforge.auth.session import current_user
 from agentforge.auth.github_service import github_configured, GitHubIdentityService
 from agentforge.auth.durable import now
@@ -71,18 +72,30 @@ async def installations(request: Request, user: User = Depends(current_user)):
     except GitHubError as error:
         fail(error)
 
+def repository_cache(request):
+    state = request.app.state
+    if not hasattr(state, "github_repository_cache"):
+        state.github_repository_cache = RepositoryListCache()
+    return state.github_repository_cache
+
 @router.get("/repositories")
-async def repositories(request: Request, user: User = Depends(current_user)):
-    try:
-        service = identity(request)
-        pairs = await GitHubAppClient(request.app.state.settings, token=await service.access_token(user.id)).repositories()
+async def repositories(request: Request, user: User = Depends(current_user), refresh: bool = False):
+    """The repositories the user's installations grant. Kept for a few seconds per user and shared between
+    concurrent askers; `refresh=true` reads GitHub anew (Retry, or coming back from granting a repository)."""
+    service = identity(request)
+    settings = request.app.state.settings
+
+    async def load():
+        pairs = await GitHubAppClient(settings, token=await service.access_token(user.id)).repositories()
         await run_in_threadpool(service.record_grants, user.id, pairs)
-        return {"repositories": [{"id": repo["id"], "full_name": repo["full_name"], "private": bool(repo.get("private")),
+        return [{"id": repo["id"], "full_name": repo["full_name"], "private": bool(repo.get("private")),
             "default_branch": repo.get("default_branch"), "installation_id": install["id"],
-            "can_write": bool(request.app.state.settings.enable_github_writes and repo.get("permissions", {}).get("push")
+            "can_write": bool(settings.enable_github_writes and repo.get("permissions", {}).get("push")
                 and install.get("permissions", {}).get("contents") == "write"
                 and install.get("permissions", {}).get("pull_requests") == "write" and not repo.get("archived"))}
-            for install, repo in pairs]}
+            for install, repo in pairs]
+    try:
+        return {"repositories": await repository_cache(request).get(user.id, load, refresh=refresh)}
     except GitHubError as error:
         fail(error)
 
@@ -127,7 +140,7 @@ async def webhook(request: Request):
     except (ValueError, UnicodeError):
         raise HTTPException(403, "github_webhook_invalid") from None
     event = request.headers.get("x-github-event", "")
-    if event not in {"installation", "installation_repositories", "github_app_authorization", "ping"}:
+    if event not in {"installation", "installation_repositories", "github_app_authorization", "ping", *PULL_REQUEST_EVENTS}:
         raise HTTPException(422, "github_webhook_event_not_supported")
     installation = payload.get("installation")
     install_id = installation.get("id") if isinstance(installation, dict) else None
@@ -165,4 +178,44 @@ async def webhook(request: Request):
                     database.execute(update(AuthSession).where(AuthSession.user_id == user_id).values(revoked_at=now()))
             database.execute(update(GitHubWebhookDelivery).where(GitHubWebhookDelivery.id == delivery).values(processed_at=now(), payload_json={}))
     await run_in_threadpool(record)
+    # Whatever changed (a revoked grant, an added repository), no listing read before it is shown again.
+    repository_cache(request).clear()
+    if event in PULL_REQUEST_EVENTS:
+        try:
+            await run_in_threadpool(mark_deliveries_stale, request, event, payload)
+        except Exception:
+            # Marking is an acceleration: the panel's own poll finds the change anyway, and GitHub must not retry for it.
+            logger.warning("could not mark deliveries stale after a %s event", event, exc_info=True)
     return {"accepted": True}
+
+
+# Events that say a delivery's pull request or checks moved. They never grant anything: they only make the stored
+# status be read again sooner (see DeliveryService.invalidate).
+PULL_REQUEST_EVENTS = frozenset({"pull_request", "pull_request_review", "check_suite", "check_run", "status"})
+
+
+def mark_deliveries_stale(request, event, payload):
+    from agentforge.api.routes_delivery import service
+    repository = payload.get("repository")
+    name = repository.get("full_name") if isinstance(repository, dict) else None
+    if not isinstance(name, str):
+        return
+    delivery = service(request)
+    if event in {"pull_request", "pull_request_review"}:
+        pull = payload.get("pull_request")
+        number = pull.get("number") if isinstance(pull, dict) else None
+        if type(number) is int:
+            delivery.invalidate(name, pr_number=number)
+        return
+    if event == "status":
+        for branch in payload.get("branches") or []:
+            if isinstance(branch, dict) and isinstance(branch.get("name"), str):
+                delivery.invalidate(name, head_branch=branch["name"])
+        return
+    run = payload.get(event)
+    pulls = run.get("pull_requests") if isinstance(run, dict) else None
+    numbers = [item.get("number") for item in pulls or [] if isinstance(item, dict) and type(item.get("number")) is int]
+    for number in numbers:
+        delivery.invalidate(name, pr_number=number)
+    if not numbers and isinstance(run, dict) and isinstance(run.get("head_branch"), str):
+        delivery.invalidate(name, head_branch=run["head_branch"])

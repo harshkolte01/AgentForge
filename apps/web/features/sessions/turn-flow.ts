@@ -24,6 +24,14 @@ export function nextSubmission(previous: Submission | null, input: Omit<TurnInpu
 
 export type SendBlock = "disabled" | "archived" | "busy" | "running" | "unconfigured" | "empty";
 
+/** One primary control: ready follow-ups queue; otherwise a running reply remains stoppable. */
+export function composerAction(state: { running: boolean; stopping: boolean; busy: boolean; blocked: SendBlock | null }): "send" | "queue" | "stop" | "stopping" | "sending" {
+  if (state.stopping) return "stopping";
+  if (state.busy) return "sending";
+  if (state.running) return state.blocked === null ? "queue" : "stop";
+  return "send";
+}
+
 /** A run in progress blocks sending unless the server queues messages (`conversation_queue_enabled`); only an explicit `false` blocks. */
 export const runBlocksSending = (running: boolean, queueEnabled: boolean | undefined): boolean => running && queueEnabled === false;
 

@@ -1,46 +1,25 @@
 "use client";
-import { memo, useEffect, useId, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
-import { Ban, Check, ChevronRight, CircleAlert, CircleHelp, Square, TriangleAlert } from "lucide-react";
+import { SubagentFleet } from "@/features/sessions/subagent-card";
+import { useDisclosure } from "@/features/sessions/use-disclosure";
+import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { TriangleAlert } from "lucide-react";
 import { ApprovalCard } from "@/features/sessions/approval-card";
 import { AssistantMessage } from "@/features/sessions/assistant-message";
 import { loadHistoryEntries } from "@/features/sessions/history-activity";
+import { Glyph, chevron, toggleClass } from "@/features/sessions/row-parts";
 import { ToolDetailPanel } from "@/features/sessions/tool-detail";
 import {
-  activityLabel, currentCallId, sectionsOf, summarizeEntries, type Section, type TimelineNotice,
+  activityLabel, approvalSource, chunkRows, currentCallId, placeLiveTool, sectionsOf, subagentsByRun, summarizeEntries, type Section, type TimelineNotice,
 } from "@/features/sessions/timeline-model";
 import type { PendingApproval } from "@/lib/activity/approvals";
-import { ACTIVITY_DISCLOSURE, disclosure, disclosureKey } from "@/lib/activity/disclosure";
+import { ACTIVITY_DISCLOSURE, disclosureKey } from "@/lib/activity/disclosure";
+import type { LiveToolView } from "@/lib/activity/live-text";
+import { describeDraft } from "@/lib/activity/presentation";
 import type { ActivityEntry, CallEntry, GroupEntry, MessageActivity, MilestoneEntry, PhaseEntry, StatusIcon, Tone } from "@/lib/activity/types";
 import { fetchEventHistory } from "@/lib/task-api";
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Disclosure state
-
-/** A disclosure whose manual open/closed choice outlives re-renders, the run completing and in-page navigation. */
-function useDisclosure(key: string, defaultOpen: boolean): [open: boolean, toggle: () => void] {
-  const manual = useSyncExternalStore(disclosure.subscribe, () => disclosure.get(key), () => undefined);
-  const open = manual ?? defaultOpen;
-  return [open, () => disclosure.set(key, !open)];
-}
-
-const chevron = (open: boolean) => <ChevronRight className={`size-3.5 shrink-0 transition-transform motion-reduce:transition-none ${open ? "rotate-90" : ""}`} aria-hidden="true" />;
-const toggleClass = "outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 motion-reduce:transition-none";
-
-// ---------------------------------------------------------------------------------------------------------------------
 // Rows
-
-/** The glyph in front of a row. Always paired with the row's words, so colour and shape are never the only signal. */
-function Glyph({ icon, tone, current }: { icon: StatusIcon; tone: Tone; current: boolean }) {
-  return <span className="flex size-4 shrink-0 items-center justify-center" aria-hidden="true" data-icon={icon}>
-    {icon === "running" ? (current ? <span className="thinking-orb" /> : <span className="size-1.5 rounded-full bg-current opacity-50" />)
-      : icon === "failed" ? <TriangleAlert className={`size-3.5 ${tone === "danger" ? "text-destructive" : ""}`} />
-        : icon === "warning" ? <CircleAlert className="size-3.5" />
-          : icon === "blocked" ? <Ban className="size-3.5" />
-            : icon === "stopped" ? <Square className="size-3" />
-              : icon === "unknown" ? <CircleHelp className="size-3.5" />
-                : <Check className="size-3.5" />}
-  </span>;
-}
 
 function Words({ label, detail, shimmer }: { label: string; detail?: string; shimmer: boolean }) {
   return <span className="min-w-0 truncate">
@@ -48,6 +27,37 @@ function Words({ label, detail, shimmer }: { label: string; detail?: string; shi
     {detail ? <span className="ml-1.5 opacity-70">{detail}</span> : null}
   </span>;
 }
+
+/**
+ * Text a call is writing or printing right now: the command or file content a model is still writing, or the end of what a
+ * running command has printed. Bounded, monospace, with its own scroll area that follows the newest text until the reader
+ * scrolls up to read, and quiet for a screen reader (the log is `aria-live="off"`; this is a region to move into, not news).
+ */
+function LiveText({ text, label }: { text: string; label: string }) {
+  const box = useRef<HTMLPreElement>(null);
+  const following = useRef(true);
+  useLayoutEffect(() => {
+    const element = box.current;
+    if (element && following.current) element.scrollTop = element.scrollHeight;
+  }, [text]);
+  if (!text) return null;
+  return <pre ref={box} tabIndex={0} role="region" aria-label={label} data-live-text
+    onScroll={(event) => { const element = event.currentTarget; following.current = element.scrollHeight - element.scrollTop - element.clientHeight < 24; }}
+    className="mt-2 max-h-48 max-w-full overflow-auto overscroll-contain whitespace-pre rounded-lg border bg-muted/40 p-3 font-mono text-xs leading-5 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/60">{text}</pre>;
+}
+
+/** A call the model is still writing: a row of its own (nothing runs yet, so it never says "running") with what it has so far. */
+const DraftRow = memo(function DraftRow({ call }: { call: LiveToolView }) {
+  const shown = describeDraft(call.name, call.detail);
+  if (!shown) return null;
+  return <li className="message-in min-w-0" data-activity-entry="draft" data-tool={call.name}>
+    <div className="flex items-center gap-2.5">
+      <Glyph icon="running" tone="neutral" current />
+      <Words label={shown.label} detail={shown.detail} shimmer />
+    </div>
+    <LiveText text={call.text} label={shown.label} />
+  </li>;
+});
 
 type RowEntry = MilestoneEntry | CallEntry | GroupEntry;
 
@@ -59,7 +69,7 @@ const rowButton = `group/row -my-px flex min-h-6 w-full min-w-0 items-center gap
  * A group folds into one counted line whose disclosure lists every call, and an execution, diff or artifact call opens its
  * details; both remember a manual choice.
  */
-export const EntryRow = memo(function EntryRow({ taskId, entry, current, animate }: { taskId: string; entry: RowEntry; current: boolean; animate: boolean }) {
+export const EntryRow = memo(function EntryRow({ taskId, entry, current, animate, output }: { taskId: string; entry: RowEntry; current: boolean; animate: boolean; output?: string }) {
   const panelId = useId();
   const expandable = entry.kind === "group" || (entry.kind === "call" && entry.detailable);
   const [open, toggle] = useDisclosure(disclosureKey(taskId, entry.id), false);
@@ -70,9 +80,13 @@ export const EntryRow = memo(function EntryRow({ taskId, entry, current, animate
   const shimmer = current && entry.kind === "call" && entry.outcome === "running";
   const hooks = { "data-activity-entry": entry.kind, "data-outcome": meta.outcome, "data-tone": meta.tone, ...(entry.kind !== "milestone" ? { "data-tool": entry.tool } : {}) };
   if (!expandable) {
-    return <li className={`${base} flex items-center gap-2.5`} {...hooks}>
-      <Glyph icon={meta.icon} tone={meta.tone} current={current} />
-      <Words label={meta.label} detail={meta.detail} shimmer={shimmer} />
+    // A running command shows what it has printed so far under its row; the finished row opens the saved output instead.
+    return <li className={base} {...hooks}>
+      <div className="flex items-center gap-2.5">
+        <Glyph icon={meta.icon} tone={meta.tone} current={current} />
+        <Words label={meta.label} detail={meta.detail} shimmer={shimmer} />
+      </div>
+      {output ? <LiveText text={output} label="Live output" /> : null}
     </li>;
   }
   return <li className={base} {...hooks}>
@@ -144,14 +158,18 @@ type TimelineProps = {
   approvals?: readonly PendingApproval[];
   /** The "Thinking" line plays its entrance (only the indicator shown the moment a message is sent). */
   statusEnters?: boolean;
+  /** The tool call the live row shows: being written by the model, or running and printing. */
+  liveTool?: LiveToolView | null;
 };
 
-function renderSection(section: Section, taskId: string, current: string | null, animate: boolean, extra: ReactNode) {
+function renderSection(section: Section, taskId: string, current: string | null, animate: boolean, extra: ReactNode, outputFor: { entryId: string; text: string } | null, waiting: ReadonlySet<string>) {
   switch (section.kind) {
     case "note": return <NoteBlock key={section.id} text={section.entry.text} />;
     case "phase": return <PhaseHeading key={section.id} entry={section.entry} />;
     case "rows": return <ul key={section.id} className="space-y-2 text-[15px] leading-6 text-muted-foreground" aria-label="Steps">
-      {section.entries.map((entry) => <EntryRow key={entry.key} taskId={taskId} entry={entry} current={entry.id === current} animate={animate} />)}
+      {chunkRows(section.entries).map((chunk) => chunk.kind === "subagents"
+        ? <SubagentFleet key={chunk.key} taskId={taskId} calls={chunk.calls} animate={animate} waiting={waiting} />
+        : <EntryRow key={chunk.key} taskId={taskId} entry={chunk.entry} current={chunk.entry.id === current} animate={animate} output={outputFor?.entryId === chunk.entry.id ? outputFor.text : undefined} />)}
       {extra}
     </ul>;
   }
@@ -166,11 +184,19 @@ function renderSection(section: Section, taskId: string, current: string | null,
  * The log itself is `aria-live="off"`: streaming text and growing rows would be read out word by word. A separate polite status
  * says only what changed in the run (`announcement`).
  */
-export function Timeline({ taskId = "", entries, live = false, quiet = false, fallback = "Thinking", tail, notice = null, onRetry, stopping = false, animate = true, announcement, fold = false, durationMs, approvals = [], statusEnters = false }: TimelineProps) {
+export function Timeline({ taskId = "", entries, live = false, quiet = false, fallback = "Thinking", tail, notice = null, onRetry, stopping = false, animate = true, announcement, fold = false, durationMs, approvals = [], statusEnters = false, liveTool = null }: TimelineProps) {
   const sections = useMemo(() => sectionsOf(entries), [entries]);
   const callId = useMemo(() => currentCallId(entries), [entries]);
+  // Subagents that have a question for the person, and whose each question is.
+  const subagents = useMemo(() => subagentsByRun(entries), [entries]);
+  const waiting = useMemo(() => new Set(approvals.flatMap((approval) => approval.agentRunId ? [approval.agentRunId] : [])), [approvals]);
   const nothingYet = !entries.some((entry) => entry.kind !== "phase");
-  const running = callId !== null || stopping;
+  // A call being written, or a running command's output. Not shown once the run is folded away into its summary.
+  const placement = useMemo(() => fold ? null : placeLiveTool(entries, liveTool, approvals.length > 0), [fold, entries, liveTool, approvals.length]);
+  const draftRow = placement?.kind === "draft" ? <DraftRow key={`draft:${placement.call.callId}`} call={placement.call} /> : null;
+  const outputFor = placement?.kind === "output" ? placement : null;
+  // A call being written is work in progress too: "Thinking" would say nothing is happening while its text is arriving.
+  const running = callId !== null || stopping || !!draftRow;
   // A connection notice stands in for "Thinking" when nothing else shows life; otherwise it sits quietly under the rest.
   // A waiting approval card is the sign of life: "Thinking" would say the agent is busy while it waits for the person.
   const status = live && !tail && !running && !notice && !approvals.length && (nothingYet || quiet);
@@ -178,12 +204,14 @@ export function Timeline({ taskId = "", entries, live = false, quiet = false, fa
   const current = stopping ? "stopping" : callId;
   const last = sections[sections.length - 1];
   const stoppingRow = stopping ? <StatusRow key="stopping" current label="Stopping" animate /> : null;
+  // What follows the last list of steps: the call being written, then "Stopping". Each opens a list of its own after a note or heading.
+  const trailing = draftRow || stoppingRow ? <>{draftRow}{stoppingRow}</> : null;
   return <>
     <div className="flex min-w-0 flex-col gap-3" role="log" aria-live="off" aria-label="Agent activity" data-activity-log data-live={live ? "true" : undefined}>
       {fold ? <ActivityDisclosure taskId={taskId} entries={entries} durationMs={durationMs} className="" />
-        : sections.map((section, index) => renderSection(section, taskId, current, animate, section.kind === "rows" && index === sections.length - 1 ? stoppingRow : null))}
-      {stoppingRow && last?.kind !== "rows" ? <ul className="space-y-2 text-[15px] leading-6 text-muted-foreground" aria-label="Steps">{stoppingRow}</ul> : null}
-      {approvals.map((approval) => <ApprovalCard key={approval.id} approval={approval} />)}
+        : sections.map((section, index) => renderSection(section, taskId, current, animate, section.kind === "rows" && index === sections.length - 1 ? trailing : null, outputFor, waiting))}
+      {trailing && last?.kind !== "rows" ? <ul className="space-y-2 text-[15px] leading-6 text-muted-foreground" aria-label="Steps">{trailing}</ul> : null}
+      {approvals.map((approval) => <ApprovalCard key={approval.id} approval={approval} source={approvalSource(approval.agentRunId, subagents)} />)}
       {tail}
       {notice ? <ul className="text-[15px] leading-6 text-muted-foreground" aria-label="Connection" data-activity-notice={notice.kind}>
         <StatusRow icon={noticeLeads ? "running" : notice.kind === "reconnecting" || notice.kind === "catching_up" ? "unknown" : "warning"} current={noticeLeads} label={notice.text} animate>

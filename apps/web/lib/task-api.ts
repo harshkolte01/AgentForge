@@ -48,8 +48,11 @@ export type Artifact = {
 
 /** How a tool call ended. "running" is only ever derived by a client from a start without a finish. */
 export type ToolCallOutcome = "running" | "completed" | "failed" | "blocked" | "cancelled" | "unknown";
-/** What a live text row holds: a progress note being written, or the answer being written. */
-export type LiveTextKind = "progress" | "answer";
+/**
+ * What a live text row holds: a progress note or the answer being written, a tool call the model is still writing (`tool`:
+ * its command or file content so far), or one that is running (`output`: the end of what it printed).
+ */
+export type LiveTextKind = "progress" | "answer" | "tool" | "output";
 /** Wire types below mirror `apps/api/src/agentforge/contracts/activity.py` field for field. */
 export type LiveStreamSnapshot = {
   task_id: string;
@@ -57,6 +60,10 @@ export type LiveStreamSnapshot = {
   revision: number;
   kind: LiveTextKind;
   text: string;
+  /** Which call a `tool` or `output` row is about; absent (older servers) or null for prose. `call_id` is the id its tool.started event carries. */
+  tool?: string | null;
+  call_id?: string | null;
+  detail?: string | null;
   event_sequence: number;
   terminal: boolean;
 };
@@ -186,7 +193,8 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     const written = body?.detail && typeof body.detail === "object" ? body.detail as { code?: unknown; message?: unknown } : null;
     const detail = typeof body?.detail === "string" ? body.detail : typeof written?.code === "string" ? written.code : "";
     const sentence = typeof written?.message === "string" && written.message ? written.message : undefined;
-    if (response.status === 401 && path !== "/auth/session") {
+    // A GitHub authorization that expired is not the workspace session ending: it must not sign the person out of the app.
+    if (response.status === 401 && path !== "/auth/session" && detail !== "github_reauthorization_required") {
       window.dispatchEvent(new Event("agentforge-session-expired"));
     }
     throw new ApiError(response.status, friendlyErrors[detail] ?? sentence ??

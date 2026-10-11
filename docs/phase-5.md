@@ -1,5 +1,11 @@
 # Phase 5 — GitHub identity and approved delivery
 
+> **Delivery section superseded.** The identity and sign-in parts below are current. The *exact approval and delivery*
+> design (approval hashes, `external_operations`, `/approvals/{id}/execute`) was removed when the agent runtime was unified
+> (commit `556de52`); its tables remain unused. Delivery today — branch, commits, pull request, checks, merge, and recovery
+> from a lost answer — is described in [delivery](delivery.md). The safety rules that still hold: the user's own expiring token,
+> live permission re-checks before every write, drafts by default, a branch only ever moves forward, nothing is overwritten.
+
 Implemented in code; no live GitHub account, installation, callback or write was exercised. Existing local authentication remains available. The running local API/worker and actual database were not restarted or migrated during this work.
 
 ## Identity and public access

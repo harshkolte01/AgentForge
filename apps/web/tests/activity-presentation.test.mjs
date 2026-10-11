@@ -8,6 +8,7 @@ import { actionCount, labelFor, pluralLabelFor } from "../lib/tool-steps.ts";
 // The wording of the original three states, exactly as it shipped before outcomes existed: [running, done, failed].
 // The two conversation-memory tools were added to the registry afterwards (they were previously unlisted and hidden by the old labels).
 const original = {
+  delegate_task: ["Subagent working", "Subagent finished", "Subagent couldn't finish"],
   search_conversation_history: ["Searching earlier messages", "Searched earlier messages", "Couldn't search earlier messages"],
   read_context_resource: ["Reading earlier context", "Read earlier context", "Couldn't read earlier context"],
   web_search: ["Searching the web", "Searched the web", "Web search failed"],
@@ -33,7 +34,8 @@ const original = {
   grep: ["Searching the code", "Searched the code", "Couldn't search the code"],
   find: ["Finding files", "Found files", "Couldn't find files"],
   ls: ["Listing files", "Listed files", "Couldn't list files"],
-  create_pull_request: ["Opening a pull request", "Opened a pull request", "Couldn't open the pull request"],
+  // The tool opens a pull request the first time and pushes to the existing branch afterwards, so the row says what both did.
+  create_pull_request: ["Publishing changes to GitHub", "Published changes to GitHub", "Couldn't publish the changes"],
   create_task_artifact: ["Preparing a download", "Created a download", "Couldn't create the download"],
   read_task_artifact: ["Proofreading the document", "Proofread the document", "Couldn't proofread the document"],
   // Added with skills: the agent loads a skill's instructions before following them.
@@ -134,6 +136,7 @@ test("evidence only matters for execution tools and only once the call completed
 test("presentation kinds follow the plan's table", () => {
   const kinds = Object.fromEntries(listedTools().map((tool) => [tool, toolPresentation(tool)]));
   assert.deepEqual(kinds, {
+    delegate_task: "subagent",
     search_conversation_history: "status", read_context_resource: "status",
     web_search: "status", fetch_webpage: "status", browser_public_page: "status", read_research_source: "status", read_repo_file: "status",
     search_repo: "status", list_repo_files: "status", get_issue: "status", get_pr_status: "status", read_sandbox_file: "status",

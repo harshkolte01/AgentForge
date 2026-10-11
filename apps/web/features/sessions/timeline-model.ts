@@ -4,9 +4,9 @@
  * has a plain node test.
  */
 import { describeCall, isDetailable } from "@/lib/activity/presentation";
-import type { ActivityEntry, CallEntry, PhaseEntry } from "@/lib/activity/types";
+import type { ActivityEntry, CallEntry, PhaseEntry, ToolCallOutcome } from "@/lib/activity/types";
 import type { SyncSnapshot } from "@/lib/activity/sync";
-import type { LiveState } from "@/lib/activity/live-text";
+import { isToolKind, type LiveState, type LiveToolView } from "@/lib/activity/live-text";
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Connection notices
@@ -150,6 +150,86 @@ export function sectionsOf(entries: readonly ActivityEntry[]): Section[] {
   return out;
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// Subagents
+
+/** Any entry that belongs in a list of steps (notes and headings stand between the lists). */
+export type RowEntry = Exclude<ActivityEntry, { kind: "note" | "phase" }>;
+
+/** One item of a list of steps: an ordinary entry, or delegations that stand next to each other and are shown as cards. */
+export type RowChunk =
+  | { kind: "entry"; key: string; entry: RowEntry }
+  | { kind: "subagents"; key: string; calls: readonly CallEntry[] };
+
+const isDelegation = (entry: RowEntry): entry is CallEntry => entry.kind === "call" && entry.tool === "delegate_task";
+
+/**
+ * A list of steps as the chat lays it out. Delegations that follow one another (several requested in one reply, or one after
+ * the other) form one chunk, so a team of subagents reads as a team; every other entry stays a row of its own. Order is kept.
+ */
+export function chunkRows(entries: readonly RowEntry[]): RowChunk[] {
+  const out: RowChunk[] = [];
+  for (const entry of entries) {
+    const last = out[out.length - 1];
+    if (!isDelegation(entry)) out.push({ kind: "entry", key: entry.key, entry });
+    else if (last?.kind === "subagents") out[out.length - 1] = { kind: "subagents", key: last.key, calls: [...last.calls, entry] };
+    else out.push({ kind: "subagents", key: entry.key, calls: [entry] });
+  }
+  return out;
+}
+
+/** The delegations among `entries`, by the run id of the subagent each started (calls from older runs have none). */
+export function subagentsByRun(entries: readonly ActivityEntry[]): Map<string, CallEntry> {
+  const out = new Map<string, CallEntry>();
+  for (const entry of entries) if (entry.kind === "call" && entry.childRunId) out.set(entry.childRunId, entry);
+  return out;
+}
+
+/** Who an Approve / Decline card is from: a subagent says which assignment it is working on; the main agent's own cards say nothing. */
+export function approvalSource(agentRunId: string | undefined, subagents: ReadonlyMap<string, CallEntry>): string | undefined {
+  if (!agentRunId) return undefined;
+  const title = subagents.get(agentRunId)?.detail;
+  return title ? `Subagent · ${title}` : "Subagent";
+}
+
+const subagentStatusText: Record<ToolCallOutcome, string> = {
+  running: "Working", completed: "Finished", failed: "Couldn't finish", blocked: "Blocked", cancelled: "Stopped", unknown: "Interrupted",
+};
+
+/** What a subagent's card says it is doing, in one word or two. */
+export const subagentStatus = (outcome: ToolCallOutcome): string => subagentStatusText[outcome];
+
+/**
+ * The heading over two or more subagents: how many, and how they stand. Never claims they ran at the same time (they may
+ * have run one after another), only what is true now.
+ */
+export function fleetSummary(calls: readonly CallEntry[]): string {
+  const working = calls.filter((call) => call.outcome === "running").length;
+  const trouble = calls.filter((call) => call.outcome !== "running" && call.outcome !== "completed").length;
+  const head = `${calls.length} subagents`;
+  if (working) return `${head} · ${working} working`;
+  if (!trouble) return `${head} · all finished`;
+  return trouble === calls.length ? `${head} · none finished` : `${head} · ${calls.length - trouble} finished, ${trouble} didn't finish`;
+}
+
+/**
+ * The line under a running subagent's title: the call it has open, else its latest note, else that it is starting. Null once
+ * it is over, and for a run that did not report its subagent's progress (nothing is made up).
+ */
+export function subagentNow(call: CallEntry): string | null {
+  if (call.outcome !== "running" || !call.child) return null;
+  const active = call.child.active[call.child.active.length - 1];
+  if (active) return active.detail ? `${active.label} · ${active.detail}` : active.label;
+  const note = call.child.note?.split("\n").find((line) => line.trim());
+  return note ? note.trim() : "Getting started";
+}
+
+/** "1 step", "12 steps"; null when the subagent has not started one or its progress is unknown. */
+export function subagentSteps(call: CallEntry): string | null {
+  const steps = call.child?.steps ?? 0;
+  return steps > 0 ? (steps === 1 ? "1 step" : `${steps} steps`) : null;
+}
+
 const endedCalls = new WeakMap<CallEntry, CallEntry>();
 const endedPhases = new WeakMap<PhaseEntry, PhaseEntry>();
 
@@ -186,6 +266,36 @@ export function endEntries(entries: readonly ActivityEntry[]): readonly Activity
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// A tool call shown live
+
+/** Where the live tool call shows: as a row of its own while it is written, under its running row while it prints. */
+export type LiveToolPlacement =
+  | { kind: "draft"; call: LiveToolView }
+  | { kind: "output"; entryId: string; text: string };
+
+/** The call with this id (the `call_id` its start event carries), wherever it sits, folded into a group or not. */
+function findCall(entries: readonly ActivityEntry[], callId: string): CallEntry | undefined {
+  for (const entry of entries) {
+    if (entry.kind === "call" && entry.callId === callId) return entry;
+    if (entry.kind === "group") { const call = entry.calls.find((item) => item.callId === callId); if (call) return call; }
+  }
+  return undefined;
+}
+
+/**
+ * What to show of the live tool call. While the model writes a call it has no row yet, so it gets one of its own, until the
+ * real row exists (the start event arrived: the real row takes over, so the call is never shown twice) or an Approve / Decline
+ * card is waiting for it (the card carries the exact text). Once it runs, its output shows under its row, and only while that
+ * row says it is running: a settled row has its own details.
+ */
+export function placeLiveTool(entries: readonly ActivityEntry[], live: LiveToolView | null, approvalsPending: boolean): LiveToolPlacement | null {
+  if (!live) return null;
+  const call = findCall(entries, live.callId);
+  if (live.phase === "tool") return call || approvalsPending ? null : { kind: "draft", call: live };
+  return call && call.outcome === "running" && live.text ? { kind: "output", entryId: call.id, text: live.text } : null;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // Live text held through the end of a run
 
 /** The last live text shown, remembered so the end of a run cannot blank it before the saved answer takes over. */
@@ -198,6 +308,8 @@ export type HeldLive = { epoch: number; kind: LiveState["kind"]; text: string };
  * was saved meanwhile hides it through `visibleLive`). Identity is kept while nothing changed.
  */
 export function holdLive(held: HeldLive | null, live: Pick<LiveState, "epoch" | "kind" | "text">, over: boolean): HeldLive | null {
+  // A tool call is not words to keep on screen: it is shown by the timeline while it lasts and is gone when it settles.
+  if (isToolKind(live.kind)) return over ? held : null;
   if (live.text) return held && held.epoch === live.epoch && held.kind === live.kind && held.text === live.text ? held : { epoch: live.epoch, kind: live.kind, text: live.text };
   return over ? held : null;
 }

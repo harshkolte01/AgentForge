@@ -176,7 +176,21 @@ class ContextResourceArgs(PageArgs):
     resource_id: ResourceId = Field(description="Opaque resource_id from history, search, or a compacted tool result.")
 
 
+class DelegateTaskArgs(ToolArguments):
+    title: str = Field(min_length=3, max_length=100, description="Short assignment label, e.g. Review authentication.")
+    prompt: str = Field(min_length=10, max_length=8000, description="Self-contained assignment, relevant context, paths, constraints and expected result. The child does not receive your conversation.")
+    mode: Literal["research", "work"] = Field(default="research", description="research allows reading and web research only; work also permits workspace edits and commands within your grants.")
+
+    @field_validator("title", "prompt")
+    @classmethod
+    def meaningful(cls, value):
+        if not value.strip():
+            raise ValueError("must contain non-whitespace text")
+        return value.strip()
+
+
 ARGUMENT_MODELS: dict[str, type[ToolArguments]] = {
+    "delegate_task": DelegateTaskArgs,
     "search_conversation_history": ConversationSearchArgs, "read_context_resource": ContextResourceArgs,
     "read_task_input": TaskInputArgs, "read_research_source": ResearchSourceArgs,
     "read_task_artifact": TaskArtifactReadArgs, "create_task_artifact": TaskArtifactCreateArgs,
@@ -220,6 +234,11 @@ class ToolOutcome(BaseModel):
 # become executable merely because a provider emits them.
 class _Request(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class DelegateTaskRequest(_Request):
+    name: Literal["delegate_task"]
+    args: DelegateTaskArgs
 
 
 class WebSearchRequest(_Request):
@@ -338,7 +357,7 @@ class UseSkillRequest(_Request):
 
 
 ToolRequest = Annotated[
-    WebSearchRequest | FetchRequest | RepoFileRequest | RepoSearchRequest |
+    DelegateTaskRequest | WebSearchRequest | FetchRequest | RepoFileRequest | RepoSearchRequest |
     IssueRequest | RepoFilesRequest | BashRequest | ReadRequest | WriteRequest | EditRequest |
     GrepRequest | FindRequest | LsRequest | PullRequestRequest |
     PRStatusRequest | BrowserRequest | TaskInputRequest | ResearchSourceRequest |

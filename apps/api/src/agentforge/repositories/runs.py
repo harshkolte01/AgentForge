@@ -24,7 +24,8 @@ class AgentRunRepository:
                      definition_version_id: UUID, definition_sha256: str,
                      definition_snapshot: dict[str, Any], brief_sha256: str,
                      effective_permissions: dict[str, Any], effective_budget: dict[str, Any],
-                     reservation_id: UUID) -> UUID:
+                     reservation_id: UUID, parent_run_id: UUID | None = None,
+                     assignment_title: str | None = None, assignment_prompt: str | None = None) -> UUID:
         with self.session_factory() as session, session.begin():
             task = session.scalar(select(Task).join(Project).where(
                 Task.id == task_id, Task.project_id == project_id,
@@ -40,7 +41,12 @@ class AgentRunRepository:
                 or definition.project_id not in (None, project_id)
                 or snapshot.sha256 != definition_sha256 or snapshot.definition_json != definition_snapshot):
                 raise ValueError("run_identity_not_authorized")
-            session.add(AgentRun(id=run_id, task_id=task_id,
+            if parent_run_id is not None:
+                parent = session.get(AgentRun, parent_run_id)
+                if parent is None or parent.task_id != task_id or parent.status != "RUNNING" or parent.parent_run_id is not None:
+                    raise ValueError("parent_run_not_active")
+            session.add(AgentRun(id=run_id, task_id=task_id, parent_run_id=parent_run_id,
+                assignment_title=assignment_title, assignment_prompt=assignment_prompt,
                 definition_version_id=definition_version_id, definition_sha256=definition_sha256,
                 definition_snapshot=definition_snapshot, brief_sha256=brief_sha256,
                 effective_permissions_json=effective_permissions, effective_budget_json=effective_budget,
@@ -67,6 +73,17 @@ class AgentRunRepository:
 class ToolCallRepository:
     def __init__(self, session_factory: SessionFactory):
         self.session_factory = session_factory
+
+    def store_text_result(self, task_id, operation_key, content):
+        """Preserve an oversized child report for the existing owner-scoped paged context reader."""
+        from agentforge.database.sessions import ToolResultSnapshot
+        from uuid import NAMESPACE_URL, uuid5
+        import hashlib
+        ident = uuid5(NAMESPACE_URL, "agentforge:tool-result:" + operation_key)
+        with self.session_factory() as session, session.begin():
+            session.add(ToolResultSnapshot(id=ident, task_id=task_id, operation_key=operation_key,
+                content=content, sha256=hashlib.sha256(content.encode()).hexdigest()))
+        return f"tool:{ident}"
 
     def store_result(self, task_id, operation_key, result):
         from agentforge.database.sessions import ToolResultSnapshot

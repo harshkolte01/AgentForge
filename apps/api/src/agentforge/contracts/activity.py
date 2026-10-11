@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 # One vocabulary for how a tool call ended. "running" is only ever derived by a client from a start without a finish.
 ToolCallOutcome = Literal["running", "completed", "failed", "blocked", "cancelled", "unknown"]
 # What a live text row holds: a progress note being written, or the answer being written.
-LiveTextKind = Literal["progress", "answer"]
+LiveTextKind = Literal["progress", "answer", "tool", "output"]
 # How a tool is presented when inspected. Tools without a detail kind are compact status rows only.
 ToolDetailKind = Literal["execution", "diff", "artifact"]
 
@@ -24,6 +24,11 @@ class LiveStreamSnapshot(BaseModel):
     (epoch, revision) order snapshots and deltas: a larger epoch wins; within one epoch a larger revision wins;
     within one (epoch, revision) text only grows by appending at `offset == len(text so far)`.
     With no live row, epoch and revision are 0 and text is empty.
+
+    kind "tool" is a tool call the model is still writing: `text` is its command or file content so far. kind "output"
+    is a call that is running: `text` is the end of what it has printed. For both, `tool` names the call, `call_id` is
+    the id its tool.started event carries (so the client can match the running call to its row) and `detail` says what
+    it is about. A prose kind carries none of them.
     """
     model_config = ConfigDict(extra="forbid")
     task_id: UUID
@@ -31,6 +36,9 @@ class LiveStreamSnapshot(BaseModel):
     revision: int = Field(0, ge=0)
     kind: LiveTextKind = "progress"
     text: str = ""
+    tool: str | None = None
+    call_id: str | None = None
+    detail: str | None = None
     # The task's durable event watermark when this was read, and whether the task is already terminal.
     event_sequence: int = Field(0, ge=0)
     terminal: bool = False

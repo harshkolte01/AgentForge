@@ -79,7 +79,8 @@ class ToolCallingModel(Protocol):
                        on_narration: Callable[[str], None] | None = None) -> ModelResponse:
         """The text a model writes streams to on_narration while tools are offered (it may turn out to be a note
         before tool calls or the final answer, which is only known when the call ends) and to on_text when none are;
-        implementations may ignore both. tool_choice forces a tool."""
+        implementations may ignore both. tool_choice forces a tool. A model that also takes `on_retry` and `on_tool` (see
+        OpenAIAdapter) is given them; one that does not is simply not told."""
         ...
 
 

@@ -86,7 +86,8 @@ class SpawnService:
                              run_id: UUID | None = None,
                              authority: Callable[[], Awaitable[None]] | None = None,
                              stream=None,
-                             conversation: list[dict] | None = None) -> SubagentResult:
+                             conversation: list[dict] | None = None,
+                             assignment_title: str | None = None) -> SubagentResult:
         """Runs one agent on `conversation` (chat messages: earlier turns, then the person's message) and returns
         its plain-text answer, or the reason the run broke."""
         # Reject model_construct/model_copy bypasses at this trust boundary too.
@@ -118,6 +119,7 @@ class SpawnService:
             owner_id=ctx.user_id, project_id=ctx.project_id,
             max_steps=scope.budget.max_steps, max_tool_calls=scope.budget.max_tool_calls,
             max_wall_time_sec=scope.budget.max_wall_time_sec, depth=ctx.depth + 1,
+            **({"parent_run_id": ctx.parent_run_id} if ctx.parent_run_id else {}),
         )
         started = False
         result: SubagentResult | None = None
@@ -147,6 +149,8 @@ class SpawnService:
                                        "allowed_tools": list(scope.allowed_tools),
                                        "available_tools": [tool.name for tool in available]},
                 effective_budget=scope.budget.model_dump(mode="json"), reservation_id=reservation.id,
+                **({"parent_run_id": ctx.parent_run_id, "assignment_title": assignment_title,
+                    "assignment_prompt": request.prompt} if ctx.parent_run_id else {}),
             )
             started = True
 
@@ -158,18 +162,25 @@ class SpawnService:
                 if current.version_id != resolved.version_id or current.sha256 != resolved.sha256:
                     raise ScopeDenied("the selected immutable definition is no longer authorized")
 
+            def child_lifecycle(kind, payload):
+                if self.lifecycle is not None:
+                    self.lifecycle(kind, {**payload, "parent_run_id": str(ctx.parent_run_id)})
+
             gateway = ToolGateway(catalog=self.catalog, calls=self.calls, budgets=self.budgets,
                 resources=self.resources, reauthorize=reauthorize, ctx=ctx, scope=scope,
                 run_id=run_id, reservation_id=reservation.id,
-                strict_tools=bool(getattr(model, "strict_tools", False)), lifecycle=self.lifecycle,
-                approvals=self.approvals)
+                strict_tools=bool(getattr(model, "strict_tools", False)), lifecycle=child_lifecycle if ctx.parent_run_id else self.lifecycle,
+                approvals=self.approvals,
+                # Only the run the person is watching shows a call being written and a command's output as it arrives.
+                live=stream if getattr(stream, "output", None) is not None else None)
             result = await self.runtime.run(
                 definition=resolved.definition, ctx=ctx, scope=scope, model=model, gateway=gateway,
                 budgets=self.budgets, reservation=reservation, messages=messages,
                 resources=self.resources, reauthorize=reauthorize, config=config,
                 **({"stream": stream} if stream is not None else {}),
             )
-            terminal_status = "COMPLETED"
+            terminal_status = "COMPLETED" if result.status == "PASS" else "FAILED"
+            error_code = result.error_code
         except asyncio.CancelledError:
             terminal_status, error_code = "CANCELLED", "USER_CANCELLED"
             result = SubagentResult(status="FAIL", error_code=error_code, summary="Stopped.")
@@ -179,6 +190,11 @@ class SpawnService:
         except (ScopeDenied, BudgetExceeded, TimeoutError, ModelContextLimit,
                 ModelProviderError, ModelConfigurationError, UnknownToolOutcome) as exc:
             error_code, text = _failure_text(exc)
+            if ctx.depth and isinstance(exc, BudgetExceeded):
+                error_code = "SUBAGENT_LIMIT"
+                text = "The subagent reached its usage limit. Review its recorded work and narrow the assignment before trying again."
+            if ctx.depth and isinstance(exc, TimeoutError):
+                error_code, text = "SUBAGENT_TIMEOUT", "The subagent reached its time limit. Its recorded work is available for review."
             terminal_status = "FAILED"
             result = SubagentResult(status="FAIL", error_code=error_code, summary=text[:MAX_ANSWER_CHARS] or GENERIC_STOPPED_SUMMARY)
         except Exception:

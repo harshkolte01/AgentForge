@@ -3,7 +3,11 @@ export type TaskMode = "research" | "general" | "coding";
 export type RepositorySelection = { repo_id: string; ref: string };
 /** What the sidebar shows beside a conversation (see `lib/conversation-status.ts`). Absent from older servers. */
 export type ConversationStatus = "idle" | "running" | "waiting_approval" | "failed" | "unread";
-export type ConversationSession = { id: string; project_id: string; title: string; mode: TaskMode; repository: RepositorySelection | null; plugins?: string[]; archived: boolean; active_task_id: string | null; continuation_task_id: string | null; last_sequence: number; created_at: string; updated_at: string; queue_paused?: boolean; queued_count?: number; revision?: number; status?: ConversationStatus; read_sequence?: number };
+export type ConversationSession = { id: string; project_id: string; title: string; mode: TaskMode; repository: RepositorySelection | null; plugins?: string[]; archived: boolean; active_task_id: string | null; continuation_task_id: string | null; last_sequence: number; created_at: string; updated_at: string; queue_paused?: boolean; queued_count?: number; revision?: number; status?: ConversationStatus; read_sequence?: number;
+  /** Where the work stands on GitHub; absent when the conversation has produced nothing for it (and from older servers). */
+  delivery?: ConversationDelivery | null };
+export type ConversationDelivery = { state: "none" | "branch" | "pull_request"; pr_state?: "draft" | "open" | "merged" | "closed" | null; checks?: "none" | "pending" | "passing" | "failing" | "unavailable" | null;
+  review?: "none" | "approved" | "changes_requested" | "review_required" | null; mergeable?: "mergeable" | "conflicting" | "unknown" | null; unpublished?: boolean };
 export type MessageStep = { tool: string; status: "done" | "failed" };
 export type ConversationMessage = { id: string; session_id: string; sequence: number; role: "user" | "assistant"; content: string; task_id: string | null; created_at: string; steps?: MessageStep[];
   /** What the work behind an assistant message amounted to (exact counts, note-only activity). Absent from older servers. */

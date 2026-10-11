@@ -1,10 +1,10 @@
 "use client";
 import Link from "next/link";
 import { useEffect, useState, type FormEvent } from "react";
-import { ArchiveRestore, Check, Pencil, X } from "lucide-react";
+import { Archive, ArchiveRestore, Check, Pencil, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { inputClass } from "@/components/session-boundary";
-import { focusClass, sectionClass, SectionHeader } from "@/features/settings/settings-ui";
+import { cardClass, EmptyState, focusClass, sectionClass, SectionHeader } from "@/features/settings/settings-ui";
 import { routes } from "@/lib/routes";
 import { api, formatDate, message } from "@/lib/task-api";
 import type { ConversationSession } from "@/lib/workspace-api";
@@ -35,9 +35,9 @@ export function ConversationSettings() {
   return <section className={sectionClass} aria-labelledby="conversations-title">
     <SectionHeader id="conversations-title" title="Conversations" description="Archived conversations are kept here, out of the sidebar. Restore one to continue it." />
     {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
-    {!sessions ? <div role="status" className="divide-y border-y"><span className="sr-only">Loading archived conversations…</span>{[0, 1, 2].map((index) => <div key={index} className="flex min-h-14 items-center justify-between gap-4 py-2" aria-hidden="true"><div className="space-y-1.5"><div className="h-4 w-48 animate-pulse rounded bg-muted motion-reduce:animate-none" /><div className="h-3 w-24 animate-pulse rounded bg-muted motion-reduce:animate-none" /></div><div className="h-7 w-20 animate-pulse rounded-lg bg-muted motion-reduce:animate-none" /></div>)}</div>
-      : !sessions.length ? <p className="border-y py-5 text-sm text-muted-foreground">No archived conversations.</p>
-        : <ul className="divide-y border-y" aria-label="Archived conversations">{sessions.map((session) => <li key={session.id} className="flex min-h-14 flex-wrap items-center justify-between gap-x-4 gap-y-2 py-2">
+    {!sessions ? <div role="status" className={`${cardClass} divide-y`}><span className="sr-only">Loading archived conversations…</span>{[0, 1, 2].map((index) => <div key={index} className="flex min-h-[4.25rem] items-center justify-between gap-4 px-4 py-3 sm:px-5" aria-hidden="true"><div className="space-y-1.5"><div className="h-4 w-48 animate-pulse rounded bg-muted motion-reduce:animate-none" /><div className="h-3 w-24 animate-pulse rounded bg-muted motion-reduce:animate-none" /></div><div className="h-7 w-20 animate-pulse rounded-lg bg-muted motion-reduce:animate-none" /></div>)}</div>
+      : !sessions.length ? <EmptyState icon={<Archive />} title="No archived conversations">Archive one from the sidebar and it shows up here.</EmptyState>
+        : <ul className={`${cardClass} divide-y`} aria-label="Archived conversations">{sessions.map((session) => <li key={session.id} className="flex min-h-[4.25rem] flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3 sm:px-5">
           {editing === session.id ? <form onSubmit={(event) => rename(event, session)} onKeyDown={(event) => { if (event.key === "Escape" && !busy) { event.preventDefault(); setEditing(null); } }} className="flex w-full items-center gap-1">
             <label htmlFor={`archived-rename-${session.id}`} className="sr-only">Conversation title</label>
             <input id={`archived-rename-${session.id}`} value={title} onChange={(event) => setTitle(event.target.value)} required maxLength={120} autoFocus disabled={busy === session.id} className={inputClass} />

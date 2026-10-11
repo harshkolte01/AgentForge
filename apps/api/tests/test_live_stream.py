@@ -262,7 +262,11 @@ class RepositoryTests(TestCase):
 
     def test_a_live_row_is_returned_whole(self):
         row = NS(epoch=3, revision=2, kind="answer", text="Hello", status="RUNNING")
-        self.assertEqual(self.snapshot(row), (3, 2, "answer", "Hello"))
+        self.assertEqual(self.snapshot(row), (3, 2, "answer", "Hello", None))
+
+    def test_a_live_tool_call_is_returned_with_what_it_is(self):
+        row = NS(epoch=3, revision=2, kind="tool", text="ls -la", tool="bash", call_id="run:tool:call_1", detail=None, status="RUNNING")
+        self.assertEqual(self.snapshot(row), (3, 2, "tool", "ls -la", ("bash", "run:tool:call_1", None)))
 
     def test_no_row_and_database_errors_are_none(self):
         self.assertIsNone(self.snapshot(None))
@@ -272,11 +276,11 @@ class RepositoryTests(TestCase):
 
     def test_text_left_on_a_terminal_task_is_reported_as_cleared(self):
         row = NS(epoch=3, revision=2, kind="answer", text="stale", status="FAILED")
-        self.assertEqual(self.snapshot(row), (3, 3, "progress", ""))
+        self.assertEqual(self.snapshot(row), (3, 3, "progress", "", None))
 
     def test_an_already_cleared_terminal_task_is_reported_as_it_is(self):
         row = NS(epoch=3, revision=3, kind="progress", text="", status="COMPLETED")
-        self.assertEqual(self.snapshot(row), (3, 3, "progress", ""))
+        self.assertEqual(self.snapshot(row), (3, 3, "progress", "", None))
 
     def since(self, row, state=None, sent=0):
         return EventRepository(ScriptedRows(row)).stream_since(uuid4(), uuid4(), state, sent)
@@ -360,7 +364,7 @@ class SnapshotEndpointTests(TestCase):
         response = self.client(Repository()).get(f"/api/v1/tasks/{task_id}/stream-snapshot")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"task_id": str(task_id), "epoch": 2, "revision": 1, "kind": "answer", "text": "Hi",
-                                           "event_sequence": 9, "terminal": False})
+                                           "tool": None, "call_id": None, "detail": None, "event_sequence": 9, "terminal": False})
         self.assertEqual(calls, [(task_id, self.user.id)])
         self.assertEqual(response.headers["cache-control"], "private, no-store")
         self.assertEqual(response.headers["x-content-type-options"], "nosniff")

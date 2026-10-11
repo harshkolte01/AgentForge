@@ -74,3 +74,14 @@ class ObservedModelTests(IsolatedAsyncioTestCase):
         await model.complete([], [])
         await model.complete([], [], on_text=print, tool_choice={"type": "function"})
         self.assertEqual(seen, [{}, {"on_text": print, "tool_choice": {"type": "function"}}])
+
+    async def test_paid_stream_retries_reach_the_runtime_usage_ledger(self):
+        events, store, telemetry = harness()
+        retries = []
+        class Inner:
+            model_id = "m"
+            async def complete(self, messages, tools, on_retry=None):
+                on_retry()
+                return ModelResponse({"role": "assistant", "content": "done"}, ModelUsage(1, 1, Decimal(0)), "m", "stop")
+        await ObservedModel(Inner(), telemetry, store).complete([], [], on_retry=lambda: retries.append(True))
+        self.assertEqual(retries, [True])

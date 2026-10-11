@@ -12,6 +12,7 @@ import re
 import shlex
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -92,14 +93,20 @@ class CommandOutcome:
 
 
 class _Collector:
-    def __init__(self) -> None:
+    def __init__(self, observer: Callable[[str], None] | None = None) -> None:
         self.parts: list[str] = []
         self.size = 0
+        self.observer = observer
 
     def add(self, chunk: str) -> None:
         if self.size < COLLECT_CHARS:
             self.parts.append(chunk[:COLLECT_CHARS - self.size])
             self.size += len(chunk)
+        if self.observer is not None:
+            try:
+                self.observer(chunk)
+            except Exception:
+                pass  # Showing progress must never fail the command.
 
     def text(self) -> str:
         return "".join(self.parts)
@@ -140,10 +147,15 @@ class Workspace:
         except BaseException:
             log.debug("could not stop a sandbox command", exc_info=True)
 
-    async def run(self, command: str, *, timeout_sec: float = 120, cwd: str = WORKSPACE) -> CommandOutcome:
-        """Runs `command` with bash. A nonzero exit is a normal outcome; only a broken sandbox raises."""
+    async def run(self, command: str, *, timeout_sec: float = 120, cwd: str = WORKSPACE,
+                  on_output: Callable[[str], None] | None = None) -> CommandOutcome:
+        """Runs `command` with bash. A nonzero exit is a normal outcome; only a broken sandbox raises.
+
+        `on_output` receives each piece of the command's output (both streams, as it arrives) while it runs. It is for
+        showing progress: it gets the raw text, and anything that raises is ignored.
+        """
         from e2b import CommandExitException, TimeoutException
-        out, err = _Collector(), _Collector()
+        out, err = _Collector(on_output), _Collector(on_output)
         exit_code: int | None = None
         timed_out = False
         limit = max(1, int(timeout_sec))
@@ -250,6 +262,30 @@ class SandboxProvider:
         workspace.recreated = bool(existing_id)
         await workspace.run(f"mkdir -p {WORKSPACE}", cwd="/")
         return workspace, True
+
+    async def attach(self, existing_id: str | None) -> Workspace | None:
+        """The conversation's existing sandbox (resumed if paused), or None when there is none any more.
+
+        Unlike `open` it never creates one: the API uses it to look at a conversation's files, and must not start (and pay
+        for) an empty VM just because somebody opened a panel. Any other failure raises `SandboxUnavailable`.
+        """
+        if not self.config.api_key:
+            raise SandboxUnavailable("SANDBOX_NOT_CONFIGURED")
+        if not existing_id:
+            return None
+        sdk = self._sdk()
+        options = {"api_key": self.config.api_key, "request_timeout": self.config.request_timeout_sec}
+        for attempt in range(OPEN_ATTEMPTS):
+            try:
+                return Workspace(await sdk.connect(existing_id, timeout=self.config.ttl_sec, **options), self.config)
+            except Exception as exc:
+                from e2b import NotFoundException
+                if isinstance(exc, NotFoundException):
+                    return None
+                if attempt + 1 >= OPEN_ATTEMPTS:
+                    raise SandboxUnavailable("SANDBOX_CONNECT_FAILED") from exc
+                await asyncio.sleep(OPEN_RETRY_SEC * (attempt + 1))
+        return None
 
     async def kill(self, workspace: Workspace) -> None:
         try:

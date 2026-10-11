@@ -13,14 +13,13 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 from agentforge.integrations.e2b_sandbox import GRACE_SEC, WORKSPACE, SandboxUnavailable, Workspace, SandboxConfig
-from agentforge.integrations.github_client import GitHubError
-from agentforge.integrations.github_pr import MAX_CHANGED_FILES, open_draft_pull_request
+from agentforge.delivery.service import DeliveryError
 from agentforge.tools.catalog import EFFECT_TOOLS, ToolCatalog
 from agentforge.tools.contracts import (
     BashArgs, FileEditArgs, FileReadArgs, FileWriteArgs, FindArgs, GrepArgs, LsArgs, PullRequestArgs,
 )
 from agentforge.tools.errors import ToolError
-from agentforge.tools.sandbox_shell import BASE_TAG, MARKER, ConversationSandbox, parse_raw_diff, register_sandbox_shell
+from agentforge.tools.sandbox_shell import BASE_TAG, MARKER, ConversationSandbox, register_sandbox_shell
 
 from test_sandbox_provider import FakeSandbox
 
@@ -44,8 +43,8 @@ def unwrap(command: str) -> str:
 class Env:
     """A catalog of the coding tools wired to a FakeSandbox whose commands are answered by `answer(command)`."""
 
-    def __init__(self, answer=None, *, repository=None, pull_requests=None, github=None):
-        self.task_id = uuid4()
+    def __init__(self, answer=None, *, repository=None, delivery=None, github=None):
+        self.task_id, self.session_id, self.user_id = uuid4(), uuid4(), uuid4()
         self.sandbox = FakeSandbox(self.respond)
         recorded = self.sandbox.commands.run
         async def run(command, **kwargs):
@@ -61,8 +60,9 @@ class Env:
         self.conversation._remember = lambda session_id, sandbox_id: self.remembered.append(sandbox_id)
         self.conversation.repository = lambda task_id: self.repository
         self.catalog = ToolCatalog()
-        register_sandbox_shell(self.catalog, self.conversation, pull_requests=pull_requests)
-        self.execution = NS(task=NS(task_id=self.task_id), operation_key="op", authorize_current=None)
+        self.conversation.owner = lambda task_id: (self.session_id, self.user_id)
+        register_sandbox_shell(self.catalog, self.conversation, delivery=delivery)
+        self.execution = NS(task=NS(task_id=self.task_id), operation_key="op", authorize_current=None, output=None)
 
     def respond(self, command):
         scripted = self.answers(command)
@@ -95,7 +95,7 @@ class RegistrationTests(TestCase):
             env.catalog.get("create_pull_request")
 
     def test_the_pull_request_tool_exists_only_with_a_writer(self):
-        self.assertEqual(Env(pull_requests=NS()).catalog.get("create_pull_request").name, "create_pull_request")
+        self.assertEqual(Env(delivery=NS()).catalog.get("create_pull_request").name, "create_pull_request")
 
     def test_everything_that_changes_something_is_an_effect_and_reads_are_not(self):
         self.assertTrue({"bash", "write", "edit", "create_pull_request"} <= EFFECT_TOOLS)
@@ -171,7 +171,7 @@ class RecoveryTests(IsolatedAsyncioTestCase):
         self.assertNotIn("notice", second.data)
 
     def test_every_tool_deadline_leaves_room_to_start_the_sandbox_and_load_the_repository(self):
-        env = Env(pull_requests=FakeGitHub())
+        env = Env(delivery=NS())
         for name in ("bash", "read", "write", "edit", "grep", "find", "ls", "create_pull_request"):
             self.assertGreater(env.catalog.get(name).timeout_sec, 600, name)
 
@@ -409,212 +409,86 @@ class ConversationSandboxTests(IsolatedAsyncioTestCase):
         self.assertEqual(github.calls, [("owner/repo", SHA)])
 
 
-RAW = ":100644 100644 aaa bbb M\0src/a.py\0:000000 100644 000 ccc A\0new.txt\0:100644 000000 ddd 000 D\0gone.txt\0:160000 160000 eee fff M\0vendor/sub\0"
+class FakeDelivery:
+    """Stands in for the DeliveryService: records what the tool hands it, answers or fails as told."""
 
+    def __init__(self, error=None):
+        self.calls, self.error = [], error
 
-class RawDiffTests(TestCase):
-    def test_changes_are_read_with_their_status_and_new_mode(self):
-        self.assertEqual(parse_raw_diff(RAW), {"src/a.py": ("M", "100644"), "new.txt": ("A", "100644"),
-                                               "gone.txt": ("D", "000000"), "vendor/sub": ("M", "160000")})
-
-    def test_empty_and_odd_output_give_no_changes(self):
-        self.assertEqual(parse_raw_diff(""), {})
-        self.assertEqual(parse_raw_diff("\0"), {})
-
-
-class FakeGitHub:
-    """Records every call; answers the way GitHub's git data API does."""
-
-    def __init__(self, *, pull=None):
-        self.calls, self.pull = [], pull
-        self.authorized = []
-        self.client = NS(request=self.request)
-
-    async def authorize(self, repo_id, **kwargs):
-        self.authorized.append((repo_id, kwargs))
-        return self.client, {"full_name": repo_id, "default_branch": "main"}, {"id": 7}
-
-    async def request(self, method, path, payload=None, allow_missing=False):
-        self.calls.append((method, path, payload))
-        if "/branches/" in path:
-            return {"commit": {"sha": SHA}}
-        if "/git/ref/heads/" in path:
-            return None
-        if path.endswith(f"/git/commits/{SHA}"):
-            return {"tree": {"sha": "1" * 40}}
-        if path.endswith("/git/blobs"):
-            return {"sha": f"{len(self.calls):040x}"}
-        if path.endswith("/git/trees"):
-            return {"sha": "2" * 40}
-        if path.endswith("/git/commits"):
-            return {"sha": "3" * 40}
-        if path.endswith("/git/refs"):
-            return {}
-        if path.endswith("/pulls"):
-            return self.pull or {"number": 5, "html_url": f"https://github.com/{path.split('/')[2]}/{path.split('/')[3]}/pull/5"}
-        raise AssertionError(path)
-
-
-class DraftPullRequestTests(IsolatedAsyncioTestCase):
-    async def open(self, github=None, changes=None, **kwargs):
-        github = github or FakeGitHub()
-        result = await open_draft_pull_request(github, "owner/repo", base_sha=SHA, branch="agentforge/task-x",
-            changes=changes if changes is not None else {"a.py": ("100644", b"x")}, title="Fix it", body="Why", **kwargs)
-        return result, github
-
-    async def test_blobs_tree_commit_branch_and_a_draft_pull_request_are_created_in_that_order(self):
-        result, github = await self.open(changes={"a.py": ("100644", b"x"), "gone.py": None})
-        self.assertEqual([(method, path.split("/git/")[-1].split("/repos/")[-1]) for method, path, _ in github.calls],
-            [("GET", "owner/repo/branches/main"), ("GET", "ref/heads/agentforge/task-x"), ("GET", f"commits/{SHA}"), ("POST", "blobs"), ("POST", "trees"), ("POST", "commits"), ("POST", "refs"),
-             ("POST", "owner/repo/pulls")])
-        tree = github.calls[4][2]
-        self.assertEqual(tree["base_tree"], "1" * 40)
-        self.assertEqual([(entry["path"], entry["sha"] is None) for entry in tree["tree"]], [("a.py", False), ("gone.py", True)])
-        self.assertEqual(github.calls[5][2]["parents"], [SHA])
-        pull = github.calls[-1][2]
-        self.assertEqual((pull["draft"], pull["head"], pull["base"], pull["maintainer_can_modify"]), (True, "agentforge/task-x", "main", False))
-        self.assertIn("Opened by AgentForge as a draft.", pull["body"])
-        self.assertEqual((result["pr_number"], result["pr_url"], result["commit_sha"]), (5, "https://github.com/owner/repo/pull/5", "3" * 40))
-
-    async def test_only_the_backend_authorizes_for_writing(self):
-        _, github = await self.open()
-        self.assertEqual(github.authorized, [("owner/repo", {"write": True})])
-
-    async def test_nothing_to_commit_and_oversized_changes_are_refused_before_any_call(self):
-        github = FakeGitHub()
-        with self.assertRaisesRegex(GitHubError, "github_nothing_to_commit"):
-            await self.open(github, changes={})
-        with self.assertRaisesRegex(GitHubError, "github_change_too_large"):
-            await self.open(github, changes={f"f{index}": ("100644", b"x") for index in range(MAX_CHANGED_FILES + 1)})
-        with self.assertRaisesRegex(GitHubError, "github_change_too_large"):
-            await self.open(github, changes={"huge.bin": ("100644", b"x" * (20 * 1024 * 1024 + 1))})
-        self.assertEqual((github.authorized, github.calls), ([], []))
-
-    async def test_a_pull_request_that_does_not_match_what_was_asked_is_not_trusted(self):
-        for pull in ({"number": 5, "html_url": "https://evil.example/owner/repo/pull/5"}, {"number": "5", "html_url": "x"},
-                     {"number": 5, "html_url": "https://github.com/owner/repo/pull/6"}):
-            with self.subTest(pull=pull), self.assertRaisesRegex(GitHubError, "confirmation_failed"):
-                await self.open(FakeGitHub(pull=pull))
+    async def publish_for_agent(self, conversation_id, user_id, workspace, **kwargs):
+        self.calls.append((conversation_id, user_id, workspace, kwargs))
+        if self.error:
+            raise self.error
+        return {"pr_url": "https://github.com/owner/repo/pull/5", "pr_number": 5, "branch": "agentforge/fix-abc123", "head_sha": "3" * 40}
 
 
 class PullRequestToolTests(IsolatedAsyncioTestCase):
-    def env(self, raw=RAW, **kwargs):
-        github = FakeGitHub()
-        def answer(command):
-            return (0, raw, "") if "git diff --cached --raw" in command else None
+    def env(self, delivery=None, **kwargs):
+        delivery = delivery or FakeDelivery()
         reader = NS(snapshot=AsyncMock(return_value=NS(commit_sha=SHA, files={"README.md": b"hi"})))
-        env = Env(answer, repository=REPO, pull_requests=github, github=reader, **kwargs)
+        env = Env(repository=REPO, delivery=delivery, github=reader, **kwargs)
         env.put(MARKER, f"owner/repo@{SHA}")
-        for path in ("src/a.py", "new.txt"):
-            env.put(path, f"content of {path}".encode())
-        return env, github
+        return env, delivery
 
-    async def test_the_changes_since_the_pinned_commit_become_a_draft_pull_request(self):
-        env, github = self.env(":100644 100644 aaa bbb M\0src/a.py\0:000000 100644 000 ccc A\0new.txt\0:100644 000000 ddd 000 D\0gone.txt\0")
+    async def test_the_tool_publishes_through_the_delivery_with_this_operations_key_and_this_conversation(self):
+        env, delivery = self.env()
         outcome = await env.call("create_pull_request", PullRequestArgs(title="Fix the bug", body="Because"))
-        self.assertEqual((outcome.data["pr_url"], outcome.data["pr_number"], outcome.data["files"]), ("https://github.com/owner/repo/pull/5", 5, 3))
-        self.assertEqual(outcome.data["branch"], f"agentforge/task-{env.task_id.hex}")
-        diff_command = next(shlex.split(command)[-1] for command, _ in env.sandbox.ran if "git diff --cached" in command)
-        self.assertTrue(diff_command.endswith(BASE_TAG))
-        entries = {entry["path"]: entry for entry in next(p for m, path, p in github.calls if path.endswith("/git/trees"))["tree"]}
-        self.assertIsNone(entries["gone.txt"]["sha"])  # a deleted file stays deleted
-        self.assertEqual(github.authorized[0][1], {"write": True})
+        self.assertEqual((outcome.data["pr_url"], outcome.data["pr_number"], outcome.data["branch"]),
+                         ("https://github.com/owner/repo/pull/5", 5, "agentforge/fix-abc123"))
+        conversation_id, user_id, workspace, kwargs = delivery.calls[0]
+        self.assertEqual((conversation_id, user_id), (env.session_id, env.user_id))
+        self.assertIs(workspace, env.workspace)
+        self.assertEqual((kwargs["key"], kwargs["title"], kwargs["body"], kwargs["task_id"]), ("op", "Fix the bug", "Because", env.task_id))
         self.assertNotIn("token", str(env.sandbox.ran).lower())  # nothing credential-like was sent into the sandbox
 
     async def test_the_approval_preview_lists_every_changed_file_and_flags_ci_configuration(self):
-        stat = " .github/workflows/ci.yml | 4 ++--\n src/a.py | 2 +-\n 2 files changed, 3 insertions(+), 3 deletions(-)\n"
         env, _ = self.env()
-        env.answers = lambda command: (0, stat, "") if "--stat" in command else None
+        raw = ":100644 100644 " + "a" * 40 + " " + "b" * 40 + " M\0.github/workflows/ci.yml\0:100644 100644 " + "c" * 40 + " " + "d" * 40 + " M\0src/a.py\0"
+        numstat = "4\t2\t.github/workflows/ci.yml\x002\t1\tsrc/a.py\x00"
+        env.answers = lambda command: (0, f"@@AF:baseline:agentforge-base@@\n{raw}\n@@AF:numstat@@\n{numstat}\n@@AF:patch@@\n", "") if "@@AF:numstat@@" in command else None
         preview = await env.catalog.get("create_pull_request").preview(PullRequestArgs(title="t"), env.execution)
         self.assertIn("src/a.py", preview)
         self.assertIn(".github/workflows/ci.yml", preview)
         self.assertIn("CI configuration", preview)
-        self.assertIn("git reset -q", env.sandbox.ran[-1][0])  # nothing stays staged by looking
+        self.assertNotIn("git reset", env.sandbox.ran[-1][0])  # a private index is used: the agent's own staging is never touched
 
     async def test_without_a_selected_repository_there_is_nothing_to_open_against(self):
-        env, _ = self.env()
+        env, delivery = self.env()
         env.repository = None
         with self.assertRaises(ToolError) as caught:
             await env.call("create_pull_request", PullRequestArgs(title="t"))
-        self.assertEqual(caught.exception.code, "NO_REPOSITORY")
+        self.assertEqual((caught.exception.code, delivery.calls), ("NO_REPOSITORY", []))
 
-    async def test_an_unchanged_workspace_has_nothing_to_commit(self):
-        env, github = self.env(raw="")
+    async def test_each_delivery_refusal_reaches_the_model_as_a_typed_error_it_can_act_on(self):
+        cases = {
+            "nothing_to_publish": ("NOTHING_TO_COMMIT", ""),
+            "delivery_blocked_paths:.env,link": ("UNSUPPORTED_CHANGE", ".env,link"),
+            "github_path_conflict:src/a.py": ("GITHUB_CONFLICT", "src/a.py"),
+            "delivery_no_repository": ("NO_REPOSITORY", ""),
+            "github_branch_moved": ("GITHUB_BASE_CHANGED", ""),
+            "github_branch_missing": ("GITHUB_BASE_CHANGED", ""),
+            "delivery_outcome_unknown": ("GITHUB_WRITE_FAILED", "may already exist"),
+        }
+        for code, (expected, fragment) in cases.items():
+            env, _ = self.env(FakeDelivery(DeliveryError(code)))
+            with self.subTest(code=code), self.assertRaises(ToolError) as caught:
+                await env.call("create_pull_request", PullRequestArgs(title="t"))
+            self.assertEqual(caught.exception.code, expected)
+            self.assertIn(fragment, caught.exception.detail)
+
+    async def test_refusals_before_any_write_say_truthfully_that_nothing_was_published(self):
+        from agentforge.tools.sandbox_shell import NOT_PUBLISHED
+        for code in NOT_PUBLISHED:
+            env, delivery = self.env(FakeDelivery(DeliveryError(code)))
+            with self.subTest(code=code), self.assertRaises(ToolError) as caught:
+                await env.call("create_pull_request", PullRequestArgs(title="t"))
+            self.assertEqual(caught.exception.code, "GITHUB_UNAVAILABLE")
+            self.assertIn("Nothing was published", caught.exception.detail)
+            self.assertNotIn("may already exist", caught.exception.detail)
+
+    async def test_an_uncertain_write_is_never_described_as_not_having_happened(self):
+        env, _ = self.env(FakeDelivery(DeliveryError("delivery_outcome_unknown")))
         with self.assertRaises(ToolError) as caught:
             await env.call("create_pull_request", PullRequestArgs(title="t"))
-        self.assertEqual(caught.exception.code, "NOTHING_TO_COMMIT")
-        self.assertEqual(github.calls, [])
-
-    async def test_submodule_changes_are_refused_with_a_clear_reason(self):
-        env, _ = self.env(raw=":160000 160000 eee fff M\0vendor/sub\0")
-        with self.assertRaises(ToolError) as caught:
-            await env.call("create_pull_request", PullRequestArgs(title="t"))
-        self.assertEqual(caught.exception.code, "UNSUPPORTED_CHANGE")
-        self.assertIn("vendor/sub", caught.exception.detail)
-
-    async def test_a_workspace_that_is_not_a_checkout_cannot_be_compared(self):
-        reader = NS(snapshot=AsyncMock(return_value=NS(commit_sha=SHA, files={"README.md": b"hi"})))
-        env = Env(lambda command: (128, "", "") if "git diff --cached" in command else None, repository=REPO,
-                  pull_requests=FakeGitHub(), github=reader)
-        env.put(MARKER, f"owner/repo@{SHA}")
-        with self.assertRaises(ToolError) as caught:
-            await env.call("create_pull_request", PullRequestArgs(title="t"))
-        self.assertEqual(caught.exception.code, "NO_REPOSITORY")
-
-    async def test_a_github_failure_never_claims_an_uncertain_write_did_not_happen(self):
-        env, github = self.env(raw=":100644 100644 aaa bbb M\0src/a.py\0")
-        async def refuse(*args, **kwargs):
-            raise GitHubError("github_forbidden")
-        github.client = NS(request=refuse)
-        with self.assertRaises(ToolError) as caught:
-            await env.call("create_pull_request", PullRequestArgs(title="t"))
-        self.assertEqual(caught.exception.code, "GITHUB_WRITE_FAILED")
-        self.assertIn("may already exist", caught.exception.detail)
+        self.assertIn("do not retry blindly", caught.exception.detail)
         self.assertNotIn("Nothing was opened", caught.exception.detail)
-
-class PublicationGuardTests(IsolatedAsyncioTestCase):
-    async def publish(self, github, **kwargs):
-        return await open_draft_pull_request(github, 'owner/repo', base_sha=SHA,
-            changes=kwargs.pop('changes', {'note.txt':('100644',b'hello')}),
-            title='Add note',body='',branch='agentforge/task-test',**kwargs)
-
-    async def test_selected_nondefault_branch_is_preserved(self):
-        github=FakeGitHub()
-        result=await self.publish(github,base_ref='release/test')
-        self.assertEqual(result['base_branch'],'release/test')
-        self.assertIn('/branches/release%2Ftest',github.calls[0][1])
-        self.assertEqual(github.calls[-1][2]['base'],'release/test')
-
-    async def test_moved_branch_is_refused_before_writing(self):
-        github=FakeGitHub(); original=github.request
-        async def request(method,path,**kwargs):
-            if '/branches/' in path:
-                return {'commit':{'sha':'b'*40}}
-            return await original(method,path,**kwargs)
-        github.client=NS(request=request)
-        with self.assertRaisesRegex(GitHubError,'github_base_branch_changed'):
-            await self.publish(github)
-        self.assertFalse(any(method=='POST' for method,_,_ in github.calls))
-
-    async def test_existing_publication_branch_is_not_overwritten_or_duplicated(self):
-        github=FakeGitHub(); original=github.request
-        async def request(method,path,**kwargs):
-            if '/git/ref/heads/' in path:return {'object':{'sha':'c'*40}}
-            return await original(method,path,**kwargs)
-        github.client=NS(request=request)
-        with self.assertRaisesRegex(GitHubError,'github_publish_branch_exists'):
-            await self.publish(github)
-        self.assertFalse(any(method=='POST' for method,_,_ in github.calls))
-
-    async def test_sensitive_paths_and_symlinks_are_not_published(self):
-        for path,mode in [('.env','100644'),('../secret.txt','100644'),('.agentforge/repository','100644'),('link.txt','120000')]:
-            github=FakeGitHub()
-            with self.subTest(path=path),self.assertRaises(GitHubError):
-                await self.publish(github,changes={path:(mode,b'secret')})
-            self.assertEqual(github.calls,[])
-
-    async def test_old_workspace_base_is_used_even_when_current_turn_pin_is_newer(self):
-        env,github=PullRequestToolTests().env(raw=':100644 100644 aaa bbb M\0src/a.py\0')
-        env.repository={**REPO,'ref':'b'*40}
-        await env.call('create_pull_request',PullRequestArgs(title='Fix'))
-        self.assertTrue(any(path.endswith('/git/commits/'+SHA) for _,path,_ in github.calls))

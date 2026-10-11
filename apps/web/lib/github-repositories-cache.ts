@@ -18,19 +18,26 @@ export type RepositoryCache = {
   invalidate(): void;
 };
 
-export function createRepositoryCache(deps: { load: () => Promise<GitHubRepository[]>; now: () => number; ttlMs?: number }): RepositoryCache {
+/** `refresh` asks the server for a new read of GitHub rather than the copy it keeps for a few seconds. */
+export type RepositoryLoad = (options: { refresh: boolean }) => Promise<GitHubRepository[]>;
+
+export function createRepositoryCache(deps: { load: RepositoryLoad; now: () => number; ttlMs?: number }): RepositoryCache {
   const ttl = deps.ttlMs ?? REPOSITORIES_TTL_MS;
   let entry: { value: GitHubRepository[]; at: number } | null = null;
   let inflight: Promise<GitHubRepository[]> | null = null;
   // Bumped by invalidate and forced reads, so an older read finishing late never overwrites a newer answer.
   let generation = 0;
+  // After `invalidate` the person is asking for what GitHub says now (Retry, a fresh install), not a recent copy.
+  let refresh = false;
   const fresh = () => !!entry && deps.now() - entry.at < ttl;
   return {
     get({ force = false } = {}) {
       if (!force && fresh() && entry) return Promise.resolve(entry.value);
       if (!force && inflight) return inflight;
       const mine = ++generation;
-      const read = deps.load().then((value) => {
+      const bypass = force || refresh;
+      refresh = false;
+      const read = deps.load({ refresh: bypass }).then((value) => {
         if (mine === generation) entry = { value, at: deps.now() };
         return value;
       }).finally(() => { if (inflight === read) inflight = null; });
@@ -39,11 +46,11 @@ export function createRepositoryCache(deps: { load: () => Promise<GitHubReposito
     },
     peek: () => entry?.value ?? null,
     fresh,
-    invalidate() { generation++; entry = null; inflight = null; },
+    invalidate() { generation++; entry = null; inflight = null; refresh = true; },
   };
 }
 
 export const repositoryCache = createRepositoryCache({
-  load: () => api<{ repositories: GitHubRepository[] }>("/github/repositories").then((value) => value.repositories),
+  load: ({ refresh }) => api<{ repositories: GitHubRepository[] }>(`/github/repositories${refresh ? "?refresh=true" : ""}`).then((value) => value.repositories),
   now: () => Date.now(),
 });

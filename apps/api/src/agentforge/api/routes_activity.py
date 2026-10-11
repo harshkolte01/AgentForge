@@ -48,3 +48,15 @@ def tool_call_detail(task_id: UUID, tool_call_id: UUID, request: Request, respon
         raise HTTPException(404, "tool_detail_unavailable") from None
     except PermissionError:  # ScopeDenied: ownership no longer holds
         raise HTTPException(404, "task_not_found") from None
+
+
+@router.get("/{task_id}/tool-calls/{tool_call_id}/subagent")
+def subagent_detail(task_id: UUID, tool_call_id: UUID, request: Request, response: Response,
+                    user: User = Depends(current_user), repository: TaskRepository = Depends(task_repository)):
+    from agentforge.repositories.delegation import read_delegation
+    owned_task(task_id, user, repository)
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        return read_delegation(sessions(request), task_id, tool_call_id, user.id)
+    except ToolCallNotFound:
+        raise HTTPException(404, "subagent_not_found") from None

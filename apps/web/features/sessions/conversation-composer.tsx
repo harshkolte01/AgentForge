@@ -16,7 +16,7 @@ import { effectiveSelection } from "@/lib/plugins-api";
 import { RepositoryPicker } from "@/features/sessions/repository-picker";
 import { estimateDraftTokens } from "@/lib/context";
 import { useConversationDraft } from "@/features/sessions/use-conversation-draft";
-import { canType, isStopping, nextSubmission, runBlocksSending, sendBlock, type Submission } from "@/features/sessions/turn-flow";
+import { canType, composerAction, isStopping, nextSubmission, runBlocksSending, sendBlock, type Submission } from "@/features/sessions/turn-flow";
 import { errorAction, message } from "@/lib/task-api";
 import { routes } from "@/lib/routes";
 import { useEnterSends } from "@/lib/use-preferences";
@@ -35,10 +35,10 @@ function saveLastModel(model: ModelLabel | null) {
 const sendClass = "inline-flex size-11 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground outline-none transition-[background-color,color,transform] hover:bg-primary/85 focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background active:scale-95 disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground disabled:active:scale-100 motion-reduce:transition-none pointer-fine:sm:size-8";
 
 /**
- * `below` renders under the composer without taking part in its layout (the empty chat's setup list and example prompts), so
- * what it shows, and when, never moves the composer. It is handed a function that puts text in the message field.
+ * `below` renders under the composer without taking part in its layout (the empty chat's setup list), so what it shows,
+ * and when, never moves the composer.
  */
-export function ConversationComposer({ queue, repository, onRepositoryChange, plugins = null, onPluginsChange, config, disabled, repositoryLocked = false, running = false, runId = null, onStop, archived, onSend, menuSide = "top", sessionId = null, contextRevision = "new", onNewConversation, below, docked = false }: { queue?: ReactNode; sessionId?: string | null; docked?: boolean; contextRevision?: string; onNewConversation?: () => void; running?: boolean; runId?: string | null; onStop?: () => Promise<void>; menuSide?: "top" | "bottom"; repository: RepositorySelection | null; onRepositoryChange: (repository: RepositorySelection | null) => Promise<void>; plugins?: readonly string[] | null; onPluginsChange?: (ids: string[]) => Promise<void>; config: WorkspaceConfiguration | null; disabled: boolean; repositoryLocked?: boolean; archived: boolean; onSend: (input: TurnInput) => Promise<void>; below?: (fill: (text: string) => void) => ReactNode }) {
+export function ConversationComposer({ queue, repository, onRepositoryChange, plugins = null, onPluginsChange, config, disabled, repositoryLocked = false, running = false, runId = null, onStop, archived, onSend, menuSide = "top", sessionId = null, contextRevision = "new", onNewConversation, below, docked = false }: { queue?: ReactNode; sessionId?: string | null; docked?: boolean; contextRevision?: string; onNewConversation?: () => void; running?: boolean; runId?: string | null; onStop?: () => Promise<void>; menuSide?: "top" | "bottom"; repository: RepositorySelection | null; onRepositoryChange: (repository: RepositorySelection | null) => Promise<void>; plugins?: readonly string[] | null; onPluginsChange?: (ids: string[]) => Promise<void>; config: WorkspaceConfiguration | null; disabled: boolean; repositoryLocked?: boolean; archived: boolean; onSend: (input: TurnInput) => Promise<void>; below?: ReactNode }) {
   const { goal, setGoal, attachments, setAttachments, clearDraft, flushDraft } = useConversationDraft(sessionId);
   // A conversation's layout (settings in the bottom row, no header) from the moment the composer docks under a thread, even
   // while that first message is still creating the conversation: the layout must not change once the thread opens.
@@ -79,14 +79,19 @@ export function ConversationComposer({ queue, repository, onRepositoryChange, pl
   const textarea = useRef<HTMLTextAreaElement>(null);
   // The idempotency key of the message being sent: kept after a failure, so an unchanged retry is the same turn on the server.
   const submission = useRef<Submission | null>(null);
+  const actionPending = useRef(false);
   const stopping = isStopping(stoppedRun, runId, running);
   const configured = !!(config?.general_configured || config?.research_configured || config?.coding_configured);
   // Typing is only locked by what cannot take a message (loading, archived, a send in flight); a run in progress blocks sending, not typing.
   const locked = !canType({ disabled, archived, busy: busy || repositoryBusy });
-  const blocked = sendBlock({ disabled, archived, busy: busy || repositoryBusy || uploading, runBlocks: runBlocksSending(running, config?.conversation_queue_enabled), configured, goal: attachmentGoal(goal, attachments) });
+  const blocked = sendBlock({ disabled, archived, busy: busy || repositoryBusy || uploading || stopping, runBlocks: runBlocksSending(running, config?.conversation_queue_enabled), configured, goal: attachmentGoal(goal, attachments) });
+  const action = composerAction({ running, stopping, busy, blocked });
+  const stopAction = action === "stop" || action === "stopping";
+  const actionLabel = { send: "Send message", queue: "Queue message", stop: "Stop", stopping: "Stopping", sending: "Sending message" }[action];
   useEffect(() => {
     if (locked || !window.matchMedia("(pointer: fine)").matches || document.activeElement !== document.body) return;
-    textarea.current?.focus();
+    // Giving the field back after a send must not scroll: a focus scroll cancels the smooth scroll that is bringing the new turn to the top.
+    textarea.current?.focus({ preventScroll: true });
   }, [locked]);
   // Sized before paint, so a new line never shows one frame at the old height.
   useLayoutEffect(() => {
@@ -101,10 +106,12 @@ export function ConversationComposer({ queue, repository, onRepositoryChange, pl
     finally { setRepositoryBusy(false); }
   }
   async function stop() {
-    if (!onStop || stopping) return;
+    if (!running || !onStop || stopping || actionPending.current) return;
+    actionPending.current = true;
     setStoppedRun(runId ?? "current"); setError("");
     try { await onStop(); }
     catch (error) { setStoppedRun(null); setError(message(error)); }
+    finally { actionPending.current = false; }
   }
   async function attach(files: readonly File[]) {
     if (!files.length || locked) return;
@@ -143,7 +150,7 @@ export function ConversationComposer({ queue, repository, onRepositoryChange, pl
   }
   async function submit(event: FormEvent) {
     event.preventDefault(); setError("");
-    if (upload.current) return;
+    if (upload.current || stopping || actionPending.current) return;
     if (blocked !== null && blocked !== "empty") return;
     // A first message creates its conversation with the plugins on screen (the ones left on in Settings unless the person chose).
     const overview = pluginsStore.getSnapshot().overview;
@@ -151,19 +158,20 @@ export function ConversationComposer({ queue, repository, onRepositoryChange, pl
     const input: Omit<TurnInput, "idempotency_key"> = { routing: "auto", goal: attachmentGoal(goal, attachments), repository, ...(startingPlugins ? { plugins: startingPlugins } : {}), allowed_web_hosts: [], attachments };
     if (input.goal.length < 1) { setError("Enter a message to send."); return; }
     submission.current = nextSubmission(submission.current, input, () => crypto.randomUUID());
+    actionPending.current = true;
     setBusy(true);
     try { await onSend({ ...input, idempotency_key: submission.current.key }); await clearDraft().catch(() => {}); setGoal(""); setAttachments([]); submission.current = null; }
     catch (error) { const text = message(error); const action = errorAction(error); setError(text); setFix(action ? { ...action, error: text } : null); }
-    finally { setBusy(false); }
+    finally { actionPending.current = false; setBusy(false); }
   }
   const modelId = config ? config.configured_model ?? config.model ?? null : lastModel?.id ?? null;
   const modelProvider = config ? config.configured_provider ?? config.provider ?? null : lastModel?.provider ?? null;
   useEffect(() => { if (config) saveLastModel(modelId ? { id: modelId, provider: modelProvider } : null); }, [config, modelId, modelProvider]);
-  // An example prompt fills the field and puts the caret at its end, ready to edit or send.
+  // Picking a skill puts its slash command in the field and the caret at its end, ready to edit or send.
   const [filled, setFilled] = useState(0);
   useEffect(() => {
     const field = textarea.current;
-    if (filled && field) { field.focus(); field.setSelectionRange(field.value.length, field.value.length); }
+    if (filled && field) { field.focus({ preventScroll: true }); field.setSelectionRange(field.value.length, field.value.length); }
   }, [filled]);
   function fill(text: string) {
     if (locked) return;
@@ -215,8 +223,13 @@ export function ConversationComposer({ queue, repository, onRepositoryChange, pl
           {conversation ? <ContextStatusButton sessionId={sessionId} revision={contextRevision} live={running} draftTokens={estimateDraftTokens(goal, attachments)} side="top" onNewConversation={onNewConversation} /> : null}
           {conversation ? <ApprovalModePicker side={menuSide} compact /> : null}
           <ModelPicker models={modelId ? [{ id: modelId, provider: modelProvider }] : []} value={modelId} loading={!config} disabled={locked} side={menuSide} />
-          {running ? <button type="button" className={sendClass} aria-label={stopping ? "Stopping" : "Stop"} title={stopping ? "Stopping" : "Stop"} disabled={stopping || !onStop} onClick={() => void stop()} data-composer-stop><Square className="size-3.5 fill-current" aria-hidden="true" /></button> : null}
-          <button type="submit" className={sendClass} aria-label={busy ? "Sending message" : "Send message"} disabled={blocked !== null} data-composer-send>{busy ? <LoaderCircle className="size-4 motion-safe:animate-spin" aria-hidden="true" /> : <ArrowUp className="size-4" aria-hidden="true" />}</button>
+          <button type={stopAction ? "button" : "submit"} className={sendClass} aria-label={actionLabel} title={actionLabel}
+            disabled={stopAction ? stopping || !onStop : blocked !== null}
+            onClick={stopAction ? () => void stop() : undefined}
+            data-composer-action={action} data-composer-stop={stopAction || undefined} data-composer-send={!stopAction || undefined}>
+            {busy || stopping ? <LoaderCircle className="size-4 motion-safe:animate-spin" aria-hidden="true" />
+              : stopAction ? <Square className="size-3.5 fill-current" aria-hidden="true" /> : <ArrowUp className="size-4" aria-hidden="true" />}
+          </button>
         </div>
       </div>
     </div>
@@ -225,8 +238,8 @@ export function ConversationComposer({ queue, repository, onRepositoryChange, pl
     {/* Said once when the state changes, never per token. */}
     <span role="status" className="sr-only">{stopping ? "Stopping the reply." : ""}</span>
     {/* Always exactly one line, whatever it says, so the configuration arriving never moves the composer. */}
-    <p className="text-center text-[11px] leading-5 text-muted-foreground" role={config && !configured ? "status" : undefined}>{archived ? "Restore this conversation to send a message." : !config ? "Connecting to your workspace…" : !configured ? <>Connect a model before sending messages. <Link href={routes.settings("status")} className="rounded underline underline-offset-2 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60">Settings → Status</Link></> : blocked === "running" ? "A reply is in progress. Keep typing, or stop it to send now." : "Agents can make mistakes. Review important results."}</p>
+    <p className="text-center text-[11px] leading-5 text-muted-foreground" role={config && !configured ? "status" : undefined}>{archived ? "Restore this conversation to send a message." : !config ? "Connecting to your workspace…" : !configured ? <>Connect a model before sending messages. <Link href={routes.settings("agent")} className="rounded underline underline-offset-2 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60">Settings → Agent</Link></> : blocked === "running" ? "A reply is in progress. Keep typing, or stop it to send now." : "Agents can make mistakes. Review important results."}</p>
   </form>;
   // The same root either way, so docking the composer under a thread (where nothing shows below it) never remounts the form.
-  return <div className="relative w-full">{form}{below ? <div className="absolute inset-x-0 top-full pt-5">{below(fill)}</div> : null}</div>;
+  return <div className="relative w-full">{form}{below ? <div className="absolute inset-x-0 top-full pt-5">{below}</div> : null}</div>;
 }

@@ -112,3 +112,30 @@ export function anchorForElement(scroller: HTMLElement, element: Element): Ancho
   const row = element.closest(anchorMarker);
   return { chain: [{ el: element, offset: element.getBoundingClientRect().top - viewTop }], id: row?.getAttribute("data-scroll-anchor") ?? null, idOffset: row ? row.getBoundingClientRect().top - viewTop : 0 } satisfies Place;
 }
+
+/**
+ * The controller's host for whichever scroller is mounted. The controller outlives its scroller: the subtree holding it can be
+ * replaced (a conversation opening, a first message creating one) while the workspace stays, so the host follows `mount`, never
+ * an element found once. Until one is mounted every call is a harmless no-op.
+ */
+export function createScrollerBridge(): { host: ScrollHost; mount(element: HTMLElement): () => void } {
+  let current: { element: HTMLElement; host: ScrollHost } | null = null;
+  const host = () => current?.host ?? null;
+  return {
+    /** Makes `element` the scroller. The returned function lets go of it, unless another scroller has taken its place since. */
+    mount(element) {
+      const mounted = { element, host: createDomScrollHost(element) };
+      current = mounted;
+      return () => { if (current === mounted) current = null; };
+    },
+    host: {
+      metrics: () => host()?.metrics() ?? { top: 0, height: 0, viewport: 0, below: 0, composer: 0 },
+      scrollTo: (top, behavior) => host()?.scrollTo(top, behavior),
+      captureAnchor: () => host()?.captureAnchor() ?? null,
+      anchorShift: (anchor) => host()?.anchorShift(anchor) ?? null,
+      turnTop: (gap) => host()?.turnTop(gap) ?? null,
+      setRoom: (px) => host()?.setRoom(px),
+      reducedMotion: prefersReducedMotion,
+    },
+  };
+}

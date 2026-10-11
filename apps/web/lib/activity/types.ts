@@ -27,10 +27,23 @@ export type LiveDelta = {
   text: string;
   /** Replace the whole live text with `text` (offset is 0). An empty reset means "this text was cleared". */
   reset: boolean;
+  /** The call a `tool` or `output` frame is about (fixed for an epoch and revision); absent on prose. */
+  tool?: string | null;
+  call_id?: string | null;
+  detail?: string | null;
+};
+
+/** The tool call a live row shows: written by the model (`tool`) or running (`output`). */
+export type LiveTool = {
+  name: string;
+  /** The id the call's tool.started event carries (`CallEntry.callId`). */
+  callId: string;
+  /** What it is about (a path, a title), when the server said. */
+  detail: string | null;
 };
 
 /** How a presented tool is shown. `status` rows are compact lines; the others can be expanded for details. */
-export type PresentationKind = "status" | "execution" | "diff" | "artifact" | "hidden";
+export type PresentationKind = "status" | "execution" | "diff" | "artifact" | "subagent" | "hidden";
 
 /** The meaning of a row's colour. Always paired with text and an `icon`, so colour is never the only signal. */
 export type Tone = "success" | "danger" | "warning" | "neutral";
@@ -72,6 +85,16 @@ export type MilestoneEntry = {
   label: string;
 };
 
+/** What a subagent is doing and has done, read from its own events so its card can show it without opening the report. */
+export type SubagentProgress = {
+  /** Tool calls it has started. */
+  steps: number;
+  /** Its calls that have not finished, oldest first. The newest is what it is doing now. */
+  active: readonly { id: string; label: string; detail?: string }[];
+  /** The last note it wrote for the person, cut short. Null until it writes one. */
+  note: string | null;
+};
+
 /** One tool call: running, or settled with an outcome. */
 export type CallEntry = {
   kind: "call";
@@ -106,6 +129,12 @@ export type CallEntry = {
   artifactIds: readonly string[];
   /** The details panel can be requested (`fetchToolDetail`): an execution, diff or artifact call that has a persisted id and has settled. */
   detailable: boolean;
+  /** A delegation only: the run of the subagent it started. Its events carry this as their `agent_run_id`. */
+  childRunId?: string;
+  /** A delegation only: the subagent's progress so far. Absent for older runs that did not name their child. */
+  child?: SubagentProgress;
+  /** When the start event was recorded (milliseconds since the epoch), for a running clock. */
+  startedAt?: number;
   /** A legacy finish that could belong to several running calls; it got its own row instead of guessing. */
   ambiguous: boolean;
 };

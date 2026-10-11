@@ -150,21 +150,36 @@ class ConversationSandbox:
             return None
         return {**repository, "base_ref": ((grants.get("automatic") or {}).get("repository") or {}).get("ref")}
 
+    def owner(self, task_id: UUID) -> tuple[UUID | None, UUID | None]:
+        """(conversation, person) a task belongs to."""
+        with self.sessions() as db:
+            session_id = db.scalar(select(TurnExecution.session_id).where(TurnExecution.task_id == task_id))
+            user_id = db.scalar(select(Task.created_by).where(Task.id == task_id))
+        return session_id, user_id
 
-def parse_raw_diff(text: str) -> dict[str, tuple[str, str]]:
-    """`git diff --raw -z` output as {path: (status, new mode)}."""
-    parts = text.split("\0")
-    changes: dict[str, tuple[str, str]] = {}
-    for index in range(0, len(parts) - 1, 2):
-        meta, path = parts[index], parts[index + 1]
-        fields = meta.lstrip(":").split(" ")
-        if len(fields) >= 5 and path:
-            changes[path] = (fields[4][:1], fields[1])
-    return changes
+    def opened_workspace(self) -> Workspace | None:
+        """The workspace this run used, or None if it never touched the sandbox (nothing can have changed then)."""
+        return self._workspace
 
 
-def register_sandbox_shell(catalog, sandbox: ConversationSandbox, *, pull_requests=None) -> None:
-    """`pull_requests` is a GitHub client able to write (see integrations/github_app.py), or None: then no pull request tool exists."""
+# Refusals that happen before anything is written to GitHub: the model can say, truthfully, that nothing was published.
+NOT_PUBLISHED = {
+    "delivery_unavailable": "Publishing hit a server fault (the details are in the server log).",
+    "github_writes_disabled": "Publishing to GitHub is turned off on this server (ENABLE_GITHUB_WRITES).",
+    "github_not_connected": "GitHub is not connected for this account.",
+    "delivery_sandbox_not_configured": "No sandbox is configured on this server.",
+    "github_write_permission_required": "The person's GitHub connection or the App installation does not allow writing to this repository.",
+    "github_repository_not_authorized": "The person's GitHub connection no longer gives access to this repository.",
+    "github_contents_permission_required": "The GitHub App installation lacks the Contents permission.",
+    "github_reauthorization_required": "The person must reconnect GitHub.",
+    "github_access_denied": "GitHub refused access.",
+    "github_rate_limited": "GitHub is rate limiting requests right now.",
+    "delivery_operation_in_progress": "Another publish for this conversation is still being confirmed.",
+}
+
+
+def register_sandbox_shell(catalog, sandbox: ConversationSandbox, *, delivery=None) -> None:
+    """`delivery` is a DeliveryService able to write to GitHub (delivery/service.py), or None: then no pull request tool exists."""
     async def opened(execution) -> Workspace:
         try:
             return await sandbox.workspace(execution.task.task_id)
@@ -188,7 +203,7 @@ def register_sandbox_shell(catalog, sandbox: ConversationSandbox, *, pull_reques
     async def bash(args, execution):
         workspace = await opened(execution)
         try:
-            outcome = await workspace.run(args.command, timeout_sec=args.timeout_sec)
+            outcome = await workspace.run(args.command, timeout_sec=args.timeout_sec, on_output=execution.output)
         except SandboxUnavailable:
             # Only the sandbox could have been affected, and it can be inspected: the agent checks and decides, the run goes on.
             sandbox.forget()
@@ -280,62 +295,65 @@ def register_sandbox_shell(catalog, sandbox: ConversationSandbox, *, pull_reques
         return ok(path=args.path, listing=text, truncated=truncated)
 
     async def changed_files(args, execution) -> str:
-        """For the approval card: every file the pull request would publish, with line counts (read only; the index is restored)."""
+        """For the approval card: every file the publish would send, with line counts (read only: git works in a private index)."""
+        from agentforge.delivery.workspace import measure
         workspace = await opened(execution)
-        code, stat = await workspace.capture(f"git add -A && git diff --cached --stat=200 {BASE_TAG}; git reset -q", timeout_sec=60)
-        if code != 0 or not stat.strip():
-            return "Changed files: none found compared with the repository's pinned commit."
+        try:
+            measured = await measure(workspace, patches=False)
+        except SandboxUnavailable:
+            return "Changed files: could not be listed because the sandbox did not answer."
+        if not measured.files:
+            return "Changed files: none compared with what is already published (an existing pull request is only opened or kept)."
+        rows = [f"{f.path} | {f.status} +{f.additions} -{f.deletions}" + (f" [cannot be published: {f.blocked}]" if f.blocked else "")
+                for f in measured.files[:200]]
+        more = f"\n… and {len(measured.files) - 200} more" if len(measured.files) > 200 else ""
         # CI configuration runs with the repository's own secrets once the branch is pushed: worth a second look.
         warning = ("\n\nNote: this changes CI configuration (.github/), which runs with the repository's secrets."
-                   if ".github/" in stat else "")
-        return "Changed files:\n" + stat.rstrip() + warning
+                   if any(f.path.startswith(".github/") for f in measured.files) else "")
+        return "Changed files:\n" + "\n".join(rows) + more + warning
 
     async def create_pull_request(args, execution):
-        from agentforge.integrations.github_client import GitHubError
-        from agentforge.integrations.github_pr import open_draft_pull_request
+        from agentforge.delivery.service import DeliveryError
         repository = await asyncio.to_thread(sandbox.repository, execution.task.task_id)
         if not repository:
             raise ToolError("NO_REPOSITORY", "No repository is selected for this conversation, so there is nothing to open a pull request against.")
+        session_id, user_id = await asyncio.to_thread(sandbox.owner, execution.task.task_id)
+        if session_id is None or user_id is None:
+            raise ToolError("NO_REPOSITORY", "This task does not belong to a conversation, so there is nothing to publish.")
         workspace = await opened(execution)
         try:
-            # A later turn can pin a newer GitHub commit, while the conversation
-            # still holds its original checkout and edits. Publish against that
-            # checkout's source commit, never graft its diff onto the new pin.
-            try:
-                marker = (await workspace.read_text(MARKER)).strip()
-                source_repo, base_sha = marker.rsplit("@", 1)
-                from agentforge.integrations.github_app import SHA
-                if source_repo != repository["repo_id"] or not SHA.fullmatch(base_sha):
-                    raise ValueError()
-            except (ValueError, OSError):
-                raise ToolError("NO_REPOSITORY", "The workspace's original repository commit could not be verified. Keep the files and reconnect the workspace before publishing.") from None
-            code, raw = await workspace.capture(f"git add -A && git diff --cached --raw -z --no-renames {BASE_TAG}")
-            if code != 0:
-                raise ToolError("NO_REPOSITORY", "The workspace is not a checkout of the selected repository, so its changes cannot be compared.")
-            changed = parse_raw_diff(raw)
-            changes: dict[str, tuple[str, bytes] | None] = {}
-            for path, (status, mode) in changed.items():
-                if mode == "160000":
-                    raise ToolError("UNSUPPORTED_CHANGE", f"{path} is a git submodule; submodule changes cannot be opened as a pull request here.")
-                changes[path] = None if status == "D" else (mode, await workspace.read_bytes(path))
+            # The delivery commits on the conversation's own branch (created on first use) and opens the pull request once; a
+            # later call adds a commit to the same branch. The same operation key finds an earlier attempt instead of repeating it.
+            result = await delivery.publish_for_agent(session_id, user_id, workspace, key=execution.operation_key, title=args.title,
+                body=args.body, task_id=execution.task.task_id)
+        except DeliveryError as exc:
+            code = exc.code
+            if code == "nothing_to_publish":
+                raise ToolError("NOTHING_TO_COMMIT", "The workspace has no changes compared with what is already published.") from None
+            if code.startswith("delivery_blocked_paths:"):
+                raise ToolError("UNSUPPORTED_CHANGE", "These changed files cannot be published (secrets, symlinks, submodules or unsafe paths): "
+                                f"{code.split(':', 1)[1]}. Remove them from the workspace, then try again.") from None
+            if code.startswith("github_path_conflict:"):
+                raise ToolError("GITHUB_CONFLICT", "These files were changed on GitHub since the last push, so they were not overwritten: "
+                                f"{code.split(':', 1)[1]}. Tell the person; they can update the branch or ask you to redo the change.") from None
+            if code in NOT_PUBLISHED:
+                raise ToolError("GITHUB_UNAVAILABLE", NOT_PUBLISHED[code] + " Nothing was published. Tell the person; do not retry unchanged.") from None
+            if code in {"delivery_no_repository", "delivery_workspace_expired"}:
+                raise ToolError("NO_REPOSITORY", "The workspace is not a checkout of the selected repository, so its changes cannot be compared.") from None
+            if code in {"github_branch_moved", "github_branch_missing", "github_publish_branch_exists"}:
+                raise ToolError("GITHUB_BASE_CHANGED", "The conversation's branch changed or disappeared on GitHub. Your sandbox edits are preserved. "
+                                "Tell the person instead of retrying.") from None
+            raise ToolError("GITHUB_WRITE_FAILED", f"GitHub publication could not be confirmed ({code}). A branch or draft pull request may already "
+                            "exist; do not retry blindly.") from None
         except SandboxUnavailable as exc:
             raise ToolError(exc.code, "The sandbox did not answer.") from None
-        if not changes:
-            raise ToolError("NOTHING_TO_COMMIT", "The workspace has no changes compared with the repository's pinned commit.")
-        try:
-            result = await open_draft_pull_request(pull_requests, repository["repo_id"], base_sha=base_sha, changes=changes,
-                title=args.title, body=args.body, branch=f"agentforge/task-{execution.task.task_id.hex}", base_ref=repository.get("base_ref"))
-        except GitHubError as exc:
-            if str(exc) == "github_base_branch_changed":
-                raise ToolError("GITHUB_BASE_CHANGED", "The target branch moved since this workspace was loaded. Your sandbox edits are preserved. Reconcile them with the updated branch before publishing; do not blindly retry.") from None
-            raise ToolError("GITHUB_WRITE_FAILED", f"GitHub publication could not be confirmed ({exc}). A branch or draft pull request may already exist; do not retry blindly.") from None
-        return ok(pr_url=result["pr_url"], pr_number=result["pr_number"], branch=result["branch"], files=len(changes))
+        return ok(pr_url=result["pr_url"], pr_number=result["pr_number"], branch=result["branch"])
 
     # Whichever call comes first also starts the sandbox and loads the repository into it, so every deadline includes that
     # setup; each operation inside is bounded on its own.
     for name, handler, timeout in (("bash", bash, 3700), ("read", read, 60), ("write", write, 90), ("edit", edit, 90),
                                    ("grep", grep, 90), ("find", find, 90), ("ls", ls, 60)):
         catalog.register(name, handler, max_cost_usd=Decimal(0), timeout_sec=timeout + SETUP_SEC)
-    if pull_requests is not None:
+    if delivery is not None:
         catalog.register("create_pull_request", create_pull_request, max_cost_usd=Decimal(0), timeout_sec=300 + SETUP_SEC,
                          preview=changed_files)

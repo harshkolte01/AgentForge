@@ -1,5 +1,20 @@
 # Implementation status
 
+## GitHub delivery (branch, commits, pull request, checks, merge)
+
+Updated 11 October 2026. A conversation's repository work now has a durable GitHub side: the branch AgentForge publishes
+to, the commits it pushed and the pull request with its checks and reviews, driven from a Changes panel in the workspace and
+by the agent's `create_pull_request` (which now adds commits to the same branch and pull request instead of opening a second
+one). Pushes are fast-forward only and never overwrite files changed on GitHub; a lost answer is recovered, not repeated; merge,
+close and mark-ready are human-only. Design, API contract, safety rules and code map: [delivery](docs/delivery.md). Migration
+`0017_deliveries` (authored and checked on a disposable PostgreSQL: applies, reverses, no metadata drift).
+
+Verified: the full API suite (840 tests) including new tests against a stateful fake GitHub, real git inside a temporary
+checkout, the routes, and the whole workflow on a disposable PostgreSQL. **Not verified:** no live GitHub account, installation,
+App permission change or webhook delivery, and no live sandbox (E2B) was used; the running local database was not migrated
+and the API/worker were not restarted. The GitHub App needs *Checks: Read* and *Commit statuses: Read* (and optionally the
+pull-request/check webhook events) for CI status; see [GitHub App setup](docs/github-app.md).
+
 ## Conversation-first workspace update
 
 The compact conversation sidebar, automatic message routing, conversation-scoped

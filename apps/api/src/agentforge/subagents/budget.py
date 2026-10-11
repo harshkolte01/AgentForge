@@ -1,4 +1,4 @@
-"""Durable, task-serialized usage ledger. It records what a run spends; it does not stop a run.
+"""Durable, task-serialized usage ledger. Main runs record usage; delegated children enforce their slice.
 
 All mutations lock the parent task first. Unknown or interrupted operation usage
 is recorded at its upper bound. Settlement is idempotent; a crashed child keeps
@@ -24,6 +24,9 @@ from agentforge.repositories.runs import SessionFactory
 
 _QUANTUM = Decimal("0.0001")
 _TERMINAL = {"COMPLETED", "PARTIAL", "FAILED", "CANCELLED"}
+# Children one parent run may create over its lifetime. They may run at the same time, so this is also the most that can be
+# working at once.
+MAX_CHILDREN = 8
 
 
 class BudgetExceeded(ValueError):
@@ -79,6 +82,8 @@ class BudgetService:
             raise BudgetExceeded("task_not_active")
         if row.settled_at is not None:
             raise BudgetExceeded("reservation_settled")
+        if row.depth == 2 and datetime.now(timezone.utc) >= row.deadline:
+            raise BudgetExceeded("child_deadline_exceeded")
 
     @staticmethod
     def _consumed(session: Session, reservation_id: UUID) -> Decimal:
@@ -88,7 +93,7 @@ class BudgetService:
 
     def reserve(self, *, task_id: UUID, run_id: UUID, amount_usd: Decimal,
                 owner_id: UUID, project_id: UUID, max_steps: int, max_tool_calls: int,
-                max_wall_time_sec: int, depth: int = 1) -> Reservation:
+                max_wall_time_sec: int, depth: int = 1, parent_run_id: UUID | None = None) -> Reservation:
         # Reservation is a ceiling: rounding it up could exceed a requested cap.
         requested = Decimal(str(amount_usd))
         if not requested.is_finite() or requested <= 0:
@@ -96,7 +101,7 @@ class BudgetService:
         amount = requested.quantize(_QUANTUM, rounding=ROUND_FLOOR)
         if amount <= 0:
             raise BudgetExceeded("reservation_below_currency_precision")
-        if depth != 1:
+        if depth not in (1, 2) or (depth == 2) != (parent_run_id is not None):
             raise BudgetExceeded("nested_spawn_denied")
         now = datetime.now(timezone.utc)
         with self.session_factory() as session, session.begin():
@@ -108,11 +113,34 @@ class BudgetService:
             if task.cancel_requested_at is not None or task.status in _TERMINAL:
                 raise BudgetExceeded("task_not_active")
             deadline = now + timedelta(seconds=max_wall_time_sec)
-            # Sequential: an abandoned or concurrent run fails closed.
+            # Two top-level runs never overlap: an abandoned or concurrent one fails closed. Children of the running parent are
+            # siblings and may overlap each other, but nothing else may be active beside the parent and them.
             active = session.scalar(select(BudgetReservation.id).where(
                 BudgetReservation.task_id == task_id, BudgetReservation.settled_at.is_(None)).limit(1))
-            if active is not None:
-                raise BudgetExceeded("concurrent_spawn_denied")
+            if parent_run_id is None:
+                if active is not None:
+                    raise BudgetExceeded("concurrent_spawn_denied")
+            else:
+                parent = session.get(AgentRun, parent_run_id)
+                if parent is None or parent.task_id != task_id or parent.status != "RUNNING" or parent.parent_run_id is not None:
+                    raise BudgetExceeded("parent_run_not_active")
+                parent_reservation = session.get(BudgetReservation, parent.budget_reservation_id)
+                if parent_reservation is None or parent_reservation.settled_at is not None:
+                    raise BudgetExceeded("parent_run_not_active")
+                others = session.scalar(select(BudgetReservation.id).where(
+                    BudgetReservation.task_id == task_id, BudgetReservation.settled_at.is_(None),
+                    BudgetReservation.id != parent.budget_reservation_id, BudgetReservation.depth != 2).limit(1))
+                if others is not None:
+                    raise BudgetExceeded("concurrent_spawn_denied")
+                # A child's run row is written after its reservation, in another transaction. Siblings starting together are
+                # counted by their reservation until their run exists, so a burst of calls cannot slip past the limit.
+                started = session.scalar(select(func.count()).select_from(AgentRun).where(AgentRun.parent_run_id == parent_run_id))
+                starting = session.scalar(select(func.count()).select_from(BudgetReservation).outerjoin(
+                    AgentRun, AgentRun.id == BudgetReservation.run_id).where(
+                    BudgetReservation.task_id == task_id, BudgetReservation.depth == 2,
+                    BudgetReservation.settled_at.is_(None), AgentRun.id.is_(None)))
+                if started + starting >= MAX_CHILDREN:
+                    raise BudgetExceeded("delegation_limit")
             row = BudgetReservation(id=uuid4(), task_id=task_id, run_id=run_id,
                 amount_usd=amount, max_steps=max_steps, max_tool_calls=max_tool_calls,
                 depth=depth, deadline=deadline)
@@ -140,6 +168,13 @@ class BudgetService:
             if session.scalar(select(BudgetOperation.id).where(BudgetOperation.reservation_id == row.id,
                     BudgetOperation.operation_key == operation_key)) is not None:
                 raise BudgetExceeded("operation_already_authorized")
+            if row.depth == 2:
+                if self._consumed(session, row.id) + cost > row.amount_usd:
+                    raise BudgetExceeded("child_cost_exceeded")
+                count = session.scalar(select(func.count()).select_from(BudgetOperation).where(
+                    BudgetOperation.reservation_id == row.id, BudgetOperation.kind == kind))
+                if count >= (row.max_steps if kind == "model" else row.max_tool_calls):
+                    raise BudgetExceeded("child_operation_limit")
             session.add(BudgetOperation(reservation_id=row.id, operation_key=operation_key,
                                         kind=kind, max_cost_usd=cost))
 
