@@ -34,6 +34,7 @@ high enough never to refuse anything.
 | Sandbox (needs `E2B_API_KEY`) | `bash`, `read`, `write`, `edit`, `grep`, `find`, `ls` |
 | Pull request (needs GitHub App + `ENABLE_GITHUB_WRITES`) | `create_pull_request` |
 | Files and history | `create_task_artifact`, `read_task_artifact`, `search_conversation_history`, `read_context_resource` |
+| Skills (when the person has any switched on) | `use_skill`: loads a playbook by name; see [skills](skills.md) |
 | Plugins (per conversation) | `slug__tool`, from the MCP servers the person connected; see [plugins](plugins.md) |
 
 The sandbox (`integrations/e2b_sandbox.py`, `tools/sandbox_shell.py`) is created on first use and kept for the

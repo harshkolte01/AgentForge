@@ -243,3 +243,4 @@ from .coding import CodingSession, CodingSnapshot, CodingOperation, CodingEviden
 from .identity import AuthSession, OAuthTransaction, GitHubCredential, GitHubInstallation, GitHubRepositoryGrant, GitHubWebhookDelivery, Approval, ExternalOperation  # noqa: E402,F401
 from .sessions import Conversation, ConversationMessage, SessionTurn  # noqa: E402,F401
 from .plugins import PluginConnection  # noqa: E402,F401
+from .skills import SkillSetting, UserSkill  # noqa: E402,F401

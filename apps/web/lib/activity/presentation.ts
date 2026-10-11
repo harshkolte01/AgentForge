@@ -49,6 +49,7 @@ const registry: Record<string, ToolSpec> = {
   find: { presentation: "status", labels: ["Finding files", "Found files", "Couldn't find files"], base: "find files" },
   ls: { presentation: "status", labels: ["Listing files", "Listed files", "Couldn't list files"], base: "list files" },
   create_pull_request: { presentation: "status", labels: ["Opening a pull request", "Opened a pull request", "Couldn't open the pull request"], base: "open the pull request" },
+  use_skill: { presentation: "status", labels: ["Loading a skill", "Loaded a skill", "Couldn't load the skill"], base: "load the skill" },
   create_task_artifact: { presentation: "artifact", labels: ["Preparing a download", "Created a download", "Couldn't create the download"], base: "create the download" },
   read_task_artifact: { presentation: "artifact", labels: ["Proofreading the document", "Proofread the document", "Couldn't proofread the document"], base: "proofread the document", plural: (count) => `Proofread the document ${count} times` },
 };

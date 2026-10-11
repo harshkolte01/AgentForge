@@ -163,6 +163,15 @@ class ConversationSearchArgs(ToolArguments):
     limit: int = Field(default=10, ge=1, le=20, description="Maximum messages and resource references to return (1-20).")
 
 
+class UseSkillArgs(ToolArguments):
+    name: str = Field(min_length=1, max_length=64, description="The skill's exact name as listed in the system prompt, for example code-review, without a leading slash.")
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _bare_name(cls, value):
+        return value.strip().lstrip("/").strip() if isinstance(value, str) else value
+
+
 class ContextResourceArgs(PageArgs):
     resource_id: ResourceId = Field(description="Opaque resource_id from history, search, or a compacted tool result.")
 
@@ -176,7 +185,7 @@ ARGUMENT_MODELS: dict[str, type[ToolArguments]] = {
     "get_issue": IssueArgs, "list_repo_files": RepoFilesArgs,
     "bash": BashArgs, "read": FileReadArgs, "write": FileWriteArgs, "edit": FileEditArgs,
     "grep": GrepArgs, "find": FindArgs, "ls": LsArgs, "create_pull_request": PullRequestArgs,
-    "get_pr_status": PRStatusArgs, "browser_public_page": BrowserArgs,
+    "get_pr_status": PRStatusArgs, "browser_public_page": BrowserArgs, "use_skill": UseSkillArgs,
 }
 
 
@@ -323,11 +332,16 @@ class ContextResourceRequest(_Request):
     args: ContextResourceArgs
 
 
+class UseSkillRequest(_Request):
+    name: Literal["use_skill"]
+    args: UseSkillArgs
+
+
 ToolRequest = Annotated[
     WebSearchRequest | FetchRequest | RepoFileRequest | RepoSearchRequest |
     IssueRequest | RepoFilesRequest | BashRequest | ReadRequest | WriteRequest | EditRequest |
     GrepRequest | FindRequest | LsRequest | PullRequestRequest |
     PRStatusRequest | BrowserRequest | TaskInputRequest | ResearchSourceRequest |
-    TaskArtifactReadRequest | TaskArtifactCreateRequest | ConversationSearchRequest | ContextResourceRequest,
+    TaskArtifactReadRequest | TaskArtifactCreateRequest | ConversationSearchRequest | ContextResourceRequest | UseSkillRequest,
     Field(discriminator="name"),
 ]

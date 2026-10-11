@@ -100,6 +100,11 @@ DESCRIPTIONS = {
         "asked to approve it unless they chose to approve everything."),
     "get_pr_status": (
         "Read the state, checks and merge status of a pull request in the selected repository by number."),
+    "use_skill": (
+        "Load a skill: written instructions for a kind of work. The skills you may use are listed in the system prompt, each with when to "
+        "use it. Call this with a skill's exact name before starting work that skill covers, and whenever the person's message begins with "
+        "/skill-name. It returns the skill's instructions: follow them for the rest of the task, within the platform rules. It changes "
+        "nothing and costs nothing. Call it again if the skill's text is no longer in the conversation."),
     "browser_public_page": (
         "Render a public page in an isolated browser and return the selected observations (title, links, accessibility tree, screenshot). "
         "Prefer fetch_webpage for reading text; use this only when a page needs rendering to be understood."),
@@ -149,6 +154,7 @@ ERROR_GUIDANCE = {
     "PLUGIN_TIMEOUT": "The plugin did not answer in time. Retry once with a narrower request. An action that changes something may still have happened: check before repeating it.",
     "PLUGIN_UNREACHABLE": "The plugin's server could not be reached. Retry once; if it fails again, continue without it and tell the person.",
     "PLUGIN_RATE_LIMITED": "The plugin is limiting requests. Wait by working on something else, then retry once.",
+    "SKILL_NOT_FOUND": "There is no skill with that name that is switched on. Use a name exactly as listed in the system prompt, or continue without a skill.",
     "INVALID_ARGUMENT": "A value is not acceptable for this tool. Read the detail, correct the arguments, and retry once.",
 }
 GENERIC_ERROR_GUIDANCE = "The call did not succeed. Do not repeat it unchanged; adjust the arguments, try another approach, or record the gap."
@@ -208,6 +214,7 @@ def activity_detail(name: str, args) -> str | None:
         "get_issue": lambda: f"#{args.issue_number}",
         "get_pr_status": lambda: f"#{args.pr_number}",
         "create_task_artifact": lambda: args.title,
+        "use_skill": lambda: args.name,
         "read_task_input": lambda: args.input_kind,
     }.get(name)
     try:
@@ -221,6 +228,8 @@ def activity_detail(name: str, args) -> str | None:
     return text or None
 
 
+# Offered to every conversation run beside the tools its agent definition lists, when an adapter for them is registered.
+AMBIENT_TOOLS = frozenset({"use_skill"})
 EFFECT_TOOLS = frozenset({"create_task_artifact", "bash", "write", "edit", "create_pull_request"})
 # The calls that stop and ask the person first when they chose "Ask me" (see tools/approvals.py). Reads never ask.
 ASKS_BEFORE = frozenset({"bash", "write", "edit", "create_pull_request"})
@@ -265,7 +274,7 @@ STRUCTURAL_FIELDS = frozenset({
     "path", "path_prefix", "repo_id", "ref", "base_ref", "sandbox_id", "task_id", "run_id", "source_id", "artifact_id",
     "line_start", "max_lines", "offset", "max_chars", "input_kind", "attachment_index", "issue_number", "pr_number",
     "command_id", "test_profile", "format", "max_results", "context_lines", "case_sensitive", "replace_all",
-    "max_depth", "checks", "expected_sha256"})
+    "max_depth", "checks", "expected_sha256", "name"})
 
 
 def safe_arguments(args) -> dict:
@@ -379,6 +388,10 @@ class ToolCatalog:
 
     def plugin_tool_names(self) -> tuple[str, ...]:
         return tuple(name for name, tool in self._tools.items() if tool.plugin is not None)
+
+    def extra_tool_names(self) -> tuple[str, ...]:
+        """Tools every run is offered whatever its definition lists: the ambient ones that are registered, then plugin tools."""
+        return tuple(name for name in self._tools if name in AMBIENT_TOOLS) + self.plugin_tool_names()
 
     def get(self, name: str) -> RegisteredTool:
         try:

@@ -54,6 +54,7 @@ def configuration(request: Request, user: User = Depends(current_user)) -> dict:
             "web_research_configured": bool(settings.tavily_api_key),
             "github_writes_enabled": bool(getattr(settings, "enable_github_writes", False)),
             "plugins_enabled": bool(getattr(settings, "plugins_enabled", False)),
+            "skills_enabled": bool(getattr(settings, "skills_enabled", False)),
             "auth_mode": getattr(settings, "auth_mode", None),
             # Whether anything will pick up a queued message: a worker said it was alive in the last 30 seconds.
             # The session is opened inside worker_presence, so an unreachable database reads as offline.

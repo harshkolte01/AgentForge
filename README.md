@@ -24,7 +24,8 @@ switch. The sidebar focuses on conversations. Account, model/limits, GitHub
 connections, plugins and custom-agent management live in Settings. See
 [conversation behavior and migration](docs/conversation-ux.md) for the details.
 Plugins (remote MCP servers the person connects, chosen per conversation from the composer) are described in
-[plugins](docs/plugins.md).
+[plugins](docs/plugins.md). Skills (built-in and the person's own playbooks, loaded when a request fits or
+asked for with `/name`) are described in [skills](docs/skills.md).
 Durable queued follow-ups, source-linked conversation summaries, original-input
 retrieval and deployment requirements are documented in
 [conversation reliability](docs/conversation-reliability.md).

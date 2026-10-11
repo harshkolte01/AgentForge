@@ -107,6 +107,9 @@ class Settings(BaseSettings):
     plugin_allow_private_network: bool = False
     plugin_call_timeout_sec: float = Field(default=60, gt=0, le=300)
     plugin_max_connections: int = Field(default=20, ge=1, le=100)
+    # Skills: written playbooks the agent loads when a request fits (built in, and the person's own, kept in Settings).
+    skills_enabled: bool = True
+    skill_max_per_user: int = Field(default=50, ge=1, le=200)
     github_api_version: str = Field(default="2026-03-10", pattern=r"^\d{4}-\d{2}-\d{2}$")
     public_signup_enabled: bool = True
     # GitHub logins allowed to sign in (case-insensitive); they get an account on first sign-in even with public

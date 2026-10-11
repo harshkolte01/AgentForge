@@ -36,6 +36,8 @@ const original = {
   create_pull_request: ["Opening a pull request", "Opened a pull request", "Couldn't open the pull request"],
   create_task_artifact: ["Preparing a download", "Created a download", "Couldn't create the download"],
   read_task_artifact: ["Proofreading the document", "Proofread the document", "Couldn't proofread the document"],
+  // Added with skills: the agent loads a skill's instructions before following them.
+  use_skill: ["Loading a skill", "Loaded a skill", "Couldn't load the skill"],
 };
 const label = (facts) => describeCall(facts)?.label;
 
@@ -137,7 +139,7 @@ test("presentation kinds follow the plan's table", () => {
     search_repo: "status", list_repo_files: "status", get_issue: "status", get_pr_status: "status", read_sandbox_file: "status",
     write_sandbox_file: "status", edit_sandbox_file: "status", git_diff: "diff", run_tests: "execution", run_sandbox_command: "execution",
     get_test_results: "execution", bash: "execution", read: "status", write: "status", edit: "status", grep: "status", find: "status",
-    ls: "status", create_pull_request: "status", create_task_artifact: "artifact", read_task_artifact: "artifact",
+    ls: "status", create_pull_request: "status", create_task_artifact: "artifact", read_task_artifact: "artifact", use_skill: "status",
   });
   for (const tool of ["read_task_input", "submit_result", "unknown", "Weird Name", "", "../x"]) assert.equal(toolPresentation(tool), "hidden", tool);
 });

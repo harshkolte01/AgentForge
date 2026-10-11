@@ -18,6 +18,8 @@ ToolName = Literal[
     # The coding tools, working in the conversation's sandbox. (The fixed-profile sandbox tools above are retired but
     # stay valid names, so definitions saved earlier keep loading.)
     "bash", "read", "write", "edit", "grep", "find", "ls", "create_pull_request",
+    # Offered to every conversation run whatever its definition lists (see tools/catalog.py AMBIENT_TOOLS); valid here so a definition may name it.
+    "use_skill",
 ]
 # Every agent now answers in plain text. The older typed ids stay valid so stored definitions keep loading; they have no effect.
 OutputSchemaId = Literal["text_v1", "research_result_v1", "execution_result_v1", "review_result_v1", "assessment_result_v1", "general_result_v1", "routing_result_v1"]
@@ -74,6 +76,7 @@ TOOL_CAPABILITIES: dict[str, tuple[str, ...]] = {
     "bash": ("sandbox_exec",), "read": ("sandbox_read",), "grep": ("sandbox_read",), "find": ("sandbox_read",),
     "ls": ("sandbox_read",), "write": ("sandbox_write",), "edit": ("sandbox_write",),
     "create_pull_request": ("sandbox_read", "github_read"),
+    "use_skill": (),
 }
 
 

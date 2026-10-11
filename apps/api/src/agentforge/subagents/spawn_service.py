@@ -66,10 +66,13 @@ class SpawnService:
                  calls: ToolCallRepository, catalog: ToolCatalog, models: ModelRouter,
                  resources: ResourceResolver | None = None,
                  runtime: ChildRuntime | None = None,
-                 lifecycle: LifecycleSink | None = None, approvals=None, sessions=None) -> None:
+                 lifecycle: LifecycleSink | None = None, approvals=None, sessions=None,
+                 skills: tuple[tuple[str, str], ...] = ()) -> None:
         self.registry, self.authorizer, self.budgets = registry, authorizer, budgets
         # Reads the facts of each turn for the prompt's Environment block (subagents/environment.py); None: none shown.
         self.sessions = sessions
+        # (name, description) of the skills named in the prompt; the tool that loads them is in the catalog (skills/runtime.py).
+        self.skills = skills
         # Asks the person before a tool that changes something runs (tools/approvals.py); None: nothing asks.
         self.approvals = approvals
         self.runs, self.calls, self.catalog, self.models = runs, calls, catalog, models
@@ -95,9 +98,9 @@ class SpawnService:
         scope = intersect_and_validate(resolved.definition, ctx, request.context_refs)
         # The tools of the plugins this conversation uses were registered for this run alone, from servers its owner connected
         # and chose; they are offered to whichever agent runs, beside the tools its definition allows.
-        plugin_tools = self.catalog.plugin_tool_names()
-        if plugin_tools:
-            scope = replace(scope, allowed_tools=(*scope.allowed_tools, *plugin_tools))
+        extra = tuple(name for name in self.catalog.extra_tool_names() if name not in scope.allowed_tools)
+        if extra:
+            scope = replace(scope, allowed_tools=(*scope.allowed_tools, *extra))
         available = self.catalog.available(scope.allowed_tools)
         if not available:
             return SubagentResult(status="FAIL", error_code="TOOL_UNAVAILABLE", summary="No tools are available for this agent, so it cannot run.")
@@ -133,7 +136,7 @@ class SpawnService:
                 except Exception:
                     log.warning("turn environment unavailable: task_id=%s", ctx.task_id, exc_info=True)
             messages = compile_chat(resolved.definition, scope, context, names,
-                                    conversation or [{"role": "user", "content": request.prompt}], environment)
+                                    conversation or [{"role": "user", "content": request.prompt}], environment, self.skills)
             self.runs.record_start(
                 run_id=run_id, task_id=ctx.task_id, owner_id=ctx.user_id, project_id=ctx.project_id,
                 definition_version_id=resolved.version_id, definition_sha256=resolved.sha256,

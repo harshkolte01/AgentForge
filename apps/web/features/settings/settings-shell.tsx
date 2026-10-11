@@ -21,6 +21,7 @@ function SectionPlaceholder() {
 }
 const GitHubConnection = dynamic(() => import("@/features/github/github-connection").then((module) => module.GitHubConnection), { loading: SectionPlaceholder });
 const PluginSettings = dynamic(() => import("@/features/plugins/plugin-settings").then((module) => module.PluginSettings), { loading: SectionPlaceholder });
+const SkillsSettings = dynamic(() => import("@/features/skills/skills-settings").then((module) => module.SkillsSettings), { loading: SectionPlaceholder });
 const AgentManager = dynamic(() => import("@/features/agents/agent-manager").then((module) => module.AgentManager), { loading: SectionPlaceholder });
 
 const noSubscription = () => () => {};
@@ -49,6 +50,7 @@ export function SettingsWorkspace({ section, initialCreate = false, agentId }: {
             : section === "status" ? <StatusSettings />
               : section === "github" ? <div className={sectionClass}><GitHubConnection embedded /></div>
                 : section === "plugins" ? <PluginSettings />
+                  : section === "skills" ? <SkillsSettings />
                 : section === "conversations" ? <ConversationSettings />
                   : section === "appearance" ? <AppearanceSettings />
                     : <AgentManager key={`${agentId ?? "list"}-${initialCreate ? "new" : "view"}`} initialCreate={initialCreate} initialAgentId={agentId} embedded />}</div>

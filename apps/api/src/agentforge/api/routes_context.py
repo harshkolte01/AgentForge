@@ -31,6 +31,10 @@ async def context_status(request: Request, session_id: UUID | None = None, user:
         from agentforge.plugins.runtime import estimated_tokens
         from agentforge.plugins.service import connections_for_conversation
         extra = estimated_tokens(await run_in_threadpool(connections_for_conversation, sessions(request), user.id, session_id))
+    if getattr(settings, "skills_enabled", False):
+        from agentforge.skills.runtime import estimated_tokens as skill_tokens
+        from agentforge.skills.service import offered
+        extra += skill_tokens(await run_in_threadpool(offered, sessions(request), user.id))
     return build_status(model=settings.llm_model or None, provider=getattr(settings, "llm_provider", "openai"),
         window=settings.llm_context_window_tokens, max_output=settings.llm_max_output_tokens,
         usage=usage, history_budget_chars=budget, extra_baseline=extra)

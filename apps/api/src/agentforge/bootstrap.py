@@ -78,6 +78,17 @@ def compose_runtime(settings, sessions, telemetry, store) -> Runtime:
     for tool in base_catalog.available(DESCRIPTIONS):
         catalog.register(tool.name, observed_tool(tool, telemetry, store),
             max_cost_usd=tool.max_cost_usd, timeout_sec=tool.timeout_sec)
+    skills = ()
+    if conversation_task and settings.skills_enabled:
+        # The skills this person has switched on (see skills/service.py). Their absence must not stop a conversation.
+        try:
+            from agentforge.skills.runtime import register_skills
+            from types import SimpleNamespace
+            skills = register_skills(catalog, sessions, task.created_by,
+                wrap=lambda name, handler: observed_tool(SimpleNamespace(name=name, handler=handler), telemetry, store))
+        except Exception:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning("skills unavailable for this run: task_id=%s", store.lease.task_id, exc_info=True)
     plugins = None
     if conversation_task and settings.plugins_enabled:
         # The plugins this conversation may use, as the person set them (see plugins/service.py). A failure here must not
@@ -98,7 +109,7 @@ def compose_runtime(settings, sessions, telemetry, store) -> Runtime:
         budgets=BudgetService(sessions), runs=AgentRunRepository(sessions),
         calls=ToolCallRepository(sessions), catalog=catalog,
         models=ModelRouter(ObservedModel(models.model, telemetry, store)), resources=resources,
-        lifecycle=store.progress, approvals=ToolApprovals(sessions, store.progress), sessions=sessions)
+        lifecycle=store.progress, approvals=ToolApprovals(sessions, store.progress), sessions=sessions, skills=skills)
     service.spawn_subagent = telemetry.decorate(service.spawn_subagent,
         kind="AGENT", name="spawn_subagent")
     return Runtime(service, models, repository_github, plugins)

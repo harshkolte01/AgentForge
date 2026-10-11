@@ -9,6 +9,8 @@ import { iconButtonClass } from "@/features/sessions/composer-styles";
 import { ContextStatusButton } from "@/features/sessions/context-status";
 import { ModelPicker } from "@/features/sessions/model-picker";
 import { PluginPicker } from "@/features/plugins/plugin-picker";
+import { SkillPicker } from "@/features/skills/skill-picker";
+import { withSkill } from "@/lib/skills-api";
 import { pluginsStore } from "@/features/plugins/use-plugins";
 import { effectiveSelection } from "@/lib/plugins-api";
 import { RepositoryPicker } from "@/features/sessions/repository-picker";
@@ -206,6 +208,7 @@ export function ConversationComposer({ queue, repository, onRepositoryChange, pl
         <div className="flex min-w-0 flex-1 items-center gap-0.5 sm:gap-1">
           <button type="button" className={iconButtonClass} aria-label="Attach files" title="Attach PDFs, images, or text files" disabled={locked || uploading} onClick={() => fileInput.current?.click()}><Paperclip className="size-4" aria-hidden="true" /></button>
           <input ref={fileInput} type="file" multiple accept={ATTACHMENT_ACCEPT} disabled={locked || uploading} className="hidden" tabIndex={-1} onChange={(event) => void attach(Array.from(event.target.files ?? []))} />
+          <SkillPicker disabled={locked} side={menuSide} onPick={(skill) => fill(withSkill(goal, skill))} />
           {onPluginsChange ? <PluginPicker selected={plugins} disabled={locked || archived} onChange={onPluginsChange} side={menuSide} /> : null}
         </div>
         <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
