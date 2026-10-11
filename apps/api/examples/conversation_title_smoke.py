@@ -276,7 +276,7 @@ async def run(settings):
             seen["title_when_agent_started"] = title_of(chat)
             store.finish("COMPLETED", "Here is the answer.")
 
-        with patch.object(runner, "compose_runtime", lambda *_: NS(service=NS(), models=NS(choose=lambda _: model), close=close)), \
+        with patch.object(runner, "compose_runtime", lambda *_: NS(service=NS(), models=NS(choose=lambda _: model), close=close, after_turn=None)), \
                 patch.object(runner, "run_agent_turn", agent):
             await runner.execute(worker_settings, factory, telemetry, jobs, lease)
         with factory() as db:

@@ -74,3 +74,33 @@ test("an older read finishing after a newer one never overwrites it", async () =
   await old;
   assert.deepEqual(cache.peek(), [repo(2)]);
 });
+
+test("only a forced read, or the first read after an invalidate, asks the server to bypass its own copy", async () => {
+  const options = [];
+  const cache = createRepositoryCache({
+    now: () => 0,
+    load: (value) => { options.push(value); return Promise.resolve([repo(1)]); },
+  });
+  await cache.get();
+  await cache.get({ force: true });
+  cache.invalidate();
+  await cache.get();
+  cache.invalidate();
+  await cache.get({ force: true });
+  await cache.get({ force: true });
+  assert.deepEqual(options, [{ refresh: false }, { refresh: true }, { refresh: true }, { refresh: true }, { refresh: true }]);
+  cache.invalidate();
+  await cache.get();
+  await cache.get({ force: true });
+  assert.deepEqual(options.slice(5), [{ refresh: true }, { refresh: true }]);
+});
+
+test("a read after a plain stale list does not ask the server to bypass its copy", async () => {
+  const clock = { now: 0 };
+  const options = [];
+  const cache = createRepositoryCache({ now: () => clock.now, ttlMs: 1000, load: (value) => { options.push(value); return Promise.resolve([]); } });
+  await cache.get();
+  clock.now = 2000;
+  await cache.get();
+  assert.deepEqual(options, [{ refresh: false }, { refresh: false }]);
+});

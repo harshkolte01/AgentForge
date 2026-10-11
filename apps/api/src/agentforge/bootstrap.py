@@ -1,4 +1,5 @@
 """Trusted runtime composition; construction alone performs no provider requests."""
+import asyncio
 from dataclasses import dataclass
 from agentforge.llm.router import ModelRouter
 from agentforge.repositories.runs import AgentRunRepository, ToolCallRepository
@@ -32,6 +33,8 @@ class Runtime:
     models: ModelRouter
     repository_github: object | None = None
     plugins: object | None = None
+    # Awaited once the turn is over (best effort, bounded by the caller): notes what is waiting to be pushed.
+    after_turn: object | None = None
 
     async def close(self):
         if self.plugins is not None:
@@ -45,7 +48,7 @@ def compose_runtime(settings, sessions, telemetry, store) -> Runtime:
     """Fresh task binding; registered handlers + actual configured provider only."""
     models = ModelRouter.from_settings(settings)
     base_catalog = ToolCatalog()
-    repository_github = github = None
+    repository_github = github = after_turn = None
     resources = register_research(base_catalog, sessions, settings)
     from agentforge.tools.general import register_general
     register_general(base_catalog, sessions, settings)
@@ -65,8 +68,23 @@ def compose_runtime(settings, sessions, telemetry, store) -> Runtime:
         from agentforge.integrations.github_app import AuthorizedGitHubClient
         can_open_pull_requests = settings.enable_github_writes and isinstance(github, AuthorizedGitHubClient)
         from agentforge.integrations.attachment_storage import AttachmentStorage
-        register_sandbox_shell(base_catalog, ConversationSandbox(sessions, provider, github, attachment_storage=AttachmentStorage(settings.research_storage_path)),
-            pull_requests=github if can_open_pull_requests else None)
+        conversation_sandbox = ConversationSandbox(sessions, provider, github, attachment_storage=AttachmentStorage(settings.research_storage_path))
+        from agentforge.delivery.service import DeliveryService
+
+        async def github_client(user_id):
+            return github
+        delivery = DeliveryService(sessions, settings, provider=provider, github=github_client) if isinstance(github, AuthorizedGitHubClient) else None
+        register_sandbox_shell(base_catalog, conversation_sandbox, delivery=delivery if can_open_pull_requests else None)
+        if delivery is not None:
+            async def record_changes():
+                """The turn is over: remember what is waiting to be pushed, so the Changes card and chip can show it."""
+                workspace = conversation_sandbox.opened_workspace()
+                if workspace is None:
+                    return
+                session_id, user_id = await asyncio.to_thread(conversation_sandbox.owner, store.lease.task_id)
+                if session_id and user_id:
+                    await delivery.record_summary(session_id, user_id, workspace)
+            after_turn = record_changes
     from agentforge.tools.conversation import register_conversation
     from agentforge.database.sessions import TurnExecution
     from sqlalchemy import select
@@ -110,6 +128,8 @@ def compose_runtime(settings, sessions, telemetry, store) -> Runtime:
         calls=ToolCallRepository(sessions), catalog=catalog,
         models=ModelRouter(ObservedModel(models.model, telemetry, store)), resources=resources,
         lifecycle=store.progress, approvals=ToolApprovals(sessions, store.progress), sessions=sessions, skills=skills)
+    from agentforge.tools.delegation import register_delegation
+    register_delegation(catalog, service)
     service.spawn_subagent = telemetry.decorate(service.spawn_subagent,
         kind="AGENT", name="spawn_subagent")
-    return Runtime(service, models, repository_github, plugins)
+    return Runtime(service, models, repository_github, plugins, after_turn)

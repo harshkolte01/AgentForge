@@ -74,7 +74,7 @@ def make(handlers=None, *, bound=None):
     calls, budgets = FakeCalls(), FakeBudgets()
     gateway = ToolGateway(
         catalog=catalog, calls=calls, budgets=budgets, resources=FakeResources(bound), reauthorize=AsyncMock(),
-        ctx=NS(task_id=uuid4()), scope=NS(allowed_tools=ALL, permissions=NS(), budget=Budget()),
+        ctx=NS(task_id=uuid4(), parent_run_id=None), scope=NS(allowed_tools=ALL, permissions=NS(), budget=Budget()),
         run_id=uuid4(), reservation_id=uuid4())
     return gateway, calls, budgets
 

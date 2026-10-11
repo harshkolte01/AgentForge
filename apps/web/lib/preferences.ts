@@ -8,6 +8,7 @@ export type ThemePreference = "system" | "light" | "dark";
 export const THEME_KEY = "agentforge.theme";
 export const ENTER_SENDS_KEY = "agentforge.enter-sends";
 export const SIDEBAR_WIDTH_KEY = "agentforge.sidebar.width";
+export const DELIVERY_WIDTH_KEY = "agentforge.delivery.width";
 
 export type StorageLike = { getItem(key: string): string | null; setItem(key: string, value: string): void; removeItem(key: string): void };
 
@@ -83,6 +84,11 @@ export const getEnterSends = (): boolean => parseEnterSends(read(ENTER_SENDS_KEY
 export function setEnterSends(value: boolean) {
   write(ENTER_SENDS_KEY, value ? null : "false");
   notify();
+}
+
+export const readDeliveryWidth = (): string | null => read(DELIVERY_WIDTH_KEY);
+export function writeDeliveryWidth(value: number | null) {
+  write(DELIVERY_WIDTH_KEY, value === null ? null : String(value));
 }
 
 export const readSidebarWidth = (): string | null => read(SIDEBAR_WIDTH_KEY);

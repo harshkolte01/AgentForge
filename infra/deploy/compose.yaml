@@ -67,6 +67,8 @@ services:
     build:
       context: ../..
       dockerfile: infra/deploy/web.Dockerfile
+      args:
+        SITE_URL: ${SITE_URL:-}
     restart: unless-stopped
     init: true
     read_only: true

@@ -198,15 +198,17 @@ class OpenAIAdapter:
                        on_text: Callable[[str], None] | None = None,
                        tool_choice: dict[str, Any] | str | None = None,
                        on_narration: Callable[[str], None] | None = None,
-                       on_retry: Callable[[], None] | None = None) -> ModelResponse:
+                       on_retry: Callable[[], None] | None = None,
+                       on_tool: Callable[[int, str, str, str], None] | None = None) -> ModelResponse:
         """One completion. With on_text, the person-facing reply is delivered as it arrives; with on_narration,
-        so is the plain text the model writes next to its tool calls. The returned response (message, usage,
-        finish reason) is identical to the non-streaming path. `on_retry` runs before a broken stream is requested
-        again, so the caller can clear what that attempt showed."""
+        so is the plain text the model writes next to its tool calls; with on_tool, so is each tool call as the model
+        writes it: `(index, call id, tool name, next piece of its JSON arguments)`, in the order the provider sends them.
+        The returned response (message, usage, finish reason) is identical to the non-streaming path. `on_retry` runs
+        before a broken stream is requested again, so the caller can clear what that attempt showed."""
         self.maximum_request_cost(messages, tools)
         request = self._request(messages, tools, tool_choice)
-        if on_text is not None or on_narration is not None:
-            return await self._with_retries(lambda: self._complete_streaming(request, bool(tools), on_text, on_narration), on_retry)
+        if on_text is not None or on_narration is not None or on_tool is not None:
+            return await self._with_retries(lambda: self._complete_streaming(request, bool(tools), on_text, on_narration, on_tool), on_retry)
         return await self._with_retries(lambda: self._complete_once(request))
 
     async def _complete_once(self, request: dict[str, Any]) -> ModelResponse:
@@ -228,7 +230,8 @@ class OpenAIAdapter:
 
     async def _complete_streaming(self, request: dict[str, Any], has_tools: bool,
                                   on_text: Callable[[str], None] | None,
-                                  on_narration: Callable[[str], None] | None = None) -> ModelResponse:
+                                  on_narration: Callable[[str], None] | None = None,
+                                  on_tool: Callable[[int, str, str, str], None] | None = None) -> ModelResponse:
         parts: list[str] = []
         calls: dict[int, dict[str, Any]] = {}
         finish_reason: str | None = None
@@ -237,11 +240,11 @@ class OpenAIAdapter:
         stream = None
         received = False
 
-        def show(text: str, sink: Callable[[str], None] | None = on_text) -> None:
+        def show(*piece, sink: Callable[..., None] | None = on_text) -> None:
             if sink is None:
                 return
             try:
-                sink(text)
+                sink(*piece)
             except Exception:
                 pass  # Showing progress must never fail the model call.
 
@@ -261,14 +264,17 @@ class OpenAIAdapter:
                 if delta is not None and delta.content:
                     parts.append(delta.content)
                     # With tools offered, content is narration written next to the calls, not the reply.
-                    show(delta.content, on_narration if has_tools else on_text)
+                    show(delta.content, sink=on_narration if has_tools else on_text)
                 for call in (delta.tool_calls or []) if delta is not None else []:
                     slot = calls.setdefault(call.index, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
                     if call.id:
                         slot["id"] = call.id
+                    piece = ""
                     if call.function is not None:
                         slot["function"]["name"] += call.function.name or ""
-                        slot["function"]["arguments"] += call.function.arguments or ""
+                        piece = call.function.arguments or ""
+                        slot["function"]["arguments"] += piece
+                    show(call.index, slot["id"], slot["function"]["name"], piece, sink=on_tool)
                 if choice.finish_reason:
                     finish_reason = choice.finish_reason
         except Exception as exc:

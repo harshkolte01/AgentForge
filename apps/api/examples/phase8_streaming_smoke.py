@@ -69,6 +69,8 @@ try:
         turn = repo.turn(conversation.id, user, SessionTurnCreate(idempotency_key=uuid4(), kind="general", goal="Research a concrete question with evidence."))
         task_id = turn.task.id
         events = EventRepository(sessions)
+        def prose(row):  # (epoch, revision, kind, text): the identity of a live tool call is checked by tool_stream_smoke.py
+            return None if row is None else row[:4]
         check(events.stream_snapshot(task_id, user) is None, "snapshot before any text")
         with sessions() as db:
             from sqlalchemy.exc import IntegrityError
@@ -80,22 +82,22 @@ try:
                 pass
         s1 = ReplyStream(sessions, task_id)
         s1.feed("Hello")
-        check(events.stream_snapshot(task_id, user) == (1, 0, "progress", "Hello"), f"first {events.stream_snapshot(task_id, user)}")
+        check(prose(events.stream_snapshot(task_id, user)) == (1, 0, "progress", "Hello"), f"first {events.stream_snapshot(task_id, user)}")
         time.sleep(0.15); s1.feed(" world"); s1.end()
-        check(events.stream_snapshot(task_id, user) == (1, 0, "progress", "Hello world"), "grew without a new revision")
+        check(prose(events.stream_snapshot(task_id, user)) == (1, 0, "progress", "Hello world"), "grew without a new revision")
         check(events.stream_snapshot(task_id, uuid4()) is None, "foreign owner sees stream")
         s2 = ReplyStream(sessions, task_id)                  # a newer attempt takes over
         s2.feed("Fresh")
-        check(events.stream_snapshot(task_id, user) == (2, 1, "progress", "Fresh"), f"new epoch {events.stream_snapshot(task_id, user)}")
+        check(prose(events.stream_snapshot(task_id, user)) == (2, 1, "progress", "Fresh"), f"new epoch {events.stream_snapshot(task_id, user)}")
         s1._text += " STALE"; s1._sync(force=True)       # the stale worker writes late: fenced out by epoch, and stops
-        check(events.stream_snapshot(task_id, user) == (2, 1, "progress", "Fresh"), "stale epoch overwrote the stream")
+        check(prose(events.stream_snapshot(task_id, user)) == (2, 1, "progress", "Fresh"), "stale epoch overwrote the stream")
         check(s1.disabled, "a fenced-out stream keeps writing")
         s2.discard()                                     # a clear is an empty reset with a newer revision
-        check(events.stream_snapshot(task_id, user) == (2, 2, "progress", ""), f"discard {events.stream_snapshot(task_id, user)}")
+        check(prose(events.stream_snapshot(task_id, user)) == (2, 2, "progress", ""), f"discard {events.stream_snapshot(task_id, user)}")
         s3 = ReplyStream(sessions, task_id)              # an older revision of the current epoch cannot bring text back
         s3._epoch, s3._revision = 2, 1
-        s3._write("RESURRECTED", "answer", 1)
-        check(events.stream_snapshot(task_id, user) == (2, 2, "progress", ""), "stale revision resurrected text")
+        s3._write("RESURRECTED", "answer", (None, None, None), 1)
+        check(prose(events.stream_snapshot(task_id, user)) == (2, 2, "progress", ""), "stale revision resurrected text")
         check(s3.disabled, "a fenced-out revision keeps writing")
         print("PASS upsert, growth, owner scoping, epoch and revision fencing, empty reset")
         snapshot = events.live_snapshot(task_id, user)
@@ -108,14 +110,14 @@ try:
             original_status = db.scalar(text("SELECT status FROM tasks WHERE id = :t"), {"t": task_id})
             db.execute(text("UPDATE task_streams SET text = 'left behind', kind = 'answer' WHERE task_id = :t"), {"t": task_id})
             db.execute(text("UPDATE tasks SET status = 'FAILED' WHERE id = :t"), {"t": task_id})
-        check(events.stream_snapshot(task_id, user) == (2, 3, "progress", ""), "text left on a terminal task was reported")
+        check(prose(events.stream_snapshot(task_id, user)) == (2, 3, "progress", ""), "text left on a terminal task was reported")
         with sessions.begin() as db:
             db.execute(text("UPDATE tasks SET status = :s WHERE id = :t"), {"t": task_id, "s": original_status})
         clear_stream(sessions, task_id)
-        check(events.stream_snapshot(task_id, user) == (2, 3, "progress", ""), f"clear_stream is not observable {events.stream_snapshot(task_id, user)}")
+        check(prose(events.stream_snapshot(task_id, user)) == (2, 3, "progress", ""), f"clear_stream is not observable {events.stream_snapshot(task_id, user)}")
         s2._epoch, s2._revision = 2, 2
-        s2._write("late", "answer", 2)                  # a late writer after the terminal clear is fenced out
-        check(events.stream_snapshot(task_id, user) == (2, 3, "progress", ""), "writer resurrected text after the clear")
+        s2._write("late", "answer", (None, None, None), 2)                # a late writer after the terminal clear is fenced out
+        check(prose(events.stream_snapshot(task_id, user)) == (2, 3, "progress", ""), "writer resurrected text after the clear")
         print("PASS snapshot read model, terminal blanking, observable terminal clear")
         # HTTP: SSE endpoint and snapshot endpoint
         from fastapi.testclient import TestClient
@@ -199,7 +201,7 @@ try:
         print("PASS stream-snapshot endpoint:", body)
         clear_stream(sessions, task_id)
         after = events.stream_snapshot(task_id, user)
-        check(after is not None and after[2:] == ("progress", ""), f"cleanup left text {after}")
+        check(after is not None and after[2:4] == ("progress", ""), f"cleanup left text {after}")
         print("PASS cleanup is an observable empty reset")
         # Notes written next to tool calls: saved as ordered events, the live copy cleared, a later reply under a newer epoch.
         from agentforge.repositories.events import append_event
@@ -215,10 +217,10 @@ try:
         saved = [e for e in events.list_after(task_id, user, 0, 100) if e.event_type == "assistant.message"]
         check(len(saved) == 1 and saved[0].payload == {"text": "I'll look that up.", "epoch": note[0]}, f"note event {saved}")
         cleared = events.stream_snapshot(task_id, user)
-        check(cleared == (note[0], note[1] + 1, "progress", ""), f"live copy of a saved note was not cleared {cleared}")
+        check(prose(cleared) == (note[0], note[1] + 1, "progress", ""), f"live copy of a saved note was not cleared {cleared}")
         narrator.begin(); narrator.feed("The answer."); narrator.end(); narrator.commit_reply()
         reply = events.stream_snapshot(task_id, user)
-        check(reply[0] == note[0] + 1 and reply[2:] == ("answer", "The answer."), f"reply epoch {reply}")
+        check(reply[0] == note[0] + 1 and reply[2:4] == ("answer", "The answer."), f"reply epoch {reply}")
         print("PASS notes saved as events in order, live copy cleared by a reset, reply on a newer epoch")
         clear_stream(sessions, task_id)
 except BaseException as exc:

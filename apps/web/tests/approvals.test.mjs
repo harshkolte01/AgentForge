@@ -11,6 +11,17 @@ test("a call waiting for an answer is pending until it is decided", () => {
   assert.deepEqual(pendingApprovals([asked, event(2, "approval.decided", { approval_id: "a", tool: "bash", state: "DENIED" })]), []);
 });
 
+test("a subagent's question says which run asks; the main agent's own does not", () => {
+  const [own, sub] = pendingApprovals([
+    event(1, "approval.required", { approval_id: "a", tool: "bash", detail: "ls" }),
+    event(2, "approval.required", { approval_id: "b", tool: "write", detail: "x.py", agent_run_id: "child-1" }),
+    event(3, "approval.required", { approval_id: "c", tool: "bash", detail: "pwd", agent_run_id: 7 }),
+  ]);
+  assert.equal("agentRunId" in own, false);
+  assert.equal(sub.agentRunId, "child-1");
+  assert.equal("agentRunId" in pendingApprovals([event(1, "approval.required", { approval_id: "c", tool: "bash", agent_run_id: 7 })])[0], false);
+});
+
 test("several waiting calls come back oldest first, and only the undecided ones", () => {
   const events = [
     event(5, "approval.required", { approval_id: "b", tool: "write", detail: "a.py" }),

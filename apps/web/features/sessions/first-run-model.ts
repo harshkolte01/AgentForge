@@ -5,11 +5,10 @@
  */
 import type { WorkspaceConfiguration } from "@/lib/workspace-api";
 
-export type SetupItem = { id: "model" | "worker" | "web" | "sandbox" | "github"; label: string; detail: string; required: boolean; href: string };
+export type SetupItem = { id: "model" | "worker" | "web" | "sandbox" | "github"; label: string; detail: string; required: boolean; href?: string };
 /** Whether the GitHub App can be connected and is: null when unknown (not asked, or an older server). */
 export type GitHubSetup = { configured: boolean; connected: boolean } | null;
 
-const status = "/settings?section=status";
 const settingsList = (names: readonly string[] | undefined) => names?.length ? names.join(", ") : "";
 
 export function modelConfigured(config: WorkspaceConfiguration): boolean {
@@ -21,13 +20,13 @@ export function setupItems(config: WorkspaceConfiguration, github: GitHubSetup =
   const items: SetupItem[] = [];
   if (!modelConfigured(config)) {
     const missing = settingsList(config.general_missing_settings ?? config.missing_settings);
-    items.push({ id: "model", label: "Connect a model", detail: missing ? `Set ${missing} in the API's .env, then restart it.` : "Set the LLM_* settings in the API's .env, then restart it.", required: true, href: status });
+    items.push({ id: "model", label: "Connect a model", detail: missing ? `Set ${missing} in the API's .env, then restart it.` : "Set the LLM_* settings in the API's .env, then restart it.", required: true, href: "/settings?section=agent" });
   }
-  if (config.worker?.status === "offline") items.push({ id: "worker", label: "Start the worker", detail: "Messages wait until a worker is running: scripts/dev.sh starts it with the API.", required: true, href: status });
-  if (config.web_research_configured === false) items.push({ id: "web", label: "Turn on web research", detail: "Set TAVILY_API_KEY to let the agent search the web.", required: false, href: status });
+  if (config.worker?.status === "offline") items.push({ id: "worker", label: "Start the worker", detail: "Messages wait until a worker is running: scripts/dev.sh starts it with the API.", required: true });
+  if (config.web_research_configured === false) items.push({ id: "web", label: "Turn on web research", detail: "Set TAVILY_API_KEY to let the agent search the web.", required: false });
   if (config.coding_configured === false) {
     const missing = settingsList(config.coding_missing_settings);
-    items.push({ id: "sandbox", label: "Turn on the coding sandbox", detail: missing ? `Set ${missing} to let the agent run code.` : "Set E2B_API_KEY to let the agent run code.", required: false, href: status });
+    items.push({ id: "sandbox", label: "Turn on the coding sandbox", detail: missing ? `Set ${missing} to let the agent run code.` : "Set E2B_API_KEY to let the agent run code.", required: false });
   }
   if (github?.configured && !github.connected) items.push({ id: "github", label: "Connect GitHub", detail: "Work on your own repositories and open pull requests.", required: false, href: "/settings?section=github" });
   return items;
@@ -41,11 +40,3 @@ export function checklistMode(items: readonly SetupItem[], dismissed: boolean): 
   if (dismissed || !items.length) return "hidden";
   return items.some((item) => item.required) ? "open" : "collapsed";
 }
-
-/** Ready-made prompts for an empty, working workspace. Clicking one fills the composer; nothing is sent until the person does. */
-export const examplePrompts: readonly { label: string; prompt: string }[] = [
-  { label: "Compare Postgres and SQLite", prompt: "Compare Postgres and SQLite for a small web app: performance, operations and when to switch." },
-  { label: "Deduplicate a CSV in Python", prompt: "Write a Python script that removes duplicate rows from a CSV file, keeping the first occurrence." },
-  { label: "Explain OAuth device flow", prompt: "Explain how the OAuth 2.0 device authorization flow works, step by step." },
-  { label: "Plan a database migration", prompt: "Plan a zero-downtime migration that renames a column in a busy Postgres table." },
-];

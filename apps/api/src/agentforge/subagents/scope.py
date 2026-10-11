@@ -32,6 +32,8 @@ class TaskContext:
     authorized_context_refs: tuple[str, ...] = ()
     depth: int = 0
     source_discovery_enabled: bool = False
+    parent_run_id: UUID | None = None
+    parent_tools: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -45,7 +47,7 @@ class EffectiveScope:
 def intersect_and_validate(
     definition: AgentDefinition, ctx: TaskContext, context_refs: tuple[str, ...],
 ) -> EffectiveScope:
-    if ctx.depth != 0:
+    if ctx.depth not in (0, 1) or (ctx.depth == 1 and (ctx.parent_run_id is None or ctx.parent_tools is None)):
         raise ScopeDenied("nested sub-agent delegation is disabled")
     # Round-trip through JSON revalidates even models constructed with model_copy.
     definition = AgentDefinition.model_validate_json(definition.model_dump_json())
@@ -80,6 +82,8 @@ def intersect_and_validate(
     tools = tuple(tool for tool in definition.allowed_tools if all(
         getattr(permissions, flag) for flag in TOOL_CAPABILITIES[tool]
     ))
+    if ctx.depth:
+        tools = tuple(tool for tool in tools if tool in ctx.parent_tools and tool not in {"delegate_task", "create_pull_request"})
     if not tools:
         raise ScopeDenied("no tools remain within the authorized grant intersection")
     return EffectiveScope(permissions, tools, budget, context_refs)

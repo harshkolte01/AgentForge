@@ -19,7 +19,7 @@ import {
 } from "@/lib/activity/presentation";
 import type {
   ActivityAction, ActivityEntry, ActivityOptions, ActivityState, CallEntry, GroupEntry, MilestoneEntry, NoteEntry,
-  PhaseEntry, SequenceRange, TaskEvent,
+  PhaseEntry, SequenceRange, SubagentProgress, TaskEvent,
 } from "@/lib/activity/types";
 
 /** The kinds of run events that describe something the agent did or said. Everything else is bookkeeping. */
@@ -112,10 +112,15 @@ function startCall(draft: Draft, event: TaskEvent, policy: "generic" | "hide") {
   const id = toolCallId ? `call:${toolCallId}` : `call:${sequence}`;
   if (toolCallId && lastIndexById(draft.entries, id) >= 0) return; // a replayed start
   const presentation = toolPresentation(tool, policy) as CallEntry["presentation"];
+  // A delegation names its child, so the child's own events can be shown on this call's card; it also carries a running clock.
+  const childRunId = tool === "delegate_task" ? text(payload.child_run_id) : undefined;
+  const startedAt = tool === "delegate_task" ? Date.parse(event.created_at) : NaN;
   const call = present({
     kind: "call", id, key: id, sequence, tool, toolCallId, callId: text(payload.call_id) ?? null, agentRunId: text(payload.agent_run_id) ?? null,
     presentation, outcome: "running", rawDetail: text(payload.detail) ?? null, startSequence: sequence, finishSequence: null,
     exitCode: null, timedOut: null, qualified: null, errorCode: null, durationMs: null, evidenceIds: [], artifactIds: [], ambiguous: false,
+    ...(childRunId ? { childRunId, child: { steps: 0, active: [], note: null } } : {}),
+    ...(Number.isFinite(startedAt) ? { startedAt } : {}),
   }, policy);
   draft.entries.push(call);
   draft.running.push(call);
@@ -207,8 +212,52 @@ function finishCall(draft: Draft, event: TaskEvent, policy: "generic" | "hide") 
   fold(draft.entries, draft.entries.length - 1);
 }
 
+/** How much of a subagent's latest note its card shows; the report holds the rest. */
+const NOTE_PREVIEW = 400;
+/** The most calls a card remembers as running at once. A subagent runs a handful side by side at most. */
+const ACTIVE_CALLS = 8;
+
+/**
+ * A subagent's own event: it never becomes a row or a count of the main timeline (that would show its work twice), it updates
+ * the card of the delegation that started it. Matched by the child's run id; an event whose card is unknown is left to the
+ * assignment's own view, which reads the same events from the server.
+ */
+function applyChild(draft: Draft, event: TaskEvent, policy: "generic" | "hide") {
+  const { event_type: type, payload, sequence } = event;
+  const childRunId = text(payload.agent_run_id);
+  if (!childRunId) return;
+  const index = draft.entries.findLastIndex((entry) => entry.kind === "call" && entry.childRunId === childRunId);
+  if (index < 0) return;
+  const call = draft.entries[index] as CallEntry;
+  const before = call.child ?? { steps: 0, active: [], note: null };
+  let next: SubagentProgress;
+  if (type === "tool.started") {
+    const tool = text(payload.tool);
+    const shown = tool && isActionTool(tool, policy) ? describeCall({ tool, outcome: "running", rawDetail: text(payload.detail) ?? null }, policy) : null;
+    if (!shown) return;
+    const id = text(payload.tool_call_id) ?? `seq:${sequence}`;
+    if (before.active.some((item) => item.id === id)) return;
+    next = { ...before, steps: before.steps + 1, active: [...before.active, { id, label: shown.label, ...(shown.detail ? { detail: shown.detail } : {}) }].slice(-ACTIVE_CALLS) };
+  } else if (type === "tool.finished") {
+    const id = text(payload.tool_call_id);
+    if (!id || !before.active.some((item) => item.id === id)) return;
+    next = { ...before, active: before.active.filter((item) => item.id !== id) };
+  } else if (type === "assistant.message") {
+    const body = text(payload.text)?.trim();
+    if (!body) return;
+    next = { ...before, note: body.length > NOTE_PREVIEW ? `${body.slice(0, NOTE_PREVIEW)}…` : body };
+  } else {
+    return;
+  }
+  const updated: CallEntry = { ...call, child: next };
+  draft.entries[index] = updated;
+  const open = draft.running.indexOf(call);
+  if (open >= 0) draft.running[open] = updated; // `running` must hold the very objects `entries` holds
+}
+
 function applyEvent(draft: Draft, event: TaskEvent, policy: "generic" | "hide") {
   const { event_type: type, payload, sequence } = event;
+  if (typeof payload.parent_run_id === "string") { applyChild(draft, event, policy); return; }
   if (type === "assistant.message") {
     const epoch = int(payload.epoch);
     if (epoch !== null && epoch > draft.committedEpoch) draft.committedEpoch = epoch;

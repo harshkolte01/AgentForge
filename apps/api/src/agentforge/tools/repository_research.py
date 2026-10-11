@@ -23,7 +23,7 @@ def register_repository_research(catalog, sessions, selection, github, resources
 
     async def verify(ctx, name, args):
         await original_verify(ctx, name, args)
-        if name not in {"read_repo_file", "list_repo_files", "search_repo", "get_issue"}:
+        if name not in {"read_repo_file", "list_repo_files", "search_repo", "get_issue", "get_pr_status"}:
             return
         if args.repo_id != selection["repo_id"] or selection["repo_id"] not in ctx.task_permissions.allowed_repo_ids:
             raise ScopeDenied("repository is outside selected scope")
@@ -114,5 +114,33 @@ def register_repository_research(catalog, sessions, selection, github, resources
         saved = source(execution, f"Issue {args.issue_number}", json.dumps(value, ensure_ascii=False), issue_number=args.issue_number)
         return ToolOutcome(status="ok", data={**value, "source_id": saved["id"]}, evidence_ids=(saved["id"],), cost_usd=Decimal(0))
 
-    for name, handler in (("read_repo_file", read), ("list_repo_files", listing), ("search_repo", search), ("get_issue", issue)):
+    async def pr_status(args, execution):
+        """Where a pull request stands: state, mergeability, reviews and every check with the reason a failed one gave."""
+        from agentforge.integrations.github_client import GitHubError
+        from agentforge.integrations.github_delivery import read_pull_status
+        from agentforge.tools.errors import ToolError
+        authorize = getattr(github, "authorize", None)
+        if authorize is None:
+            raise ToolError("GITHUB_UNAVAILABLE", "Pull request status needs the person's GitHub connection, which is not available here.")
+        try:
+            client, repo, installation = await authorize(selection["repo_id"])
+            status = await read_pull_status(client, repo["full_name"], args.pr_number, installation=installation, repo_settings=None)
+        except GitHubError as error:
+            if str(error) == "github_access_denied":
+                raise ToolError("PR_NOT_FOUND", f"Pull request #{args.pr_number} could not be read in {selection['repo_id']}.") from None
+            raise ToolError("GITHUB_UNAVAILABLE", f"GitHub did not answer ({error}). Try again.") from None
+        if execution.authorize_current:
+            await execution.authorize_current()
+        checks = status["checks"]
+        failing = [item for item in checks["items"] if item["status"] == "failed"]
+        return ToolOutcome(status="ok", cost_usd=Decimal(0), data={
+            "number": status["number"], "url": status["url"], "title": status["title"], "state": status["state"],
+            "head_sha": status["head_sha"], "mergeable": status["mergeable"], "behind_base": status["behind_base"],
+            "checks": {"state": checks["state"], "passed": checks["passed"], "failed": checks["failed"], "pending": checks["pending"],
+                       "failing": failing[:20], "note": ("Checks could not be read: the GitHub App needs the Checks: Read permission."
+                                                         if checks["state"] == "unavailable" else None)},
+            "reviews": status["reviews"]})
+
+    for name, handler in (("read_repo_file", read), ("list_repo_files", listing), ("search_repo", search), ("get_issue", issue),
+                          ("get_pr_status", pr_status)):
         catalog.register(name, handler, max_cost_usd=Decimal(0), timeout_sec=90)

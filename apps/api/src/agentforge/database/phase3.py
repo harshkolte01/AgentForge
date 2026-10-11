@@ -15,14 +15,21 @@ class TaskStream(Base):
     epoch changes whenever a new model attempt starts writing, so a stale worker cannot overwrite it. revision changes
     on every write that is not plain growth (a clear, a restart, a kind change), so a reader can tell "more text" from
     "different text", and an older writer cannot bring back text a newer revision cleared.
+
+    kind `tool` is a tool call the model is writing (`text` is its command or file content so far) and `output` one that is
+    running (`text` is the end of what it printed). `tool` is the call's name, `call_id` the id its `tool.started` event
+    carries and `detail` what it is about (a path). They change only together with a new revision.
     """
     __tablename__ = "task_streams"
-    __table_args__ = (CheckConstraint("kind IN ('progress','answer')", name="kind"),)
+    __table_args__ = (CheckConstraint("kind IN ('progress','answer','tool','output')", name="kind"),)
     task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True)
     epoch: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     revision: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     kind: Mapped[str] = mapped_column(Text, server_default=text("'progress'"))
     text: Mapped[str] = mapped_column(Text, server_default=text("''"))
+    tool: Mapped[str | None] = mapped_column(Text, nullable=True)
+    call_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

@@ -147,7 +147,7 @@ class BudgetReservation(_UUIDTimestampMixin, Base):
     __table_args__ = (
         CheckConstraint("amount_usd > 0", name="amount"),
         CheckConstraint("max_steps > 0 AND max_tool_calls > 0", name="limits"),
-        CheckConstraint("depth = 1", name="depth"),
+        CheckConstraint("depth IN (1, 2)", name="depth"),
         Index("budget_reservations_task_idx", "task_id"),
     )
     task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id"))
@@ -169,6 +169,9 @@ class AgentRun(_UUIDTimestampMixin, Base):
         Index("agent_runs_task_started_idx", "task_id", "started_at"),
     )
     task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id"))
+    parent_run_id: Mapped[UUID | None] = mapped_column(ForeignKey("agent_runs.id"), index=True)
+    assignment_title: Mapped[str | None] = mapped_column(Text)
+    assignment_prompt: Mapped[str | None] = mapped_column(Text)
     definition_version_id: Mapped[UUID] = mapped_column(ForeignKey("agent_definition_versions.id"))
     definition_sha256: Mapped[str] = mapped_column(CHAR(64))
     definition_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB)
@@ -244,3 +247,4 @@ from .identity import AuthSession, OAuthTransaction, GitHubCredential, GitHubIns
 from .sessions import Conversation, ConversationMessage, SessionTurn  # noqa: E402,F401
 from .plugins import PluginConnection  # noqa: E402,F401
 from .skills import SkillSetting, UserSkill  # noqa: E402,F401
+from .delivery import ConversationDelivery, DeliveryCommit  # noqa: E402,F401

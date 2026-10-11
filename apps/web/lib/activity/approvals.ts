@@ -18,6 +18,8 @@ export type PendingApproval = {
   /** The server had to cut `detail` short: what is shown is not all of it. False when absent (older servers never cut it). */
   truncated: boolean;
   sequence: number;
+  /** The subagent that asks, when one does (its run id). Absent for the main agent's own calls and for older servers. */
+  agentRunId?: string;
 };
 
 /** The calls waiting for an answer, oldest first. Pure: safe in render. */
@@ -31,6 +33,7 @@ export function pendingApprovals(events: readonly TaskEvent[]): PendingApproval[
         id, sequence: event.sequence, tool: typeof event.payload.tool === "string" ? event.payload.tool : "",
         detail: typeof event.payload.detail === "string" ? event.payload.detail : "",
         truncated: event.payload.truncated === true,
+        ...(typeof event.payload.agent_run_id === "string" ? { agentRunId: event.payload.agent_run_id } : {}),
       });
     } else if (event.event_type === "approval.decided") {
       waiting.delete(id);

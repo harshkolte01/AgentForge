@@ -13,7 +13,7 @@
  * Durable notes and the saved answer stay authoritative: `visibleLive` hides live text once its durable counterpart is
  * present, and shows it unchanged until then, so there is never a blank frame in between and never the same words twice.
  */
-import type { LiveDelta, LiveSnapshot, LiveTextKind } from "@/lib/activity/types";
+import type { LiveDelta, LiveSnapshot, LiveTextKind, LiveTool } from "@/lib/activity/types";
 
 export type LiveState = {
   readonly epoch: number;
@@ -22,7 +22,12 @@ export type LiveState = {
   readonly text: string;
   /** `text` measured in code points, kept so appending never re-measures the whole text. */
   readonly length: number;
+  /** Which call a `tool` (being written) or `output` (running) text belongs to. Absent for prose, so prose states stay as they were. */
+  readonly tool?: LiveTool;
 };
+
+/** The isolated kinds: text that belongs to a tool call, never prose for the person to read. */
+export const isToolKind = (kind: LiveTextKind): kind is "tool" | "output" => kind === "tool" || kind === "output";
 
 export type LiveStatus = "applied" | "reset" | "duplicate" | "stale" | "mismatch";
 
@@ -62,8 +67,19 @@ export function skipCodePoints(text: string, count: number): string {
 /** Orders (epoch, revision) pairs: negative when `a` is older than `b`. */
 const compare = (a: { epoch: number; revision: number }, b: { epoch: number; revision: number }) => a.epoch - b.epoch || a.revision - b.revision;
 
-const replaced = (version: { epoch: number; revision: number; kind: LiveTextKind }, text: string): LiveState =>
-  ({ epoch: version.epoch, revision: version.revision, kind: version.kind, text, length: codePointLength(text) });
+type Versioned = { epoch: number; revision: number; kind: LiveTextKind; tool?: string | null; call_id?: string | null; detail?: string | null };
+
+/** The call a frame or snapshot names, or undefined for prose (and for a tool row that does not say which call it is). */
+function toolOf(version: Versioned): LiveTool | undefined {
+  if (!isToolKind(version.kind) || typeof version.tool !== "string" || typeof version.call_id !== "string") return undefined;
+  return { name: version.tool, callId: version.call_id, detail: typeof version.detail === "string" ? version.detail : null };
+}
+
+const replaced = (version: Versioned, text: string): LiveState => {
+  const state = { epoch: version.epoch, revision: version.revision, kind: version.kind, text, length: codePointLength(text) };
+  const tool = toolOf(version);
+  return tool ? { ...state, tool } : state;
+};
 
 /** Applies one `message.delta` frame. Never throws; the returned state is the same object when nothing changed. */
 export function reduceLive(state: LiveState, delta: LiveDelta): LiveUpdate {
@@ -79,7 +95,8 @@ export function reduceLive(state: LiveState, delta: LiveDelta): LiveUpdate {
   if (end <= state.length) return { state, status: "duplicate", needsSnapshot: false };
   // Appends at the end, or overlaps what is held (a repeated frame that also grew): take only the new part.
   const text = state.text + skipCodePoints(delta.text, state.length - delta.offset);
-  return { state: { epoch: state.epoch, revision: state.revision, kind: delta.kind, text, length: end }, status: "applied", needsSnapshot: false };
+  // The call a tool frame names is fixed for its (epoch, revision), so an append keeps the one the reset that opened it gave.
+  return { state: { ...state, kind: delta.kind, text, length: end }, status: "applied", needsSnapshot: false };
 }
 
 /**
@@ -106,10 +123,14 @@ export function parseLiveDelta(value: unknown): LiveDelta | null {
   const epoch = whole(frame.epoch, -1);
   const offset = whole(frame.offset, -1);
   if (epoch < 0 || offset < 0) return null;
-  return {
-    task_id: frame.task_id, epoch, revision: whole(frame.revision, 0), offset, text: frame.text,
-    kind: frame.kind === "answer" ? "answer" : "progress", reset: frame.reset === true,
+  const kind: LiveTextKind = frame.kind === "answer" || frame.kind === "tool" || frame.kind === "output" ? frame.kind : "progress";
+  const delta: LiveDelta = {
+    task_id: frame.task_id, epoch, revision: whole(frame.revision, 0), offset, text: frame.text, kind, reset: frame.reset === true,
   };
+  if (!isToolKind(kind)) return delta;
+  // A call's text means nothing without the call it belongs to: a frame that does not say is not shown.
+  if (typeof frame.tool !== "string" || typeof frame.call_id !== "string") return null;
+  return { ...delta, tool: frame.tool, call_id: frame.call_id, detail: typeof frame.detail === "string" ? frame.detail : null };
 }
 
 export type LiveHandoff = {
@@ -125,10 +146,19 @@ export type LiveHandoff = {
  * then the text is returned unchanged, so the swap to the durable copy never shows a gap or the words twice.
  */
 export function liveHandoff(live: LiveState, committedEpoch: number, savedAnswer?: string | null): LiveHandoff {
-  if (!live.text) return { text: "", handedOffTo: null };
+  // A tool call's text is not words for the person to read; it is shown by the timeline (see `liveToolOf`).
+  if (!live.text || isToolKind(live.kind)) return { text: "", handedOffTo: null };
   if (savedAnswer && savedAnswer.trim()) return { text: "", handedOffTo: "answer" };
   if (live.epoch > 0 && live.epoch <= committedEpoch) return { text: "", handedOffTo: "note" };
   return { text: live.text, handedOffTo: null };
+}
+
+/** A tool call shown live: the call, whether it is still being written (`tool`) or running (`output`), and its text so far. */
+export type LiveToolView = LiveTool & { phase: "tool" | "output"; text: string };
+
+/** The tool call the live row shows, or null when it holds prose, nothing, or a tool row that does not say which call it is. */
+export function liveToolOf(live: LiveState): LiveToolView | null {
+  return live.tool && isToolKind(live.kind) ? { ...live.tool, phase: live.kind, text: live.text } : null;
 }
 
 /** `liveHandoff(...).text`. */

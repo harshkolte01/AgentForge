@@ -6,8 +6,10 @@ test("every listed section maps to itself", () => {
   for (const { id } of settingsSections) assert.equal(settingsSection(id), id);
 });
 
-test("the old runtime section opens Status", () => {
-  assert.equal(settingsSection("runtime"), "status");
+test("retired Status and runtime links open Account", () => {
+  assert.equal(settingsSection("runtime"), "account");
+  assert.equal(settingsSection("status"), "account");
+  assert.ok(settingsSections.every(({ id }) => id !== "status"));
 });
 
 test("missing, unknown and repeated values open Account", () => {

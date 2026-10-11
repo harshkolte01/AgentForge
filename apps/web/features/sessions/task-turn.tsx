@@ -6,7 +6,7 @@ import { Timeline } from "@/features/sessions/run-steps";
 import { activityAnnouncement, endEntries, heldAsLive, runDuration, summarizeEntries, syncNotice } from "@/features/sessions/timeline-model";
 import { useTaskSync } from "@/features/sessions/use-task-sync";
 import { pendingApprovals } from "@/lib/activity/approvals";
-import { visibleLive } from "@/lib/activity/live-text";
+import { emptyLive, isToolKind, liveToolOf, visibleLive } from "@/lib/activity/live-text";
 import { isSettled, selectCommittedEpoch, selectEntries } from "@/lib/activity/reducer";
 import type { ActivityEntry } from "@/lib/activity/types";
 
@@ -79,7 +79,10 @@ export function TaskTurn({ taskId, savedReady, onTerminal, onGrow, onShift, onSt
   // Live text: shown unchanged until its durable copy exists (a saved note of its epoch, or the saved answer), never twice. The
   // text held through the end of the run stands in when the server clears the live copy, so the tail never blanks before the
   // saved message takes over.
-  const shown = held && !sync.live.text ? heldAsLive(held) : sync.live;
+  // A tool call the live row holds (written by the model, or running) is not words for the person: the timeline shows it as a step.
+  const prose = isToolKind(sync.live.kind) ? emptyLive : sync.live;
+  const liveTool = over ? null : liveToolOf(sync.live);
+  const shown = held && !prose.text ? heldAsLive(held) : prose;
   const live = visibleLive(shown, selectCommittedEpoch(activity), savedReady ? "saved" : null);
   const summary = !live && over && !savedReady && task?.final_summary && answeredStatuses.has(task.status) ? task.final_summary : "";
   const raw = live || summary;
@@ -149,7 +152,11 @@ export function TaskTurn({ taskId, savedReady, onTerminal, onGrow, onShift, onSt
 
   const grown = entries.length + approvals.length + (notice ? 1 : 0);
   useEffect(() => { if (grown) growCallback.current?.(); }, [grown]);
+  // A call being written or printing grows its row as its text arrives: the thread follows it like it follows the reply.
+  const liveToolId = liveTool?.callId;
+  const liveToolText = liveTool?.text;
+  useEffect(() => { if (liveToolId) growCallback.current?.(); }, [liveToolId, liveToolText]);
 
-  return <Timeline taskId={taskId} entries={entries} live={!over} quiet={quiet} notice={notice} onRetry={retry} stopping={stopping} announcement={announcement} fold={fold} durationMs={durationMs} approvals={approvals}
+  return <Timeline taskId={taskId} entries={entries} live={!over} quiet={quiet} notice={notice} onRetry={retry} stopping={stopping} announcement={announcement} fold={fold} durationMs={durationMs} approvals={approvals} liveTool={liveTool}
     tail={tailText ? <div ref={tail} className="min-w-0"><AssistantMessage content={tailText} streaming={!over} onProgress={onGrow} /></div> : null} />;
 }

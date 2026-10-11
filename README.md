@@ -1,5 +1,7 @@
 # AgentForge AI
 
+<img src="apps/web/public/brand/agentforge-icon-128.png" width="64" height="64" alt="AgentForge icon" />
+
 AgentForge is a chat with one honest agent: a system prompt and a set of tools.
 It answers directly, researches the web, reads and edits code in a sandbox, and
 replies in plain text. The reply is shown exactly as the model wrote it. Nothing
@@ -61,7 +63,10 @@ scripts/dev-setup.sh          # checks tools, creates .env from .env.example if 
 scripts/dev.sh                # API :8000, worker and web :3000 together; Ctrl-C stops all
 ```
 
-Open `http://localhost:3000` and enter the `LOCAL_BOOTSTRAP_TOKEN` from `.env`.
+Open `http://localhost:3000` (the landing page), choose **Get started** or **Sign in**, and enter the
+`LOCAL_BOOTSTRAP_TOKEN` from `.env`. The public pages (`/`, `/sign-in`, `/sign-up`) and the workspace
+(`/chat`, `/settings`) are described in [conversation behavior](docs/conversation-ux.md#urls). For a
+deployment, set `SITE_URL` (the public origin) at build time so the social card, sitemap and robots use it.
 Configuration lives in an ignored root `.env`; [.env.example](.env.example) lists
 every setting and [Settings](apps/api/src/agentforge/settings.py) is the contract.
 The API refuses to start on invalid settings and names the fields, never their

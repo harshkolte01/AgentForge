@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  announcementForReceipt, announcements, canType, createLatest, createScope, fingerprintOf, isStopping, navigationAfterSend,
+  announcementForReceipt, announcements, canType, composerAction, createLatest, createScope, fingerprintOf, isStopping, navigationAfterSend,
   nextSubmission, pendingFor, receiptEffects, runBlocksSending, sendBlock, sessionAfterReceipt, turnPhase, turnRowKey, waitForSavedAnswer,
 } from "../features/sessions/turn-flow.ts";
 
@@ -204,4 +204,17 @@ test("handoff happens in one step: only when the activity is complete AND the sa
   assert.deepEqual(phase({ abandoned: new Set(["t1"]) }), { show: false, savedReady: false }, "a live view that cannot finish does not hide the saved message");
   assert.deepEqual(turnPhase({ tracked: null, saved: none, terminal: none, abandoned: none }), { show: false, savedReady: false });
   assert.deepEqual(phase({ saved: new Set(["other"]), terminal: new Set(["other"]) }), { show: true, savedReady: false }, "another task's answer is not this one's");
+});
+
+
+test("one composer action switches between stop, queue, and send without losing send restrictions", () => {
+  const state = { running: false, stopping: false, busy: false, blocked: null };
+  assert.equal(composerAction(state), "send");
+  assert.equal(composerAction({ ...state, running: true }), "queue");
+  for (const blocked of ["empty", "running", "busy", "disabled", "archived", "unconfigured"]) {
+    assert.equal(composerAction({ ...state, running: true, blocked }), "stop");
+  }
+  assert.equal(composerAction({ ...state, running: true, stopping: true }), "stopping");
+  assert.equal(composerAction({ ...state, running: true, busy: true, blocked: "busy" }), "sending");
+  assert.equal(composerAction({ ...state, busy: true, blocked: "busy" }), "sending");
 });

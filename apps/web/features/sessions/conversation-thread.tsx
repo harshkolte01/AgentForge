@@ -95,7 +95,7 @@ export function ConversationThread({ session, refresh, pending, receipt, onRecei
   };
   const row = (entry: ConversationMessage) => entry.role === "user"
     ? <UserRow key={rowKeyFor(state, entry)} ledger={store.ledger} rowKey={rowKeyFor(state, entry)} content={entry.content} createdAt={entry.created_at} attachments={entry.attachments} cancelled={entry.turn_state === "cancelled" && !entry.task_id} />
-    : <AssistantRow key={entry.id} entry={entry} ledger={store.ledger} ran={entry.task_id ? state.terminal.get(entry.task_id) : undefined} onRetry={retryOf(entry)} />;
+    : <AssistantRow key={entry.id} entry={entry} ledger={store.ledger} ran={entry.task_id ? state.terminal.get(entry.task_id) : undefined} onRetry={retryOf(entry)} latest={entry.id === lastAssistant?.id && !live && !here} />;
   // The saved answer of the run being followed stays behind its live view until it is in. From then on it takes the live view's
   // place, in its own final position: the live view stays mounted (hidden) only to finish reading the run's last events, so the
   // answer never appears under a "Thinking" line and then moves up twice as the run settles and hands over.

@@ -239,6 +239,18 @@ test("a smooth jump is not cut short by layout passes and catches up with growth
   assert.equal(h.host.metrics().below <= 0, true);
 });
 
+test("after a smooth jump stops, growth that came meanwhile is caught up with at once, not after the whole window", () => {
+  const h = landed();
+  pausedAt(h, 400);
+  h.controller.jump();
+  h.state.top = h.maxTop() - 40; // landed a little short: the last row finished growing while it scrolled
+  h.state.time += 16;
+  h.controller.scrolled();
+  h.grow("b9", 40);
+  h.tick(200); // far less than the 900ms window
+  assert.equal(h.host.metrics().below <= 0, true);
+});
+
 test("a new turn is pinned near the top and followed only once its content passes the bottom", () => {
   const h = landed();
   h.add({ id: "turn", h: 60 });
@@ -273,9 +285,124 @@ test("beginTurn resumes following for a reader who had scrolled away", () => {
   assert.equal(h.state.scrolls.at(-1).top, h.y("turn") - 20);
 });
 
+/** A long conversation with a message just sent beneath it, ready for `beginTurn`. */
+function sent(extra = {}) {
+  const h = landed(extra);
+  h.add({ id: "turn", h: 60 });
+  h.state.turn = "turn";
+  h.state.room = 460;
+  return h;
+}
+
+test("a pin cut short is finished, never replaced by following the live edge", () => {
+  const h = sent();
+  h.controller.beginTurn();
+  h.tick();
+  const target = h.y("turn") - 20;
+  assert.deepEqual(h.state.scrolls.at(-1), { top: target, behavior: "smooth" });
+  // Something (a focus change, a layout shift) cancelled the smooth scroll after a few pixels, leaving the new message under the composer.
+  h.state.top = 1520;
+  h.tick(1000); // the smooth window closes and the controller looks again
+  assert.deepEqual(h.state.scrolls.at(-1), { top: target, behavior: "auto" }, "finished at once, at the turn, not at the live edge");
+  assert.equal(h.state.top, target);
+  // Landed: the pin is let go, and later growth is a plain follow.
+  h.tick();
+  const count = h.state.scrolls.length;
+  h.grow("turn", 100);
+  h.layout();
+  assert.equal(h.state.scrolls.length, count, "content that still fits under the pinned turn moves nothing");
+});
+
+test("a smooth pin that stops short is noticed when its scroll events go quiet, not after the whole window", () => {
+  const h = sent();
+  h.controller.beginTurn();
+  h.tick();
+  const target = h.y("turn") - 20;
+  h.state.top = 1700; // the animation ran a little, then was cut off
+  h.state.time += 16;
+  h.controller.scrolled();
+  h.tick(200); // far less than the 900ms smooth window
+  assert.deepEqual(h.state.scrolls.at(-1), { top: target, behavior: "auto" });
+  assert.equal(h.state.top, target);
+});
+
+test("a smooth pin that landed lets following start without waiting out the window", () => {
+  const h = sent();
+  h.controller.beginTurn();
+  h.tick();
+  h.controller.scrolled(); // the animation's last scroll event
+  h.tick(200);
+  h.tick(); // the pin is checked, found landed and let go
+  h.grow("turn", 800); // the reply outgrew the room, well inside the 900ms window
+  h.layout();
+  assert.equal(h.host.metrics().below <= 0, true);
+});
+
+test("a layout pass during the smooth pin leaves it alone, and nothing hides the turn behind the composer in between", () => {
+  const h = sent();
+  h.controller.beginTurn();
+  h.tick();
+  const count = h.state.scrolls.length;
+  h.state.top = 1700; // mid-flight
+  h.grow("turn", 30);
+  h.layout();
+  assert.equal(h.state.scrolls.length, count);
+});
+
+test("the reader's own input ends a pending pin", () => {
+  const h = sent();
+  h.controller.beginTurn();
+  h.tick();
+  h.controller.input("wheel", -120);
+  h.userScroll(1200);
+  const count = h.state.scrolls.length;
+  h.tick(1000);
+  h.layout();
+  assert.equal(h.state.scrolls.length, count, "the reader is not dragged back to the turn");
+  assert.equal(h.snapshot().following, false);
+});
+
+test("the pin waits for the room under the turn to be written before scrolling", () => {
+  const h = sent();
+  h.state.composer = 200; // the room changes with the composer, so this pass writes a new one
+  h.controller.beginTurn();
+  const count = h.state.scrolls.length;
+  h.tick();
+  assert.equal(h.state.scrolls.length, count, "scrolling now would be clamped short of the top");
+  h.tick();
+  assert.equal(h.state.scrolls.length > count, true);
+  assert.equal(h.state.scrolls.at(-1).top, h.y("turn") - 20);
+});
+
+test("a page too short to put the turn at the top pins as far as it can, then follows", () => {
+  const h = landed();
+  h.add({ id: "turn", h: 60 });
+  h.state.turn = "turn";
+  h.state.room = 0; // nothing reserved under it
+  h.controller.beginTurn();
+  h.tick();
+  h.tick();
+  h.settle();
+  assert.equal(h.state.top, h.maxTop());
+  h.grow("turn", 400);
+  h.layout();
+  assert.equal(h.host.metrics().below <= 0, true, "the pin did not stay behind to block following");
+});
+
+test("with no turn to pin, following carries on", () => {
+  const h = landed();
+  h.controller.beginTurn();
+  h.tick();
+  h.tick();
+  h.grow("b9", 300);
+  h.layout();
+  assert.equal(h.host.metrics().below <= 0, true);
+});
+
 test("opening a conversation with a running turn starts that turn at the top instantly", () => {
   const h = scrollHarness({ blocks: column(10), turn: "b8" });
   h.controller.landOnLatest({ turn: true });
+  h.tick(); // the room under the turn is written first
   h.tick();
   assert.deepEqual(h.state.scrolls.at(-1), { top: h.y("b8") - 20, behavior: "auto" });
 });
@@ -283,6 +410,7 @@ test("opening a conversation with a running turn starts that turn at the top ins
 test("reduced motion pins a new turn without smooth scrolling", () => {
   const h = scrollHarness({ blocks: column(10), turn: "b8", reducedMotion: true });
   h.controller.beginTurn();
+  h.tick();
   h.tick();
   assert.equal(h.state.scrolls.at(-1).behavior, "auto");
 });

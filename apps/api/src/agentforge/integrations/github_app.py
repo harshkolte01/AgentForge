@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio
 import base64
+import contextlib
 import hashlib
 import json
 import re
@@ -13,9 +14,21 @@ from agentforge.integrations.github_client import (GitHubClient, GitHubError, Re
 
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 SNAPSHOT_CONCURRENCY = 8   # blobs fetched at once while loading a repository
+LISTING_CONCURRENCY = 6    # requests in flight at once while listing a user's repositories
+MAX_PAGES = 10             # pages of 100 read from any one listing
 
 def valid_github_id(value):
     return type(value) is int and 0 < value <= 9223372036854775807
+
+async def gather_all(coroutines):
+    """`asyncio.gather` whose first failure (or cancellation) cancels the rest instead of leaving them running."""
+    tasks = [asyncio.ensure_future(coroutine) for coroutine in coroutines]
+    try:
+        return await asyncio.gather(*tasks)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 class GitHubAppClient:
     def __init__(self, settings, *, token=None, transport=None):
@@ -53,9 +66,12 @@ class GitHubAppClient:
                 raise GitHubError("github_access_denied")
             if response.status_code in {409, 422}:
                 raise GitHubError("github_write_conflict")
+            if response.status_code == 405:
+                # A merge GitHub will not make (a draft, a required check, a protected branch).
+                raise GitHubError("github_not_mergeable")
             if response.status_code == 429:
                 raise GitHubError("github_rate_limited")
-            if response.status_code not in {200, 201, 204}:
+            if response.status_code not in {200, 201, 202, 204}:
                 raise GitHubError("github_unavailable")
             data = bytearray()
             async for chunk in response.aiter_bytes():
@@ -89,22 +105,45 @@ class GitHubAppClient:
         except (httpx.HTTPError, ValueError):
             raise GitHubError("github_authorization_failed") from None
 
-    async def pages(self, path, key):
-        result = []
-        for page in range(1, 11):
-            separator = "&" if "?" in path else "?"
-            value = await self.request("GET", f"{path}{separator}per_page=100&page={page}")
+    async def pages(self, path, key, *, http=None, gate=None):
+        """Every item of a paginated listing (at most MAX_PAGES pages). A list that reports its `total_count` has its
+        remaining pages read together (`gate`, a semaphore, bounds the requests in flight); otherwise, or if the
+        count turns out short, pages are read one after another."""
+        if http is None:
+            async with self.http() as shared:
+                return await self.pages(path, key, http=shared, gate=gate)
+        separator = "&" if "?" in path else "?"
+
+        async def read(page):
+            async with gate or contextlib.nullcontext():
+                value = await self.request("GET", f"{path}{separator}per_page=100&page={page}", http=http)
             values = value if key is None else value.get(key) if isinstance(value, dict) else None
             if not isinstance(values, list):
                 raise GitHubError("github_response_invalid")
+            return value, values
+
+        first, values = await read(1)
+        result, page = list(values), 2
+        total = first.get("total_count") if isinstance(first, dict) else None
+        if len(values) == 100 and type(total) is int and total > 100:
+            if total >= 100 * MAX_PAGES:
+                raise GitHubError("github_repository_discovery_limit")
+            ahead = range(2, -(-total // 100) + 1)
+            batch = await gather_all(read(number) for number in ahead)
+            for _, values in batch:
+                result.extend(values)
+            page = ahead.stop
+        while len(values) == 100:
+            if page > MAX_PAGES:
+                raise GitHubError("github_repository_discovery_limit")
+            _, values = await read(page)
             result.extend(values)
-            if len(values) < 100:
-                return result
-        raise GitHubError("github_repository_discovery_limit")
+            page += 1
+        return result
 
     @_deadline(45)
-    async def installations(self):
-        values = await self.pages("/user/installations", "installations")
+    async def installations(self, *, http=None):
+        values = await self.pages("/user/installations", "installations", http=http)
         if any(not isinstance(value, dict) or not valid_github_id(value.get("id"))
                 or not valid_github_id(value.get("app_id")) for value in values):
             raise GitHubError("github_response_invalid")
@@ -116,9 +155,16 @@ class GitHubAppClient:
 
     @_deadline(60)
     async def repositories(self):
+        """(installation, repository) pairs, installation by installation in the order GitHub lists them. One
+        connection pool serves the whole walk, and the installations' repositories are read together."""
+        gate = asyncio.Semaphore(LISTING_CONCURRENCY)
+        async with self.http() as http:
+            installations = await self.installations(http=http)
+            listings = await gather_all(self.pages(f"/user/installations/{int(installation['id'])}/repositories",
+                "repositories", http=http, gate=gate) for installation in installations)
         result = []
-        for installation in await self.installations():
-            for repository in await self.pages(f"/user/installations/{int(installation['id'])}/repositories", "repositories"):
+        for installation, repositories in zip(installations, listings):
+            for repository in repositories:
                 self.validate_repository(repository)
                 result.append((installation, repository))
                 if len(result) > 1000:

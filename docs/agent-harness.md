@@ -106,6 +106,7 @@ credentials; GitHub writes happen in the backend.
   `timeout -k 5 <timeout_sec> bash -c <command>` inside the VM, so its deadline is enforced there and reaches every child
   process; the output so far comes back with `timed_out`. If the connection is lost, or the person presses Stop, the
   backend ends the command's whole process group in the VM. The VM's lifetime is extended to cover a long command.
+  While it runs, its output (both streams) is shown live, redacted, from the end (the saved result is unchanged).
 - **Connections**: reconnecting to an existing VM is retried after a transient failure; creating one is never retried
   (a failed create may still have allocated a VM). A dropped connection during a command or a write is a
   `SANDBOX_DISCONNECTED` result, not a failed run, and the next call reconnects.
@@ -116,6 +117,9 @@ credentials; GitHub writes happen in the backend.
 
 ## Provider adapter
 
+- `complete` can report what the model is writing as it writes it: text (`on_text` / `on_narration`) and each fragment of a
+  tool call (`on_tool`). The loop uses the last to show a long call while it is written (see
+  [live activity](live-activity.md#tool-calls-shown-live)); what is reported never changes the response that is returned.
 - Retries (`LLM_MAX_RETRIES`, default 4) with jittered exponential backoff from 1 s, honouring `retry-after` and
   `retry-after-ms` up to 30 s, for rate limits, 5xx/overloaded, timeouts and dropped connections, including a stream
   that broke after it started (the loop clears what that attempt showed first). Quota and credential errors are never
@@ -141,5 +145,5 @@ numbers; free text and file content become lengths; URLs become their host) and,
 ## Tests
 
 `tests/test_child_runtime.py`, `test_tool_gateway.py`, `test_tool_approvals.py`, `test_llm_adapter.py`,
-`test_sandbox_provider.py`, `test_sandbox_shell.py` and `test_agent_prompts.py` drive the real loop, gateway, adapter and
+`test_sandbox_provider.py`, `test_sandbox_shell.py`, `test_tool_stream.py` and `test_agent_prompts.py` drive the real loop, gateway, adapter and
 sandbox tools with scripted models and fakes; no provider, VM or database is needed.

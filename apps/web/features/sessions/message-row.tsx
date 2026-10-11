@@ -1,6 +1,7 @@
 "use client";
 import { memo, useEffect, useState } from "react";
 import { CircleAlert, FileText } from "lucide-react";
+import { DeliveryCard } from "@/features/delivery/delivery-card";
 import { AnswerExtras } from "@/features/sessions/answer-extras";
 import { AssistantMessage } from "@/features/sessions/assistant-message";
 import { CopyButton } from "@/features/sessions/copy-button";
@@ -59,7 +60,7 @@ export const UserRow = memo(function UserRow({ ledger, rowKey, content, createdA
 });
 
 /** One saved answer. Memoized on its (stable) record, so a streamed token or a refresh elsewhere never re-renders the history. */
-export const AssistantRow = memo(function AssistantRow({ entry, ledger, ran, onRetry }: { entry: ConversationMessage; ledger: EntranceLedger; ran: Terminal | undefined; onRetry?: () => void }) {
+export const AssistantRow = memo(function AssistantRow({ entry, ledger, ran, onRetry, latest = false }: { entry: ConversationMessage; ledger: EntranceLedger; ran: Terminal | undefined; onRetry?: () => void; latest?: boolean }) {
   const entrance = useEntrance(ledger, entry.id, entry.task_id, false);
   const when = formatDate(entry.created_at);
   // Older servers send no `activity`: the capped list of finished calls stands in for the count.
@@ -72,6 +73,8 @@ export const AssistantRow = memo(function AssistantRow({ entry, ledger, ran, onR
       : <AssistantMessage content={readable(entry.content)} />}
     {failed && onRetry ? <button type="button" onClick={onRetry} className="mt-2 inline-flex min-h-8 items-center rounded-lg border px-3 text-[13px] font-medium text-foreground outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/60 motion-reduce:transition-none [@media(pointer:coarse)]:min-h-11">Try again</button> : null}
     {entry.task_id ? <AnswerExtras taskId={entry.task_id} activity={entry.activity} /> : null}
+    {/* Only the newest answer carries the delivery card: older ones would show a stale picture of the same branch. */}
+    {latest && !failed ? <DeliveryCard /> : null}
     <div className={`${actionsClass} -ml-2 mt-1`}>
       <CopyButton text={entry.content} label="Copy response" />
       <time dateTime={entry.created_at} className="px-1.5">{when}</time>

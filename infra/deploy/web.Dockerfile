@@ -4,7 +4,9 @@ RUN npm install --global pnpm@10.34.6
 COPY apps/web/package.json apps/web/pnpm-lock.yaml apps/web/pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY apps/web ./
-ENV NEXT_TELEMETRY_DISABLED=1 API_ORIGIN=http://api:8000
+# The public origin (for social cards, the sitemap and robots). Public pages are prerendered, so it is read at build time.
+ARG SITE_URL=""
+ENV NEXT_TELEMETRY_DISABLED=1 API_ORIGIN=http://api:8000 SITE_URL=$SITE_URL
 RUN pnpm build
 
 FROM node:24.21.0-bookworm-slim

@@ -111,6 +111,12 @@ async def execute(settings, sessions, telemetry, jobs, lease):
             logger.error("Task recovery receipt unavailable; task_id=%s", lease.task_id)
     finally:
         if runtime is not None:
+            if runtime.after_turn is not None:
+                # Remembering what is waiting to be pushed is a convenience: it never delays or fails the turn's result.
+                try:
+                    await asyncio.wait_for(runtime.after_turn(), 40)
+                except Exception as error:
+                    logger.info("could not note the turn's workspace changes: %s", type(error).__name__)
             await runtime.close()
 
 

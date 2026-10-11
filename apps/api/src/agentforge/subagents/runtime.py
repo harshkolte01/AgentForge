@@ -5,10 +5,11 @@ How an agent works:
   answers in plain text. That text, exactly as written, is the answer: nothing wraps it, grades it or turns it into a
   status.
 - A tool error is returned to the model as a normal tool result naming what was wrong, so it can correct itself.
-- Independent read-only calls in one turn run side by side; anything with an effect runs alone.
+- Independent read-only calls in one turn run side by side, and so do delegations (each subagent has its own run and ledger);
+  any other call with an effect runs alone.
 - Old tool results are compacted when the conversation outgrows the model's window. If it still cannot fit, the
   provider's own limit is what the person is told.
-- Nothing here caps steps, tool calls, cost or time. A person stops a run with Stop; provider errors are raised as they are.
+- Main conversations keep their existing Stop behavior. Delegated children have a wall-time bound and ledger-enforced operation/cost bounds.
 """
 
 import asyncio
@@ -26,6 +27,7 @@ from agentforge.contracts.tasks import MAX_ANSWER_CHARS
 from agentforge.llm.models import ModelContextLimit, ModelProviderError, ToolCallingModel, conservative_input_tokens
 from agentforge.tools.catalog import error_guidance
 from agentforge.tools.gateway import ToolGateway
+from agentforge.tools.lifecycle import legacy_call_id
 
 from .budget import BudgetService, Reservation
 from .context import KEEP_RECENT_RESULTS, RESULT_PREFIX, compact_messages
@@ -88,6 +90,7 @@ class ChildRuntime:
 
         # Models that retry a broken stream themselves say so by taking `on_retry`; others are simply not told.
         accepts_retry = "on_retry" in inspect.signature(model.complete).parameters
+        accepts_tool = "on_tool" in inspect.signature(model.complete).parameters
         context_budget = getattr(model, "context_budget_tokens", None)
         max_input = getattr(model, "max_input_tokens", None)
 
@@ -148,6 +151,10 @@ class ChildRuntime:
             if stream is not None:
                 extra["on_text"] = stream.feed
                 extra["on_narration"] = stream.feed_narration
+                if accepts_tool and getattr(stream, "feed_tool", None) is not None:
+                    # A call is shown as the model writes it, under the id its tool.started event will carry.
+                    extra["on_tool"] = lambda index, provider_id, name, piece: stream.feed_tool(
+                        index, legacy_call_id(f"{reservation.run_id}:tool:{provider_id}"), name, piece)
                 restart()
             try:
                 response = await model.complete(sent, schemas, **extra)
@@ -293,7 +300,8 @@ class ChildRuntime:
         configurable["thread_id"] = f"{ctx.task_id}:child:{reservation.run_id}"
         invoke_config["configurable"] = configurable
         try:
-            output = await child.ainvoke({"messages": messages, "pending": [], "steps": 0, "cuts": 0, "empties": 0,
+            async with asyncio.timeout(scope.budget.max_wall_time_sec if getattr(ctx, "depth", 0) else None):
+                output = await child.ainvoke({"messages": messages, "pending": [], "steps": 0, "cuts": 0, "empties": 0,
                                           "again": False, "answer": None, "partial": "", "conts": 0, "nudged": False},
                                          invoke_config)
         except BaseException:

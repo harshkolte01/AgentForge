@@ -33,6 +33,22 @@ const nextConfig: NextConfig = {
       },
     },
   },
+  // Keep Tailwind output identical when building with the Webpack fallback.
+  webpack(config) {
+    const addTailwind = (rules: { use?: unknown; oneOf?: unknown; rules?: unknown }[]) => {
+      for (const rule of rules) {
+        if (!rule || typeof rule !== "object") continue;
+        if (Array.isArray(rule.oneOf)) addTailwind(rule.oneOf);
+        if (Array.isArray(rule.rules)) addTailwind(rule.rules);
+        if (Array.isArray(rule.use) && rule.use.some((entry) => {
+          const loader = typeof entry === "string" ? entry : entry?.loader;
+          return typeof loader === "string" && loader.includes("/css-loader/");
+        })) rule.use.push({ loader: "@tailwindcss/turbopack" });
+      }
+    };
+    addTailwind(config.module.rules);
+    return config;
+  },
 };
 
 export default nextConfig;

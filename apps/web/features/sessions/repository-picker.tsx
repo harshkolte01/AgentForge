@@ -33,6 +33,17 @@ export function RepositoryPicker({ repository, disabled, onChange, side = "top" 
   const search = useRef<HTMLInputElement>(null);
   const list = useRef<HTMLDivElement>(null);
   useEffect(() => {
+    // Read the list while the page is idle, so the menu usually opens onto it. A failure is shown only when the menu is opened.
+    if (disabled || repositoryCache.fresh()) return;
+    const warm = () => { void repositoryCache.get().catch(() => {}); };
+    if (typeof window.requestIdleCallback === "function") {
+      const handle = window.requestIdleCallback(warm, { timeout: 3000 });
+      return () => window.cancelIdleCallback(handle);
+    }
+    const handle = window.setTimeout(warm, 1000);
+    return () => window.clearTimeout(handle);
+  }, [disabled]);
+  useEffect(() => {
     if (!open) return;
     // Shared and cached for a minute: opening the menu again, or another conversation's menu, reuses the same list.
     let cancelled = false;
@@ -57,6 +68,8 @@ export function RepositoryPicker({ repository, disabled, onChange, side = "top" 
   const needle = query.trim().toLowerCase();
   const visible = useMemo(() => repositories.filter((item) => !needle || item.full_name.toLowerCase().includes(needle)), [repositories, needle]);
   const showCurrentUnlisted = !!repository && !listed && (!needle || repository.repo_id.toLowerCase().includes(needle));
+  /** Aiming at the button is a good sign the menu is next: start reading a list that is not fresh (shared with any read under way). */
+  function warm() { if (!blocked && !repositoryCache.fresh()) void repositoryCache.get().catch(() => {}); }
   function changeOpen(next: boolean) {
     if (next && (blocked || busy)) return;
     setOpen(next);
@@ -94,15 +107,19 @@ export function RepositoryPicker({ repository, disabled, onChange, side = "top" 
   }
   const blocked = disabled && !busy;
   const label = repository?.repo_id ?? "No repository";
-  const rows: Array<{ key: string; label: string; selected: boolean; private?: boolean; detail?: string; value: RepositorySelection | null }> = [];
-  if (!needle) rows.push({ key: "none", label: "No repository", selected: !repository, value: null });
-  if (showCurrentUnlisted && repository) rows.push({ key: `current-${repository.repo_id}`, label: repository.repo_id, selected: true, detail: repository.ref === "HEAD" ? "default branch" : repository.ref, value: repository });
-  for (const item of visible) {
-    const selected = item.full_name === repository?.repo_id;
-    rows.push({ key: String(item.id), label: item.full_name, selected, private: item.private, detail: selected && repository ? (repository.ref === "HEAD" ? "default branch" : repository.ref) : undefined, value: selected && repository ? repository : { repo_id: item.full_name, ref: item.default_branch } });
-  }
+  // Rebuilt only when the list, the search or the selection changes, not on every render (a long list is hundreds of rows).
+  const rows = useMemo(() => {
+    const built: Array<{ key: string; label: string; selected: boolean; private?: boolean; readOnly?: boolean; detail?: string; value: RepositorySelection | null }> = [];
+    if (!needle) built.push({ key: "none", label: "No repository", selected: !repository, value: null });
+    if (showCurrentUnlisted && repository) built.push({ key: `current-${repository.repo_id}`, label: repository.repo_id, selected: true, detail: repository.ref === "HEAD" ? "default branch" : repository.ref, value: repository });
+    for (const item of visible) {
+      const selected = item.full_name === repository?.repo_id;
+      built.push({ key: String(item.id), label: item.full_name, selected, private: item.private, readOnly: !item.can_write, detail: selected && repository ? (repository.ref === "HEAD" ? "default branch" : repository.ref) : undefined, value: selected && repository ? repository : { repo_id: item.full_name, ref: item.default_branch } });
+    }
+    return built;
+  }, [needle, repository, showCurrentUnlisted, visible]);
   return <Popover open={open} onOpenChange={changeOpen}>
-    <PopoverTrigger disabled={blocked} aria-label={`Conversation repository: ${label}`} title={repository ? `${repository.repo_id} · ${repository.ref === "HEAD" ? "default branch" : repository.ref}` : "Work without a repository"} className={`${chipClass} ${repository ? "text-foreground" : ""}`}>
+    <PopoverTrigger disabled={blocked} onPointerEnter={warm} onFocus={warm} onTouchStart={warm} aria-label={`Conversation repository: ${label}`} title={repository ? `${repository.repo_id} · ${repository.ref === "HEAD" ? "default branch" : repository.ref}` : "Work without a repository"} className={`${chipClass} ${repository ? "text-foreground" : ""}`}>
       <FolderGit2 className="size-4" aria-hidden="true" />
       <span className="min-w-0 truncate">{label}</span>
       <ChevronDown className="size-3 opacity-60 max-[359px]:hidden" aria-hidden="true" />
@@ -116,10 +133,11 @@ export function RepositoryPicker({ repository, disabled, onChange, side = "top" 
         <div className="flex flex-wrap items-center justify-between gap-2"><Link href="/settings?section=github" className="text-xs text-muted-foreground underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-ring/60">Manage GitHub access</Link><Button type="submit" size="sm" className="min-h-10 px-3 sm:min-h-8" disabled={blocked} aria-disabled={busy || undefined}>{busy ? "Saving…" : "Use repository"}</Button></div>
       </form> : <div className="flex flex-col p-1.5" onKeyDown={navigate}>
         {showSearch ? <div className="relative mb-1"><Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" /><input ref={search} type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search repositories" aria-label="Search repositories" autoCapitalize="none" autoCorrect="off" spellCheck={false} className="h-10 w-full rounded-lg bg-muted/60 pl-8 pr-2 text-[13px] outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring sm:h-8" /></div> : null}
-        <div ref={list} role="listbox" aria-label="Repositories" className="flex max-h-64 flex-col gap-px overflow-y-auto overscroll-contain">
+        <div ref={list} role="listbox" aria-label="Repositories" className="flex max-h-64 flex-col gap-px overflow-y-auto overscroll-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {rows.map((row) => <button key={row.key} type="button" role="option" aria-selected={row.selected} aria-disabled={busy || undefined} tabIndex={-1} className={optionClass} onClick={() => void choose(row.value)}>
             <span className="min-w-0 flex-1 truncate">{row.label}</span>
             {row.private ? <Lock className="size-3 shrink-0 text-muted-foreground" aria-label="Private repository" /> : null}
+            {row.readOnly ? <span className="shrink-0 text-xs text-muted-foreground" title="You can read this repository, but not publish changes to it">Read only</span> : null}
             {row.detail ? <span className="max-w-24 shrink-0 truncate text-xs text-muted-foreground">{row.detail}</span> : null}
             <Check className={`size-4 shrink-0 ${row.selected ? "" : "invisible"}`} aria-hidden="true" />
           </button>)}

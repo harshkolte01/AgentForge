@@ -10,6 +10,7 @@ class StrictContract(BaseModel):
 
 
 ToolName = Literal[
+    "delegate_task",
     "web_search", "fetch_webpage", "read_repo_file", "search_repo", "get_issue",
     "list_repo_files", "read_sandbox_file", "write_sandbox_file", "edit_sandbox_file", "git_diff",
     "run_sandbox_command", "run_tests", "get_test_results", "get_pr_status",
@@ -63,6 +64,7 @@ class Budget(StrictContract):
 
 
 TOOL_CAPABILITIES: dict[str, tuple[str, ...]] = {
+    "delegate_task": (),
     "web_search": ("web",), "fetch_webpage": ("web",),
     "read_repo_file": ("github_read",), "search_repo": ("github_read",),
     "get_issue": ("github_read",), "list_repo_files": ("github_read",),

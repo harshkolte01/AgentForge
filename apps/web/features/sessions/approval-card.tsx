@@ -14,7 +14,7 @@ import { message } from "@/lib/task-api";
  * body), so it can be long: a short one shows as is; a long one says its size, scrolls in its own box and can be expanded to
  * read more at once. When the server had to cut it short, the card says so, so nobody approves text they could not see.
  */
-export function ApprovalCard({ approval }: { approval: PendingApproval }) {
+export function ApprovalCard({ approval, source }: { approval: PendingApproval; source?: string }) {
   const [sent, setSent] = useState<"approve" | "deny" | null>(null);
   const [error, setError] = useState("");
   const [expanded, setExpanded] = useState(false);
@@ -27,6 +27,7 @@ export function ApprovalCard({ approval }: { approval: PendingApproval }) {
   const title = approvalTitle(approval.tool);
   const size = detailSize(approval.detail);
   return <div role="group" aria-label={title} data-approval-card className="message-in flex min-w-0 flex-col gap-2.5 rounded-2xl border bg-background p-3.5 shadow-[0_1px_2px_rgb(0_0_0/0.03)] dark:bg-card dark:shadow-none">
+    {source ? <p className="-mb-1 truncate text-xs leading-5 text-muted-foreground" data-approval-source>{source}</p> : null}
     <p className="flex items-center gap-2 text-[13px] font-medium leading-5 text-foreground"><ShieldQuestion className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />{title}</p>
     {approval.detail ? <pre id={detailId} tabIndex={size ? 0 : undefined} role={size ? "region" : undefined} aria-label={size ? "Exact action" : undefined} className={`${expanded ? "max-h-72" : "max-h-44"} min-w-0 overflow-auto overscroll-contain whitespace-pre-wrap break-words rounded-lg bg-muted px-3 py-2 font-mono text-[12.5px] leading-5 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/60`}>{approval.detail}</pre> : null}
     {size || approval.truncated ? <div className="-mt-1 flex min-h-6 flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs leading-5 text-muted-foreground" data-approval-detail-meta>

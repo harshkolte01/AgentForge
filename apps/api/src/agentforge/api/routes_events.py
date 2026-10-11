@@ -54,11 +54,17 @@ async def stream_snapshot(task_id: UUID, request: Request, response: Response,
     return snapshot
 
 
-def delta_frame(task_id: UUID, epoch: int, revision: int, kind: str, offset: int, text: str, reset: bool) -> str:
-    """One `message.delta`: a reset replaces the client's live text (offset 0), anything else appends at `offset`."""
-    payload = json.dumps({"task_id": str(task_id), "epoch": epoch, "revision": revision, "kind": kind,
-                          "offset": offset, "text": text, "reset": reset})
-    return f"event: message.delta\ndata: {payload}\n\n"
+def delta_frame(task_id: UUID, epoch: int, revision: int, kind: str, offset: int, text: str, reset: bool,
+                tool: tuple[str | None, str | None, str | None] | None = None) -> str:
+    """One `message.delta`: a reset replaces the client's live text (offset 0), anything else appends at `offset`.
+
+    A frame of kind `tool` also names the call it belongs to. The name, id and detail are fixed for a (epoch, revision),
+    so a reader takes them from the reset that opened it.
+    """
+    frame = {"task_id": str(task_id), "epoch": epoch, "revision": revision, "kind": kind, "offset": offset, "text": text, "reset": reset}
+    if tool is not None:
+        frame.update(zip(("tool", "call_id", "detail"), tool))
+    return f"event: message.delta\ndata: {json.dumps(frame)}\n\n"
 
 
 @router.get("/{task_id}/events")
@@ -112,10 +118,10 @@ async def events(task_id: UUID, request: Request, user: User = Depends(current_u
                     epoch, revision, kind, length, text = read.live
                     if sent_state != (epoch, revision) or length < sent_length:
                         sent_state, sent_length = (epoch, revision), length
-                        yield delta_frame(task_id, epoch, revision, kind, 0, text, True)
+                        yield delta_frame(task_id, epoch, revision, kind, 0, text, True, read.tool)
                         last_output = time.monotonic()
                     elif length > sent_length:
-                        yield delta_frame(task_id, epoch, revision, kind, sent_length, text, False)
+                        yield delta_frame(task_id, epoch, revision, kind, sent_length, text, False, read.tool)
                         sent_length = length
                         last_output = time.monotonic()
                 if page:

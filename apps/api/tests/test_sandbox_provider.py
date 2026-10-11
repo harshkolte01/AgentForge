@@ -248,6 +248,29 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(sdk.connected), OPEN_ATTEMPTS)
         self.assertEqual(sdk.created, [])  # the person's files are not abandoned for a temporary error
 
+    async def test_attaching_resumes_the_conversations_sandbox_and_never_creates_one(self):
+        from e2b import NotFoundException
+        sdk = FakeSDK()
+        workspace = await SandboxProvider(config(), factory=sdk).attach("sbx-old")
+        self.assertEqual((workspace.sandbox_id, sdk.connected[0][0], sdk.created), ("sbx-1", "sbx-old", []))
+        # No sandbox yet, or one that is gone: nothing to look at, and nothing is started (or paid for) just to look.
+        self.assertIsNone(await SandboxProvider(config(), factory=sdk).attach(None))
+        gone = FakeSDK(connect_error=NotFoundException("gone"))
+        self.assertIsNone(await SandboxProvider(config(), factory=gone).attach("sbx-old"))
+        self.assertEqual(gone.created, [])
+
+    async def test_attaching_reports_other_failures_safely_and_without_a_key_does_nothing(self):
+        sdk = FakeSDK(connect_error=OSError("private diagnostic"))
+        with patch("agentforge.integrations.e2b_sandbox.OPEN_RETRY_SEC", 0), self.assertRaises(SandboxUnavailable) as caught:
+            await SandboxProvider(config(), factory=sdk).attach("sbx-old")
+        self.assertEqual(caught.exception.code, "SANDBOX_CONNECT_FAILED")
+        self.assertNotIn("private", str(caught.exception))
+        self.assertEqual((len(sdk.connected), sdk.created), (OPEN_ATTEMPTS, []))
+        keyless = FakeSDK()
+        with self.assertRaises(SandboxUnavailable) as none:
+            await SandboxProvider(SandboxConfig(), factory=keyless).attach("sbx-old")
+        self.assertEqual((none.exception.code, keyless.connected), ("SANDBOX_NOT_CONFIGURED", []))
+
     async def test_a_replaced_sandbox_is_marked_as_recreated(self):
         from e2b import NotFoundException
         workspace, created = await SandboxProvider(config(), factory=FakeSDK(connect_error=NotFoundException("gone"))).open(

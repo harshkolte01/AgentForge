@@ -82,6 +82,8 @@ class CallLifecycle:
         self.started = self.finished = False
         # Set by the gateway once the arguments are validated; shown on the start event.
         self.detail: str | None = None
+        # Further ids the start event carries (a delegation names its child run). Keys are in the events allowlist.
+        self.extra: dict[str, str] = {}
 
     def _send(self, event_type: str, payload: dict[str, Any]) -> bool:
         try:
@@ -95,7 +97,7 @@ class CallLifecycle:
         if self.sink is None or not is_visible_call(self.tool, error_code):
             return False
         if not self.started:
-            self.started = self._send("tool.started", {"tool": self.tool, **({"detail": self.detail} if self.detail else {}), **self.ids})
+            self.started = self._send("tool.started", {"tool": self.tool, **({"detail": self.detail} if self.detail else {}), **self.ids, **self.extra})
         return self.started
 
     def finish(self, outcome: str, *, evidence_ids: Sequence[str] = (), artifact_ids: Sequence[str] = (),
@@ -158,5 +160,6 @@ def reconcile_open_calls(session, task, *, final_status: str, error_code: str | 
             agent_run_id=started.get("agent_run_id") or (str(row.agent_run_id) if row is not None else ""),
             evidence_ids=list(row.evidence_ids or []) if row is not None else [], artifact_ids=artifact_ids,
             error_code=code, duration_ms=duration if isinstance(duration, int) else None,
-            labels=execution_labels(started.get("tool") or "", result.get("execution"))))
+            labels={**execution_labels(started.get("tool") or "", result.get("execution")),
+                **({"parent_run_id": started["parent_run_id"]} if started.get("parent_run_id") else {})}))
     return len(open_calls)

@@ -11,7 +11,7 @@ from agentforge.database.models import Project, Task, TaskEvent
 from agentforge.database.phase3 import TaskStream
 from .runs import SessionFactory
 
-_KEYS = {"status", "previous_status", "step_id", "step_key", "spawn_id", "type", "version", "error_code", "attempt", "lease_generation", "evidence_ids", "artifact_ids", "checks", "reason", "tool", "detail", "model", "input_tokens", "output_tokens", "sandbox_id", "base_sha", "revision", "profile_id", "exit_code", "qualified", "failure_evidence_ids", "approval_id", "action_type", "state", "commit_sha", "pr_number", "pr_url", "head_branch", "base_branch", "repo_id", "delivery_kind", "branch_url", "text", "epoch", "call_id", "tool_call_id", "agent_run_id", "outcome", "timed_out", "duration_ms", "truncated"}
+_KEYS = {"status", "previous_status", "step_id", "step_key", "spawn_id", "type", "version", "error_code", "attempt", "lease_generation", "evidence_ids", "artifact_ids", "checks", "reason", "tool", "detail", "model", "input_tokens", "output_tokens", "sandbox_id", "base_sha", "revision", "profile_id", "exit_code", "qualified", "failure_evidence_ids", "approval_id", "action_type", "state", "commit_sha", "pr_number", "pr_url", "head_branch", "base_branch", "repo_id", "delivery_kind", "branch_url", "text", "epoch", "call_id", "tool_call_id", "agent_run_id", "parent_run_id", "child_run_id", "outcome", "timed_out", "duration_ms", "truncated"}
 
 
 def append_event(session, task: Task, event_type: str, payload: dict[str, Any]) -> None:
@@ -29,10 +29,19 @@ def append_event(session, task: Task, event_type: str, payload: dict[str, Any]) 
                           event_type=event_type, payload=payload))
 
 
+ToolIdentity = tuple[str | None, str | None, str | None]   # tool, call_id, detail: what a `tool` row is about
+
+
+def _identity(row) -> ToolIdentity | None:
+    """Which tool call a live row shows. Only a `tool` or `output` row has one; prose rows read as none."""
+    return (row.tool, row.call_id, row.detail) if row.kind in ("tool", "output") else None
+
+
 class LiveRead(NamedTuple):
     terminal: bool
     event_sequence: int | None
     live: tuple[int, int, str, int, str] | None   # epoch, revision, kind, length, text (whole or the unsent rest)
+    tool: ToolIdentity | None = None              # the tool call `live` shows, when its kind is `tool`
 
 
 class EventRepository:
@@ -40,21 +49,23 @@ class EventRepository:
         self.session_factory = session_factory
 
     def stream_snapshot(self, task_id: UUID, owner_id: UUID):
-        """(epoch, revision, kind, text) of the live text, or None. Never raises: streaming is best effort.
+        """(epoch, revision, kind, text, tool) of the live text, or None. `tool` is (tool, call_id, detail) for a live
+        tool call and None otherwise. Never raises: streaming is best effort.
 
         A task that is already terminal shows no live text: a row left behind by a worker that died is reported as
         cleared (one revision newer, exactly as `clear_stream` writes it), so nothing stale outlives the task.
         """
         try:
             with self.session_factory() as session:
-                row = session.execute(select(TaskStream.epoch, TaskStream.revision, TaskStream.kind, TaskStream.text, Task.status)
+                row = session.execute(select(TaskStream.epoch, TaskStream.revision, TaskStream.kind, TaskStream.text,
+                        TaskStream.tool, TaskStream.call_id, TaskStream.detail, Task.status)
                     .join(Task, Task.id == TaskStream.task_id)
                     .where(TaskStream.task_id == task_id, Task.created_by == owner_id)).first()
             if row is None:
                 return None
             if row.status in TERMINAL_STATUSES and (row.text or row.kind != "progress"):
-                return row.epoch, row.revision + 1, "progress", ""
-            return row.epoch, row.revision, row.kind, row.text
+                return row.epoch, row.revision + 1, "progress", "", None
+            return row.epoch, row.revision, row.kind, row.text, _identity(row)
         except Exception:
             return None
 
@@ -72,7 +83,8 @@ class EventRepository:
                 if state is not None else false())
             with self.session_factory() as session:
                 row = session.execute(select(Task.status, Task.event_sequence, TaskStream.epoch, TaskStream.revision,
-                        TaskStream.kind, func.length(TaskStream.text).label("length"),
+                        TaskStream.kind, TaskStream.tool, TaskStream.call_id, TaskStream.detail,
+                        func.length(TaskStream.text).label("length"),
                         case((same, func.substr(TaskStream.text, sent + 1)), else_=TaskStream.text).label("text"))
                     .outerjoin(TaskStream, TaskStream.task_id == Task.id)
                     .where(Task.id == task_id, Task.created_by == owner_id)).first()
@@ -81,13 +93,14 @@ class EventRepository:
         if row is None:
             return LiveRead(False, None, None)
         terminal = row.status in TERMINAL_STATUSES
+        tool = None
         if row.epoch is None:
             live = None
         elif terminal and (row.length or row.kind != "progress"):
             live = (row.epoch, row.revision + 1, "progress", 0, "")
         else:
-            live = (row.epoch, row.revision, row.kind, row.length, row.text)
-        return LiveRead(terminal, row.event_sequence, live)
+            live, tool = (row.epoch, row.revision, row.kind, row.length, row.text), _identity(row)
+        return LiveRead(terminal, row.event_sequence, live, tool)
 
     def live_snapshot(self, task_id: UUID, owner_id: UUID) -> LiveStreamSnapshot:
         """The whole current live text with the task's event watermark, for a client that lost its place."""
@@ -98,9 +111,10 @@ class EventRepository:
         if task is None:
             raise TaskNotFound("task_not_found")
         live = self.stream_snapshot(task_id, owner_id)
-        epoch, revision, kind, text = live if live is not None else (0, 0, "progress", "")
-        return LiveStreamSnapshot(task_id=task_id, epoch=epoch, revision=revision, kind=kind, text=text,
-                                  event_sequence=task.event_sequence, terminal=task.status in TERMINAL_STATUSES)
+        epoch, revision, kind, text, tool = live if live is not None else (0, 0, "progress", "", None)
+        name, call_id, detail = tool or (None, None, None)
+        return LiveStreamSnapshot(task_id=task_id, epoch=epoch, revision=revision, kind=kind, text=text, tool=name, call_id=call_id,
+                                  detail=detail, event_sequence=task.event_sequence, terminal=task.status in TERMINAL_STATUSES)
 
     def list_after(self, task_id: UUID, owner_id: UUID, after_sequence: int = 0,
                    limit: int = 100) -> list[TaskEventView]:

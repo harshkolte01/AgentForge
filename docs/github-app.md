@@ -27,13 +27,26 @@ GitHub → Settings → Developer settings → GitHub Apps → **New GitHub App*
 | Webhook secret | 32+ random characters, also set as `GITHUB_WEBHOOK_SECRET` |
 
 **Repository permissions:** Contents *Read and write*, Pull requests *Read and
-write*, Issues *Read-only*, Metadata *Read-only* (mandatory). No organization or
-account permissions are needed.
+write*, Issues *Read-only*, Metadata *Read-only* (mandatory), and — to show CI status
+on a pull request — **Checks** *Read-only* and **Commit statuses** *Read-only*. No
+organization or account permissions are needed. Without the last two everything works,
+but the Changes panel shows "Checks unavailable" instead of the checks. After adding
+permissions to an existing App, each installation must accept the update (GitHub emails
+the owner; Settings → GitHub shows the repository as needing attention until then).
 
-**Events:** none to tick. GitHub sends `installation`, `installation_repositories`
-and `github_app_authorization` to every App with an active webhook; AgentForge uses
-them only to drop access (uninstalls, removed repositories, revoked
-authorizations), never to grant it.
+**Events:** `installation`, `installation_repositories` and `github_app_authorization`
+are sent to every App with an active webhook; AgentForge uses them only to drop access
+(uninstalls, removed repositories, revoked authorizations), never to grant it. To make
+the Changes panel follow a pull request live, also subscribe to **Pull request**, **Pull
+request review**, **Check suite**, **Check run** and **Status**. These only mark the
+stored status stale so it is read again at once; nothing in their payloads is trusted
+beyond choosing which conversation to refresh. Without them the panel polls (every 15 s
+while a pull request is open and visible).
+
+Merging, closing, marking ready and pushing are only ever done by the signed-in person
+from the Changes panel (and `create_pull_request`, by the agent, never merging); they
+need "Contents" and "Pull requests" write access and `ENABLE_GITHUB_WRITES=true`. See
+[delivery](delivery.md).
 
 **Where can this GitHub App be installed:** "Only on this account" for a private
 deployment, "Any account" if other people will install it on their own accounts.
@@ -88,7 +101,8 @@ webhook; leave the webhook inactive or use a tunnel. Local single-user sign-in
 
 Sign-in starts at `GET /api/v1/auth/github/start` (optional `next`: a same-origin
 path such as `/settings?section=github` to land on afterwards). Success lands on
-`APP/chat` (or `next`); a failure lands on `APP/chat?auth_error=<code>`:
+`APP/chat` (or `next`); a failure lands on `APP/chat?auth_error=<code>` (the web app forwards that to
+`/sign-in?auth_error=<code>`, where the message is shown):
 
 | Code | Meaning |
 | --- | --- |

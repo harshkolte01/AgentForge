@@ -25,7 +25,7 @@ from agentforge.subagents.scope import ScopeDenied, TaskContext
 
 BUILTIN_KEYS = frozenset({"agent"})
 # Stored built-in snapshots are immutable: a changed prompt is a new version file, and older tasks keep resolving theirs.
-AGENT_VERSION = 2
+AGENT_VERSION = 3
 AGENT_KEY = "builtin/agent"
 BUILTIN_CACHE_SEC = 60
 _builtin_cache: dict[tuple[str, int], tuple[float, "ResolvedDefinition"]] = {}   # (key, version) -> (valid until, result)

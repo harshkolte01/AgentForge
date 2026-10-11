@@ -1,6 +1,7 @@
 """Atomic turn admission and recoverable receipts; no model or network effects."""
 import hashlib
 import json
+import logging
 from bisect import bisect_right
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
@@ -15,6 +16,8 @@ from agentforge.database.coding import CodingSession
 from agentforge.tools.visibility import SELF_CORRECTION_CODES
 from .activity import activity_for_tasks, attachments_for_tasks
 from .tasks import TaskConflict, TaskNotFound, TaskRepository
+
+logger = logging.getLogger(__name__)
 
 
 PLACEHOLDER_TITLES = frozenset({"New session", "New conversation"})
@@ -306,16 +309,48 @@ class SessionRepository:
                     result[ident] = "failed" if state == "failed" else "idle" if state == "cancelled" else "unread"
         return result
 
+    @staticmethod
+    def deliveries(session, ids):
+        """Each conversation's GitHub summary (SessionView.delivery), for any number of conversations in one query.
+
+        Decoration only: if it cannot be read (say a database not yet migrated) the list still answers, without marks.
+        """
+        from agentforge.contracts.sessions import DeliverySummary
+        from agentforge.database.delivery import ConversationDelivery
+        ids = list(ids)
+        if not ids:
+            return {}
+        try:
+            with session.begin_nested():
+                rows = list(session.execute(select(ConversationDelivery.conversation_id, ConversationDelivery.state,
+                    ConversationDelivery.pr_json, ConversationDelivery.unpublished_json).where(
+                    ConversationDelivery.conversation_id.in_(ids), ConversationDelivery.status == "active")))
+        except Exception:
+            logger.warning("delivery summaries unavailable", exc_info=True)
+            return {}
+        result = {}
+        for ident, state, pr, unpublished in rows:
+            pr = pr or {}
+            if state == "none" and not unpublished:
+                continue
+            result[ident] = DeliverySummary(state=state, unpublished=bool(unpublished),
+                pr_state=pr.get("state") if state == "pull_request" else None,
+                checks=(pr.get("checks") or {}).get("state") if state == "pull_request" else None,
+                review=(pr.get("reviews") or {}).get("decision") if state == "pull_request" else None,
+                mergeable=pr.get("mergeable") if state == "pull_request" else None)
+        return result
+
     @classmethod
-    def view(cls, session, row, *, counts=None, activity=None, continuations=None):
-        """`counts`, `activity` and `continuations` let a caller that already measured many conversations at once avoid
-        asking again per row."""
+    def view(cls, session, row, *, counts=None, activity=None, continuations=None, deliveries=None):
+        """`counts`, `activity`, `continuations` and `deliveries` let a caller that already measured many conversations at once
+        avoid asking again per row."""
         counts = cls.queue_counts(session, [row.id]) if counts is None else counts
         waiting, blocked = counts.get(row.id, (0, 0))
         activity = cls.activities(session, [row], counts)[row.id] if activity is None else activity
         continuation = cls.continuation(session, row) if continuations is None else continuations.get(row.id)
+        deliveries = cls.deliveries(session, [row.id]) if deliveries is None else deliveries
         return SessionView.model_validate(row).model_copy(update={"continuation_task_id": continuation,
-            "queued_count": waiting + blocked, "status": activity})
+            "queued_count": waiting + blocked, "status": activity, "delivery": deliveries.get(row.id)})
 
     @staticmethod
     def owned(session, session_id, owner_id, *, lock=True):
@@ -373,7 +408,8 @@ class SessionRepository:
             counts = self.queue_counts(session, [row.id for row in rows])
             states = self.activities(session, rows, counts)
             continuations = self.continuations(session, rows)
-            return [self.view(session, row, counts=counts, activity=states[row.id], continuations=continuations) for row in rows]
+            deliveries = self.deliveries(session, [row.id for row in rows])
+            return [self.view(session, row, counts=counts, activity=states[row.id], continuations=continuations, deliveries=deliveries) for row in rows]
 
     def mark_read(self, session_id, owner_id, sequence):
         """Records that the owner has now seen the conversation up to `sequence` (at most its last message, never backwards)."""

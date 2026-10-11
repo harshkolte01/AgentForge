@@ -1,4 +1,5 @@
 """Trace actual manual model/tool calls without capturing their content."""
+import inspect
 
 
 class ObservedModel:
@@ -13,7 +14,7 @@ class ObservedModel:
     def maximum_request_cost(self, messages, tools):
         return self.model.maximum_request_cost(messages, tools)
 
-    async def complete(self, messages, tools, on_text=None, tool_choice=None, on_narration=None):
+    async def complete(self, messages, tools, on_text=None, tool_choice=None, on_narration=None, on_retry=None):
         self.store.progress("model.started", {"model": self.model_id})
         with self.telemetry.span("model_request", kind="LLM") as span:
             if span is not None:
@@ -21,6 +22,8 @@ class ObservedModel:
                 span.set_attribute("llm.model", self.model_id)
             extra = {key: value for key, value in (('on_text', on_text), ('tool_choice', tool_choice),
                                                    ('on_narration', on_narration)) if value is not None}
+            if on_retry is not None and "on_retry" in inspect.signature(self.model.complete).parameters:
+                extra["on_retry"] = on_retry
             response = await self.model.complete(messages, tools, **extra)
             if span is not None:
                 span.set_attribute("gen_ai.usage.input_tokens", response.usage.input_tokens)
