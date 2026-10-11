@@ -23,6 +23,21 @@ class TextAttachment(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=120)
     content: str = Field(min_length=1, max_length=8000)
+    upload_id: UUID | None = Field(default=None, exclude_if=lambda value: value is None)
+    upload_sha256: str | None = Field(default=None, exclude_if=lambda value: value is None, pattern=r"^[0-9a-f]{64}$")
+    media_type: Literal["image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf", "text/plain"] | None = Field(default=None, exclude_if=lambda value: value is None)
+    byte_size: int | None = Field(default=None, exclude_if=lambda value: value is None, ge=1, le=8 * 1024 * 1024)
+
+    page_count: int | None = Field(default=None, exclude_if=lambda value: value is None, ge=1, le=20)
+
+    @model_validator(mode="after")
+    def complete_upload(self):
+        fields = (self.upload_id, self.upload_sha256, self.media_type, self.byte_size)
+        if any(value is not None for value in fields) and not all(value is not None for value in fields):
+            raise ValueError("upload metadata must be complete")
+        if (self.media_type == "application/pdf") != (self.page_count is not None):
+            raise ValueError("only PDF attachments require a page count")
+        return self
 
 
 class TaskCreate(BaseModel):

@@ -1,5 +1,6 @@
 """A closed catalog whose capabilities exist only when an adapter is registered."""
 
+import json
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from decimal import Decimal
@@ -12,6 +13,8 @@ if TYPE_CHECKING:
     from .gateway import ToolExecutionContext
 
 ToolHandler = Callable[[ToolArguments, "ToolExecutionContext"], Awaitable[ToolOutcome]]
+# Extra text for an approval card that only the adapter can produce (a pull request's changed files), read without effects.
+ToolPreview = Callable[[ToolArguments, "ToolExecutionContext"], Awaitable[str]]
 
 # What the model reads for each tool: purpose, when to use it, how to continue, and its limits.
 DESCRIPTIONS = {
@@ -126,6 +129,9 @@ ERROR_GUIDANCE = {
     "SANDBOX_CREATE_FAILED": "The sandbox could not be created. Retry once; if it fails again, tell the person.",
     "SANDBOX_CONNECT_FAILED": "The conversation's sandbox could not be reached. Retry once; if it fails again, tell the person.",
     "SANDBOX_COMMAND_FAILED": "The sandbox did not answer. Retry once with a simpler command; if it fails again, tell the person.",
+    "COMMAND_TOO_LONG": "Put the long script in a file with write, then run that file with a short bash command.",
+    "SANDBOX_DISCONNECTED":"The connection dropped mid-call. Inspect the effect (ls, read, git status) before repeating anything; "
+                            "if the sandbox keeps failing, tell the person.",
     "REPOSITORY_UNAVAILABLE": "The selected repository could not be loaded into the sandbox. Tell the person; work without it only if that makes sense.",
     "REPOSITORY_LOAD_FAILED": "The selected repository could not be unpacked in the sandbox. Tell the person.",
     "NO_REPOSITORY": "There is no checkout of a selected repository to compare against. Tell the person a repository must be selected first.",
@@ -209,12 +215,32 @@ EFFECT_TOOLS = frozenset({"create_task_artifact", "bash", "write", "edit", "crea
 ASKS_BEFORE = frozenset({"bash", "write", "edit", "create_pull_request"})
 
 
-def approval_summary(name: str, args) -> str:
-    """What the approval card shows: the command, the path or the title, exactly as the call will use it."""
-    from agentforge.integrations.e2b_sandbox import redact_output
-    text = {"bash": lambda: args.command, "write": lambda: args.path, "edit": lambda: args.path,
-            "create_pull_request": lambda: args.title}.get(name, lambda: "")()
-    return redact_output(text)[:600]
+# What an approval card can show, measured as the escaped JSON that carries it (an event payload is capped at 16 KB).
+APPROVAL_DETAIL_BYTES = 13000
+
+
+def approval_summary(name: str, args, extra: str = "") -> tuple[str, bool]:
+    """What the approval card shows, exactly as the call will use it: the whole command, the file and its whole new content,
+    the text an edit replaces and its replacement, the pull request's title and description (and `extra`, the files it
+    changes). Nothing is redacted, since a rewritten command is not the command that runs. The flag says the text had to be
+    cut to fit the card."""
+    if name == "bash":
+        text = args.command
+    elif name == "write":
+        text = f"{args.path}\n\n{args.content}"
+    elif name == "edit":
+        text = (f"{args.path}\n\nReplace{' every occurrence of' if args.replace_all else ''}:\n{args.old_string}\n\n"
+                f"With:\n{args.new_string}")
+    elif name == "create_pull_request":
+        text = f"{args.title}\n\n{args.body}".rstrip()
+    else:
+        text = ""
+    if extra:
+        text = f"{text}\n\n{extra}"
+    shown = text
+    while len(json.dumps(shown).encode()) > APPROVAL_DETAIL_BYTES:
+        shown = shown[:int(len(shown) * 0.8)]
+    return shown, shown != text
 
 # Identifiers the model would otherwise copy from the brief on every call. When the harness can bind
 # one to the task's single authorized value it hides the field from the schema and fills it in itself.
@@ -256,6 +282,7 @@ class RegisteredTool:
     handler: ToolHandler
     max_cost_usd: Decimal
     timeout_sec: float
+    preview: ToolPreview | None = None
 
     @property
     def input_model(self) -> type[ToolArguments]:
@@ -290,7 +317,8 @@ class ToolCatalog:
     def __init__(self) -> None:
         self._tools: dict[str, RegisteredTool] = {}
 
-    def register(self, name: str, handler: ToolHandler, *, max_cost_usd: Decimal, timeout_sec: float = 30) -> None:
+    def register(self, name: str, handler: ToolHandler, *, max_cost_usd: Decimal, timeout_sec: float = 30,
+                 preview: ToolPreview | None = None) -> None:
         if name not in ARGUMENT_MODELS:
             raise ToolUnavailable("tool is outside the platform allowlist")
         if name in self._tools:
@@ -299,7 +327,7 @@ class ToolCatalog:
             raise ValueError("adapter requires a nonnegative finite cost cap")
         if not 0 < timeout_sec:
             raise ValueError("adapter requires a positive timeout")
-        self._tools[name] = RegisteredTool(name, handler, max_cost_usd, timeout_sec)
+        self._tools[name] = RegisteredTool(name, handler, max_cost_usd, timeout_sec, preview)
 
     def get(self, name: str) -> RegisteredTool:
         try:

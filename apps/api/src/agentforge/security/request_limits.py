@@ -9,8 +9,9 @@ class RequestBodyLimitMiddleware:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or not scope.get("path", "").startswith("/api/"):
             return await self.app(scope, receive, send)
+        maximum = 8 * 1024 * 1024 if scope.get("path") == "/api/v1/attachments" and scope.get("method") == "POST" else self.maximum
         lengths = [value for key, value in scope.get("headers", []) if key.lower() == b"content-length"]
-        if lengths and (len(lengths) != 1 or len(lengths[0]) > 20 or not lengths[0].isdigit() or int(lengths[0]) > self.maximum):
+        if lengths and (len(lengths) != 1 or len(lengths[0]) > 20 or not lengths[0].isdigit() or int(lengths[0]) > maximum):
             return await JSONResponse({"detail": "request_body_size_limit"}, status_code=413)(scope, receive, send)
         received = 0
         async def bounded_receive():
@@ -18,7 +19,7 @@ class RequestBodyLimitMiddleware:
             message = await receive()
             if message["type"] == "http.request":
                 received += len(message.get("body", b""))
-                if received > self.maximum:
+                if received > maximum:
                     raise HTTPException(413, "request_body_size_limit")
             return message
         await self.app(scope, bounded_receive, send)

@@ -1,7 +1,7 @@
 import { beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { IDBFactory } from "fake-indexeddb";
-import { deliverIntent, pendingTurns, readDraft, saveIntent, writeDraft } from "../lib/conversation-outbox.ts";
+import { accountId, deliverIntent, forgetAccount, pendingTurns, readDraft, saveIntent, writeDraft } from "../lib/conversation-outbox.ts";
 
 const account = "fixture-account";
 const input = () => ({ routing: "auto", repository: null, idempotency_key: crypto.randomUUID(), goal: "Keep the earlier decision.",
@@ -90,4 +90,27 @@ test("older asynchronous draft writes cannot restore an acknowledged draft", asy
   await writeDraft({ id, goal: "", attachments: [], revision: 100 });
   await writeDraft({ id, goal: "Old text", attachments: [], revision: 99 });
   assert.equal((await readDraft(id)).goal, "");
+});
+
+test("the account is read once and reused until the session changes; a delivery always checks it afresh", async () => {
+  forgetAccount();
+  assert.equal(await accountId(), account);
+  assert.equal(await accountId(), account);
+  assert.equal(calls.filter((url) => url === "/api/v1/auth/session").length, 1);
+  identity = "different-account";
+  assert.equal(await accountId(), account, "cached until forgotten");
+  assert.equal(await accountId({ fresh: true }), "different-account");
+  forgetAccount();
+  identity = account;
+  assert.equal(await accountId(), account);
+  assert.equal(calls.filter((url) => url === "/api/v1/auth/session").length, 3);
+});
+
+test("a failed account read is not cached", async () => {
+  forgetAccount();
+  const working = globalThis.fetch;
+  globalThis.fetch = async () => { throw new TypeError("offline"); };
+  await assert.rejects(accountId());
+  globalThis.fetch = working;
+  assert.equal(await accountId(), account);
 });

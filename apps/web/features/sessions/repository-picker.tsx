@@ -6,19 +6,24 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { inputClass } from "@/components/session-boundary";
 import { chipClass, iconButtonClass, optionClass } from "@/features/sessions/composer-styles";
-import { api, message } from "@/lib/task-api";
+import { ApiError, message } from "@/lib/task-api";
 import type { GitHubRepository } from "@/lib/github-api";
+import { repositoryCache } from "@/lib/github-repositories-cache";
 import type { RepositorySelection } from "@/lib/workspace-api";
 
 const SEARCH_THRESHOLD = 6;
+const linkClass = "rounded underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-ring/60";
+/** Why the list could not be read decides what to offer: reconnecting, connecting, or simply trying again. */
+const needsConnection = new Set(["github_authorization_failed", "github_app_user_token_required", "github_access_denied"]);
 
 export function RepositoryPicker({ repository, disabled, onChange, side = "top" }: { repository: RepositorySelection | null; disabled: boolean; onChange: (value: RepositorySelection | null) => Promise<void>; side?: "top" | "bottom" }) {
   const id = useId();
-  const [repositories, setRepositories] = useState<GitHubRepository[]>([]);
+  const [repositories, setRepositories] = useState<GitHubRepository[]>(() => repositoryCache.peek() ?? []);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [unavailable, setUnavailable] = useState(false);
+  // The list could not be read: `code` is the server's reason, when it gave one.
+  const [unavailable, setUnavailable] = useState<{ code?: string } | null>(null);
   const [open, setOpen] = useState(false);
   const [custom, setCustom] = useState(false);
   const [query, setQuery] = useState("");
@@ -29,16 +34,18 @@ export function RepositoryPicker({ repository, disabled, onChange, side = "top" 
   const list = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
-    const controller = new AbortController();
-    void api<{ repositories: GitHubRepository[] }>("/github/repositories", { signal: controller.signal }).then((value) => {
-      if (!controller.signal.aborted) { setRepositories(value.repositories); setUnavailable(false); setLoading(false); }
-    }).catch(() => { if (!controller.signal.aborted) { setUnavailable(true); setLoading(false); } });
-    return () => controller.abort();
+    // Shared and cached for a minute: opening the menu again, or another conversation's menu, reuses the same list.
+    let cancelled = false;
+    void repositoryCache.get().then((value) => {
+      if (!cancelled) { setRepositories(value); setUnavailable(null); setLoading(false); }
+    }, (failure: unknown) => { if (!cancelled) { setUnavailable({ code: failure instanceof ApiError ? failure.code : undefined }); setLoading(false); } });
+    return () => { cancelled = true; };
   }, [refresh, open]);
   useEffect(() => {
     if (!open) return;
+    // Coming back from GitHub (after granting a repository) reads the list again, unless it was read moments ago.
     const reload = () => {
-      if (document.hidden) return;
+      if (document.hidden || repositoryCache.fresh()) return;
       setLoading(true);
       setRefresh((value) => value + 1);
     };
@@ -53,7 +60,7 @@ export function RepositoryPicker({ repository, disabled, onChange, side = "top" 
   function changeOpen(next: boolean) {
     if (next && (blocked || busy)) return;
     setOpen(next);
-    if (next) { setLoading(true); setCustom(false); setQuery(""); setError(""); }
+    if (next) { setRepositories((current) => repositoryCache.peek() ?? current); setLoading(!repositoryCache.fresh()); setCustom(false); setQuery(""); setError(""); }
   }
   async function choose(value: RepositorySelection | null) {
     if (busy) return;
@@ -119,8 +126,13 @@ export function RepositoryPicker({ repository, disabled, onChange, side = "top" 
           {needle && !rows.length ? <p className="px-2.5 py-3 text-[13px] text-muted-foreground" role="status">No matching repositories.</p> : null}
         </div>
         {loading ? <p className="px-2.5 py-2 text-xs text-muted-foreground" role="status">Loading your repositories…</p> : null}
-        {!loading && unavailable ? <p className="flex flex-wrap items-center gap-x-2 px-2.5 py-2 text-xs leading-5 text-muted-foreground" role="status">Your repositories couldn’t be loaded.<button type="button" className="inline-flex items-center gap-1 rounded underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-ring/60" onClick={() => { setLoading(true); setRefresh((value) => value + 1); }}><RefreshCw className="size-3" aria-hidden="true" />Retry</button></p> : null}
-        {!loading && !unavailable && !repositories.length ? <p className="px-2.5 py-2 text-xs leading-5 text-muted-foreground">No connected repositories yet. <Link href="/settings?section=github" className="underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-ring/60">Manage GitHub access</Link></p> : null}
+        {!loading && unavailable ? <p className="flex flex-wrap items-center gap-x-2 px-2.5 py-2 text-xs leading-5 text-muted-foreground" role="status">
+          {unavailable.code === "github_reauthorization_required" ? <>Your GitHub authorization has expired.<a href="/api/v1/auth/github/start" className={linkClass}>Reconnect GitHub</a></>
+            : unavailable.code === "github_auth_not_configured" ? <>GitHub isn’t set up here, so only public repositories can be used.<Link href="/settings?section=github" className={linkClass}>GitHub settings</Link></>
+              : unavailable.code && needsConnection.has(unavailable.code) ? <>Connect GitHub to list your repositories.<Link href="/settings?section=github" className={linkClass}>Connect GitHub</Link></>
+                : <>Your repositories couldn’t be loaded.<button type="button" className={`inline-flex items-center gap-1 ${linkClass}`} onClick={() => { repositoryCache.invalidate(); setLoading(true); setRefresh((value) => value + 1); }}><RefreshCw className="size-3" aria-hidden="true" />Retry</button></>}
+        </p> : null}
+        {!loading && !unavailable && !repositories.length ? <p className="px-2.5 py-2 text-xs leading-5 text-muted-foreground">No connected repositories yet. <Link href="/settings?section=github" className={linkClass}>Manage GitHub access</Link></p> : null}
         {error ? <p role="alert" className="px-2.5 py-2 text-xs leading-5 text-destructive">{error}</p> : null}
         <div className="mt-1 border-t pt-1"><button type="button" className={optionClass} onClick={openCustom}><Plus className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" /><span className="flex-1">Use another repository…</span></button></div>
       </div>}

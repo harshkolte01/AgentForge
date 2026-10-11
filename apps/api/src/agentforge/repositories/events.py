@@ -1,9 +1,9 @@
 """Append events in the same transaction as their state change."""
 
 import json
-from typing import Any
+from typing import Any, NamedTuple
 from uuid import UUID
-from sqlalchemy import select
+from sqlalchemy import and_, case, false, func, select
 from agentforge.contracts.activity import LiveStreamSnapshot
 from agentforge.contracts.events import TaskEventView
 from agentforge.contracts.tasks import TERMINAL_STATUSES
@@ -11,7 +11,7 @@ from agentforge.database.models import Project, Task, TaskEvent
 from agentforge.database.phase3 import TaskStream
 from .runs import SessionFactory
 
-_KEYS = {"status", "previous_status", "step_id", "step_key", "spawn_id", "type", "version", "error_code", "attempt", "lease_generation", "evidence_ids", "artifact_ids", "checks", "reason", "tool", "detail", "model", "input_tokens", "output_tokens", "sandbox_id", "base_sha", "revision", "profile_id", "exit_code", "qualified", "failure_evidence_ids", "approval_id", "action_type", "state", "commit_sha", "pr_number", "pr_url", "head_branch", "base_branch", "repo_id", "delivery_kind", "branch_url", "text", "epoch", "call_id", "tool_call_id", "agent_run_id", "outcome", "timed_out", "duration_ms"}
+_KEYS = {"status", "previous_status", "step_id", "step_key", "spawn_id", "type", "version", "error_code", "attempt", "lease_generation", "evidence_ids", "artifact_ids", "checks", "reason", "tool", "detail", "model", "input_tokens", "output_tokens", "sandbox_id", "base_sha", "revision", "profile_id", "exit_code", "qualified", "failure_evidence_ids", "approval_id", "action_type", "state", "commit_sha", "pr_number", "pr_url", "head_branch", "base_branch", "repo_id", "delivery_kind", "branch_url", "text", "epoch", "call_id", "tool_call_id", "agent_run_id", "outcome", "timed_out", "duration_ms", "truncated"}
 
 
 def append_event(session, task: Task, event_type: str, payload: dict[str, Any]) -> None:
@@ -27,6 +27,12 @@ def append_event(session, task: Task, event_type: str, payload: dict[str, Any]) 
     task.event_sequence += 1
     session.add(TaskEvent(task_id=task.id, sequence=task.event_sequence,
                           event_type=event_type, payload=payload))
+
+
+class LiveRead(NamedTuple):
+    terminal: bool
+    event_sequence: int | None
+    live: tuple[int, int, str, int, str] | None   # epoch, revision, kind, length, text (whole or the unsent rest)
 
 
 class EventRepository:
@@ -51,6 +57,37 @@ class EventRepository:
             return row.epoch, row.revision, row.kind, row.text
         except Exception:
             return None
+
+    def stream_since(self, task_id: UUID, owner_id: UUID, state: tuple[int, int] | None = None, sent: int = 0) -> LiveRead:
+        """One pass of the SSE loop in one statement: the task's status and event watermark, and the live text as
+        (epoch, revision, kind, length, text). A reader that already holds `sent` characters of the same (epoch,
+        revision) gets only the rest of the text; any other reader (or a shorter row) gets the whole of it. Lengths
+        are counted in characters by PostgreSQL, so offsets agree with the text Python receives.
+
+        Never raises (streaming is best effort): a failed read is LiveRead(False, None, None). A terminal task's
+        leftover text is reported as cleared, as in `stream_snapshot`.
+        """
+        try:
+            same = (and_(TaskStream.epoch == state[0], TaskStream.revision == state[1], func.length(TaskStream.text) >= sent)
+                if state is not None else false())
+            with self.session_factory() as session:
+                row = session.execute(select(Task.status, Task.event_sequence, TaskStream.epoch, TaskStream.revision,
+                        TaskStream.kind, func.length(TaskStream.text).label("length"),
+                        case((same, func.substr(TaskStream.text, sent + 1)), else_=TaskStream.text).label("text"))
+                    .outerjoin(TaskStream, TaskStream.task_id == Task.id)
+                    .where(Task.id == task_id, Task.created_by == owner_id)).first()
+        except Exception:
+            return LiveRead(False, None, None)
+        if row is None:
+            return LiveRead(False, None, None)
+        terminal = row.status in TERMINAL_STATUSES
+        if row.epoch is None:
+            live = None
+        elif terminal and (row.length or row.kind != "progress"):
+            live = (row.epoch, row.revision + 1, "progress", 0, "")
+        else:
+            live = (row.epoch, row.revision, row.kind, row.length, row.text)
+        return LiveRead(terminal, row.event_sequence, live)
 
     def live_snapshot(self, task_id: UUID, owner_id: UUID) -> LiveStreamSnapshot:
         """The whole current live text with the task's event watermark, for a client that lost its place."""

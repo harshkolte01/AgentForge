@@ -9,7 +9,8 @@ error is shown as it is, and Stop ends a run. See [the agent](docs/agent.md).
 Coding runs in a persistent E2B sandbox per conversation (internet on, no
 secrets inside). In **Ask me** mode the agent stops before anything that changes
 something (a command, a file write or edit, a pull request) and the chat shows an
-Approve / Decline card; in **Approve for me** mode it never asks. Each task keeps
+Approve / Decline card with exactly what will happen: the command, the file content
+or edit, or the pull request's changed files. In **Approve for me** mode it never asks. Each task keeps
 event history and a usage ledger.
 
 The workspace supports persistent conversations and immutable custom-agent
@@ -44,41 +45,29 @@ flowchart LR
 
 ## Development
 
-Use Python 3.12–3.13, uv, Node 24 and pnpm **10.34.6**. Dependencies are locked in
-`apps/api/uv.lock` and `apps/web/pnpm-lock.yaml`. Local development uses the existing
-PostgreSQL service rather than deployment Compose. Keep credentials in an ignored
-root `.env`; [Settings](apps/api/src/agentforge/settings.py) is the configuration
-contract. Never overwrite an existing `.env` with a template.
+Use Python 3.12–3.13, uv, Node 24 and pnpm **10.34.6** (via corepack), with a local
+PostgreSQL server. Dependencies are locked in `apps/api/uv.lock` and
+`apps/web/pnpm-lock.yaml`.
 
 ```sh
-cd apps/api
-uv sync --locked
-# Explicitly target a development database before migrating.
-uv run alembic upgrade head
-uv run uvicorn agentforge.main:app --host 127.0.0.1 --port 8000 --no-access-log
+scripts/dev-setup.sh          # checks tools, creates .env from .env.example if absent, installs dependencies
+# edit .env: DATABASE_URL and the LLM_* block
+(cd apps/api && uv run alembic upgrade head)                                  # or: scripts/dev-setup.sh --migrate
+(cd apps/api && uv run python -m agentforge.auth.bootstrap --write-env)       # local sign-in
+(cd apps/api && uv run python -m agentforge.doctor)                           # PASS/FAIL per requirement
+scripts/dev.sh                # API :8000, worker and web :3000 together; Ctrl-C stops all
 ```
 
-In separate terminals:
-
-```sh
-cd apps/api
-uv run python -m agentforge.workers.runner
-```
-
-```sh
-cd apps/web
-corepack pnpm install --frozen-lockfile
-corepack pnpm dev
-```
-
-Open `http://localhost:3000`. `API_ORIGIN` is a server-only HTTP(S) origin used by
-Next.js's API rewrite; it defaults to `http://localhost:8000`. Deployments route
-`/api/` directly to FastAPI and keep browser requests on the same origin. Configure
-local single-user access or [GitHub identity](docs/phase-5.md) explicitly before
-using protected routes. Provider names, tool/JSON support, context/output limits
-and current per-token prices must be configured; missing keys fail closed.
-Set `E2B_API_KEY` to give the agent its coding sandbox (`E2B_TEMPLATE_ID` is
-optional; E2B's default image has git, Python and Node).
+Open `http://localhost:3000` and enter the `LOCAL_BOOTSTRAP_TOKEN` from `.env`.
+Configuration lives in an ignored root `.env`; [.env.example](.env.example) lists
+every setting and [Settings](apps/api/src/agentforge/settings.py) is the contract.
+The API refuses to start on invalid settings and names the fields, never their
+values. Never overwrite an existing `.env` with the template. For GitHub sign-in
+and private repositories, create a GitHub App as in [docs/github-app.md](docs/github-app.md).
+Set `E2B_API_KEY` for the coding sandbox and `TAVILY_API_KEY` for web search.
+`API_ORIGIN` (in `apps/web/.env.local`, default `http://localhost:8000`) is the
+server-only origin of Next.js's API rewrite; deployments route `/api/` directly
+to FastAPI on the same origin.
 
 ## Checks and release
 

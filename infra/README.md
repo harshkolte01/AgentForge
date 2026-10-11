@@ -1,1 +1,1 @@
-Local development uses the existing PostgreSQL service at localhost:5432 with the `agentforge` database; Docker Compose is skipped, and credentials are stored in the ignored root `.env`.
+Local development uses the existing PostgreSQL service at localhost:5432 with the `agentforge` database; Docker Compose is skipped, and credentials are stored in the ignored root `.env` (template: `.env.example`; see the README's Development section). Deployment configuration is in `deploy/`.

@@ -45,8 +45,9 @@ by the backend from `git diff agentforge-base`, so GitHub credentials never ente
 A global setting (`GET/PUT /api/v1/settings/approval-mode`, default `ask`) applies to every conversation.
 
 * **Ask me**: before `bash`, `write`, `edit` or `create_pull_request` the run stops and the chat shows an Approve /
-  Decline card (`approval.required`). It waits as long as it takes. Declining returns a normal tool result telling
-  the agent the person said no.
+  Decline card (`approval.required`) with exactly what will run: the whole command, the file content or the edit, or
+  the pull request with every file it changes. It waits as long as it takes. Declining returns a normal tool result
+  telling the agent the person said no. A command too long to show in full is refused before anyone is asked.
 * **Approve for me**: nothing asks.
 
 The mode is read before each call, so switching it releases a waiting card. Answers: `POST /api/v1/tool-approvals/{id}`.

@@ -7,7 +7,9 @@ from sqlalchemy import create_engine, pool
 
 from agentforge.database import models
 from agentforge.database.migration_filter import include_autogenerate_object
-from agentforge.settings import get_settings
+from pydantic import ValidationError
+
+from agentforge.settings import get_settings, validation_summary
 
 config = context.config
 if config.config_file_name is not None:
@@ -16,9 +18,17 @@ if config.config_file_name is not None:
 target_metadata = models.Base.metadata
 
 
+def database_url() -> str:
+    try:
+        return get_settings().database_url
+    except ValidationError as error:
+        # Pydantic's own message repeats rejected input, which can include secrets from .env.
+        raise SystemExit("Invalid configuration (values hidden):\n" + validation_summary(error)) from None
+
+
 def run_migrations_offline() -> None:
     context.configure(
-        url=get_settings().database_url,
+        url=database_url(),
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
@@ -32,7 +42,7 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     # Pass the URL directly: percent-encoded passwords never enter ConfigParser.
-    engine = create_engine(get_settings().database_url, poolclass=pool.NullPool)
+    engine = create_engine(database_url(), poolclass=pool.NullPool)
     try:
         with engine.connect() as connection:
             context.configure(

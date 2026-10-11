@@ -3,7 +3,7 @@ import hashlib
 import json
 from uuid import UUID
 from sqlalchemy import Text, cast, func, or_, select
-from agentforge.database.models import Project, Task, ToolCall
+from agentforge.database.models import Project, Task, TaskEvent, ToolCall
 from agentforge.database.sessions import (Conversation, ConversationMessage, ConversationSummary,
     ProviderInput, SessionTurn, ToolResultSnapshot, TurnExecution, TurnInput)
 from agentforge.database.research_models import ResearchArtifact
@@ -36,6 +36,37 @@ def turn_messages(db, pairs):
         for execution, admission in pairs]
 
 
+TOOLS_PER_TURN = 12
+
+
+def tool_activity(db, task_ids) -> dict:
+    """{task_id: ["bash: npm test (done)", ...]}: the last tool calls behind each earlier reply, as the short labels the
+    activity view shows (a query, a site, a path, a command; never output). Without them the next turn only sees the
+    reply's text and may redo work, or not know what it ran."""
+    if not task_ids:
+        return {}
+    ranked = select(TaskEvent.task_id, TaskEvent.event_type, TaskEvent.payload, TaskEvent.sequence,
+        func.row_number().over(partition_by=TaskEvent.task_id, order_by=TaskEvent.sequence.desc()).label("rank")).where(
+        TaskEvent.task_id.in_(task_ids), TaskEvent.event_type.in_(("tool.started", "tool.finished"))).subquery()
+    rows = db.execute(select(ranked.c.task_id, ranked.c.event_type, ranked.c.payload).where(ranked.c.rank <= 2 * TOOLS_PER_TURN)
+        .order_by(ranked.c.task_id, ranked.c.sequence))
+    calls: dict = {}
+    for task_id, kind, payload in rows:
+        key = payload.get("call_id") or payload.get("tool_call_id")
+        entry = calls.setdefault(task_id, {}).setdefault(key, {"tool": payload.get("tool"), "detail": None, "outcome": None})
+        if kind == "tool.started":
+            entry["detail"] = payload.get("detail")
+        else:
+            entry["outcome"] = ("declined by the person" if payload.get("error_code") == "DECLINED"
+                                else payload.get("outcome") or payload.get("status"))
+    labels = {}
+    for task_id, entries in calls.items():
+        labels[task_id] = [f"{entry['tool']}" + (f": {entry['detail']}" if entry["detail"] else "")
+            + f" ({'done' if entry['outcome'] in ('completed', 'ok') else entry['outcome'] or 'unfinished'})"
+            for entry in list(entries.values())[-TOOLS_PER_TURN:] if entry["tool"] and entry["tool"] != "unknown"]
+    return labels
+
+
 def history_snapshot(db, conversation, *, before=None, budget=48000):
     """Pure shared planner: same function powers next-turn status and execution."""
     from .sessions import clip
@@ -50,11 +81,13 @@ def history_snapshot(db, conversation, *, before=None, budget=48000):
         "recent_messages": [], "resources": [], "coverage": {"revision": conversation.revision,
         "before_ordinal": before, "summary_through_ordinal": summary.through_ordinal if summary else 0}}
     recent = []
+    activity = tool_activity(db, [execution.task_id for execution, _ in pairs if execution.task_id])
     for execution, rows in reversed(turn_messages(db, pairs)):
         for row in rows:
             recent.append({"message_id": str(row.id), "resource_id": f"message:{row.id}", "sequence": row.sequence,
                 "turn_id": str(execution.turn_id), "turn_ordinal": execution.ordinal, "role": row.role,
-                "state": execution.state, "text": row.content, "truncated": False})
+                "state": execution.state, "text": row.content, "truncated": False,
+                **({"tools": activity[execution.task_id]} if row.role == "assistant" and activity.get(execution.task_id) else {})})
     digest["recent_messages"] = recent
     # Small deterministic manifests make previous attachments and deliverables discoverable.
     turn_ids = [execution.turn_id for execution, _ in pairs]
@@ -223,6 +256,8 @@ class ConversationContextRepository:
                     if not 0 <= index < len(items):
                         raise ScopeDenied("attachment unavailable")
                     value = {"name": items[index]["name"], "content": items[index]["content"]}
+                    if items[index].get("upload_id"):
+                        value["upload"] = items[index]
                 elif artifact:
                     value = {"name": artifact.filename, "storage_key": artifact.storage_key, "sha256": artifact.sha256}
                 else:
@@ -237,12 +272,17 @@ class ConversationContextRepository:
             return value
 
     def record_provider_input(self, task_id, operation_key, messages, tools):
+        """Fixes the identity of each model request before it is paid for. Written once per model step, so only the
+        digest of the exact request and its shape are kept: the request is the whole conversation so far, and nothing
+        reads it back (the history it was built from stays in the conversation's own tables)."""
         payload = {"messages": messages, "tools": tools, "prompt_version": 2}
-        digest = hashlib.sha256(encoded(payload).encode()).hexdigest()
+        body = encoded(payload).encode()
+        digest = hashlib.sha256(body).hexdigest()
         with self.sessions() as db, db.begin():
             prior = db.get(ProviderInput, operation_key)
             if prior is not None:
                 if prior.sha256 != digest:
                     raise ScopeDenied("provider input identity conflict")
                 return
-            db.add(ProviderInput(task_id=task_id, operation_key=operation_key, sha256=digest, payload_json=payload))
+            shape = {"prompt_version": 2, "bytes": len(body), "messages": len(messages), "tools": len(tools or [])}
+            db.add(ProviderInput(task_id=task_id, operation_key=operation_key, sha256=digest, payload_json=shape))

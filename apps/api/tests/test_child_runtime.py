@@ -19,7 +19,9 @@ from agentforge.contracts.tasks import MAX_ANSWER_CHARS
 from agentforge.llm.models import ModelContextLimit, ModelProviderError, ModelResponse, ModelUsage
 from agentforge.subagents.context import RESULT_PREFIX
 from agentforge.subagents.registry import AGENT_VERSION, load_builtin
-from agentforge.subagents.runtime import CUT_OFF_NOTE, CUTOFF_NOTICE, EMPTY_NOTICE, ChildRuntime
+from agentforge.subagents.runtime import (
+    CONTINUE_NOTICE, CUT_OFF_NOTE, CUTOFF_NOTICE, EMPTY_NOTICE, MAX_CONTINUATIONS, STALLED_NOTICE, ChildRuntime, stalled,
+)
 from agentforge.tools.contracts import ToolOutcome
 
 from test_tool_gateway import make as make_gateway, ok
@@ -517,10 +519,45 @@ class LengthCutoffTests(IsolatedAsyncioTestCase):
         self.assertIn("output space", str(caught.exception))
         self.assertEqual(caught.exception.detail, "finish_reason: length")
 
-    async def test_a_reply_cut_off_without_tool_calls_is_the_answer_with_a_note(self):
-        result = await run(ScriptedModel([cut_off(text("The first half of a long answer"))]), FakeGateway())
+    async def test_a_reply_cut_off_without_tool_calls_is_continued_where_it_stopped(self):
+        model = ScriptedModel([cut_off(text("The first half")), text(" and the second half.")])
+        result = await run(model, FakeGateway())
+        self.assertEqual(result.summary, "The first half and the second half.")
+        follow_up = model.seen[1]["messages"]
+        self.assertEqual(follow_up[-2], {"role": "assistant", "content": "The first half"})
+        self.assertEqual(follow_up[-1], {"role": "user", "content": CONTINUE_NOTICE})
+
+    async def test_after_the_continuations_run_out_the_answer_is_shown_with_a_note(self):
+        model = ScriptedModel([cut_off(text("one")), cut_off(text(" two")), cut_off(text(" three"))])
+        result = await run(model, FakeGateway())
         self.assertEqual(result.status, "PASS")
-        self.assertEqual(result.summary, "The first half of a long answer" + CUT_OFF_NOTE)
+        self.assertEqual(len(model.seen), MAX_CONTINUATIONS + 1)
+        self.assertEqual(result.summary, "one two three" + CUT_OFF_NOTE)
+
+    async def test_a_continued_answer_is_shown_live_from_its_start(self):
+        sink = RecordingSink()
+        await run(ScriptedModel([cut_off(text("Start")), text(" end")]), FakeGateway(), stream=sink)
+        second = sink.log.index("begin", 1)
+        self.assertIn(("feed", "Start"), sink.log[second:])
+        self.assertEqual(sink.log[-1], "commit_reply")
+
+
+class StalledReplyTests(IsolatedAsyncioTestCase):
+    async def test_a_reply_that_announces_a_step_and_stops_is_sent_back_once(self):
+        model = ScriptedModel([text("Let me check the tests:"), text("All 12 tests pass.")])
+        result = await run(model, FakeGateway())
+        self.assertEqual(result.summary, "All 12 tests pass.")
+        self.assertEqual(model.seen[1]["messages"][-1], {"role": "user", "content": STALLED_NOTICE})
+
+    async def test_it_is_sent_back_only_once(self):
+        model = ScriptedModel([text("Next I will run:"), text("Here are the steps:")])
+        self.assertEqual((await run(model, FakeGateway())).summary, "Here are the steps:")
+        self.assertEqual(len(model.seen), 2)
+
+    def test_only_a_dangling_introduction_counts(self):
+        self.assertTrue(stalled("I'll look at the config next:"))
+        for finished in ("Done.", "Which one do you prefer?", "| a | b:", "- item:", "Ratio 1:2"):
+            self.assertFalse(stalled(finished), finished)
 
     async def test_a_cut_off_reply_with_no_text_is_an_empty_reply(self):
         model = ScriptedModel([cut_off(text("")), text("ok")])
@@ -540,6 +577,22 @@ class RecordingSink:
     def commit_narration(self): self.log.append("commit_narration")
     def commit_reply(self): self.log.append("commit_reply")
     def discard(self): self.log.append("discard")
+
+
+class BrokenStreamTests(IsolatedAsyncioTestCase):
+    async def test_a_stream_retried_after_it_broke_is_recorded_and_cleared_before_the_retry(self):
+        class Retrying(ScriptedModel):
+            async def complete(self, messages, tools, on_text=None, tool_choice=None, on_narration=None, on_retry=None):
+                (on_narration if tools else on_text)("Half an ans")
+                on_retry()  # the adapter's stream broke here and is about to send the request again
+                return await super().complete(messages, tools, on_text=on_text, on_narration=on_narration)
+        ledger, sink = Ledger(), RecordingSink()
+        result = await run(Retrying([text("The answer.")]), FakeGateway(), ledger=ledger, stream=sink)
+        self.assertEqual(result.summary, "The answer.")
+        broken = [entry for entry in ledger.usage if entry[0].endswith(":broken:1")]
+        self.assertEqual(len(broken), 1)
+        self.assertIsNone(broken[0][1])  # billed for an unknown amount: recorded as unknown, never as free
+        self.assertEqual(sink.log.count("begin"), 2)  # what the broken attempt showed was cleared
 
 
 class StreamHookTests(IsolatedAsyncioTestCase):

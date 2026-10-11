@@ -66,7 +66,6 @@ docker compose --env-file /etc/agentforge/deploy.env -f infra/deploy/compose.yam
 docker compose --env-file /etc/agentforge/deploy.env -f infra/deploy/compose.yaml build --pull
 docker compose --env-file /etc/agentforge/deploy.env -f infra/deploy/compose.yaml up -d db
 docker compose --env-file /etc/agentforge/deploy.env -f infra/deploy/compose.yaml run --rm migration
-docker compose --env-file /etc/agentforge/deploy.env -f infra/deploy/compose.yaml run --rm migration python -m agentforge.workers.checkpoints setup
 docker compose --env-file /etc/agentforge/deploy.env -f infra/deploy/compose.yaml up -d api worker web proxy
 ```
 
@@ -82,25 +81,29 @@ nginx1.30.5, verified against the
 The local development checks ran on older Python3.12.12/Node24.12.0; these new
 container runtimes still require build/smoke qualification.
 
-Keep `PUBLIC_SIGNUP_ENABLED=false` and `ENABLE_GITHUB_WRITES=false` until OAuth,
+AgentForge has no usage limits, so sign-in is the access control: list the people
+who may use the deployment in `GITHUB_ALLOWED_LOGINS` and keep
+`PUBLIC_SIGNUP_ENABLED=false`. Keep `ENABLE_GITHUB_WRITES=false` until OAuth,
 repository selection, expiry/revocation and approval-bound delivery have passed
-on a controlled live repository. Configure provider keys and verified model
+on a controlled live repository. Create the GitHub App as described in
+[docs/github-app.md](../../docs/github-app.md). Configure provider keys and verified model
 capabilities/prices, Neatlogs masking and the qualified E2B template before task
-intake. Public/global concurrency, daily task/cost and per-task limits are in the
-runtime template. Monitor provider-side spend too; the ledger cannot observe
-calls outside AgentForge.
+intake. Monitor provider-side spend too; the ledger cannot observe calls outside
+AgentForge. The API refuses to start in production with a non-HTTPS URL or origin,
+or without `AUTH_MODE=github_app` and its GitHub settings; the error names the
+settings, never their values.
 
 ## Health and streaming qualification
 
 `/api/v1/health/live` checks API process liveness; `/ready` checks database
-connectivity. Neither proves the worker or checkpointer is ready. Run:
+connectivity. Neither proves the worker is ready. Run:
 
 ```sh
 docker compose --env-file /etc/agentforge/deploy.env -f infra/deploy/compose.yaml exec -T api python -m agentforge.operations.check
 docker compose --env-file /etc/agentforge/deploy.env -f infra/deploy/compose.yaml ps
 ```
 
-The read-only operational snapshot reports revision, checkpoint-table presence,
+The read-only operational snapshot reports revision,
 queued/running/expired lease counts and latest job heartbeat age. An idle worker
 has no fresh job heartbeat, so its process state stays `not_observed`. Inspect
 worker logs and run a controlled authenticated canary task to establish processing.
@@ -108,8 +111,9 @@ This command does not claim table-schema compatibility or test artifact writes.
 
 nginx disables API response buffering/cache and preserves SSE cookies and cursor
 headers. The normal upstream idle timeout is 75s, above the stream keepalive
-interval. The bounded GitHub approval execution endpoint gets 300s because its
-operation can take 240s. Upstream retries are disabled to avoid repeat writes.
+interval. Upstream retries are disabled to avoid repeat writes. GitHub sign-in
+(`/api/v1/auth/github/start|callback`) is rate limited per client IPv4 address or
+IPv6 /64; the API's own limit is a DB-wide backstop.
 Verify authenticated event arrival before task completion, reconnect with the
 last cursor, owner denial, logout revocation and cancellation in a browser. Any
 additional CDN/load balancer must preserve streaming and use a sufficient idle
@@ -155,7 +159,7 @@ Record backup/restore times; no RPO/RTO is promised until this drill succeeds.
 
 For service recovery, stop intake, inspect unknown paid/external operations, then
 restart worker/API. Do not clear ledgers or replay unknown writes. Lease fencing
-and checkpoints resume eligible work; ambiguous paid child calls stay conservative
+and durable task state resume eligible work; ambiguous paid child calls stay conservative
 and GitHub delivery reconciles its operation ledger. Roll back application images
 only when the previous revision is schema-compatible; otherwise restore the
 verified DB/artifact pair to a new volume. Never run `compose down --volumes` on

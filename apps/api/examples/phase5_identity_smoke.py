@@ -65,7 +65,7 @@ async def run(settings):
         pass
     else:
         raise AssertionError("OAuth browser binding bypass")
-    check(identity.consume("state-fixture", "binding-fixture") == "verifier-fixture", "PKCE verifier mismatch")
+    check(identity.consume("state-fixture", "binding-fixture") == ("verifier-fixture", None), "PKCE verifier mismatch")
     try:
         identity.consume("state-fixture", "binding-fixture")
     except GitHubError:
@@ -123,6 +123,20 @@ async def run(settings):
             check(str(error) == "github_reauthorization_required", "refresh uncertainty not fenced")
         else:
             raise AssertionError("unknown refresh outcome accepted")
+    stage = "cached grant upsert"
+    from agentforge.database.identity import GitHubInstallation, GitHubRepositoryGrant
+    installation = {"id": 4401, "account": {"id": 77, "login": "fixture-org"}, "permissions": {"contents": "write"}}
+    def repo(identifier, full_name, push):
+        return {"id": identifier, "full_name": full_name, "permissions": {"push": push}}
+    signup.record_grants(signup_id, [(installation, repo(501, "fixture-org/b", False)), (installation, repo(500, "fixture-org/a", False))])
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(lambda _: signup.record_grants(signup_id, [(dict(installation, permissions={"contents": "read"}),
+            repo(500, "fixture-org/renamed", True))]), range(4)))
+    with sessions() as db:
+        grants = {row.repository_id: row for row in db.scalars(select(GitHubRepositoryGrant).where(GitHubRepositoryGrant.user_id == signup_id))}
+        check(set(grants) == {500, 501} and grants[500].full_name == "fixture-org/renamed"
+            and grants[500].permissions_json == {"push": True}, "grant upsert")
+        check(db.get(GitHubInstallation, 4401).permissions_json == {"contents": "read"}, "installation upsert")
     stage = "webhook durable replay and revocation"
     from fastapi import FastAPI
     from agentforge.api.routes_github import router as github_router
@@ -148,7 +162,6 @@ try:
         connection.execute(text('CREATE DATABASE "' + name + '" OWNER ' + owner))
     created = True
     settings = Settings(_env_file=None, database_url=source.set(database=name).render_as_string(hide_password=False),
-        langgraph_checkpoint_db_url=source.set(drivername="postgresql", database=name).render_as_string(hide_password=False),
         app_env="test", auth_mode="github_app", github_app_id=123, github_client_id="fixture", github_client_secret=SecretStr("fixture"),
         github_token_encryption_key=SecretStr("fixture-encryption-"+"x"*32), enable_github_writes=True,
         github_webhook_secret=SecretStr("fixture-webhook-"+"x"*32),

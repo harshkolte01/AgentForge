@@ -21,6 +21,19 @@ class DefinitionRepository:
             AgentDefinitionVersion.version == version,
         ))
 
+    def seeded_builtin(self, *, definition_id: UUID, agent_key: str, version: int,
+                       definition_json: dict[str, Any], sha256: str) -> AgentDefinitionVersion | None:
+        """The built-in's snapshot when it is already seeded, enabled and identical, by a plain read (no write, no
+        row lock); None means `ensure_builtin` must seed or reconcile it."""
+        definition = self.session.get(AgentDefinition, definition_id)
+        if (definition is None or definition.namespace != "builtin" or definition.agent_key != agent_key
+                or definition.disabled_at is not None or definition.current_version < version):
+            return None
+        snapshot = self.get_version(definition_id=definition_id, version=version)
+        if snapshot is None or snapshot.sha256 != sha256 or snapshot.definition_json != definition_json:
+            return None
+        return snapshot
+
     def ensure_builtin(self, *, definition_id: UUID, agent_key: str, version: int,
                        definition_json: dict[str, Any], sha256: str) -> AgentDefinitionVersion:
         self.session.execute(insert(AgentDefinition).values(

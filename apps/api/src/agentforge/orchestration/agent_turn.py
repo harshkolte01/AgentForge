@@ -12,7 +12,7 @@ from agentforge.orchestration.context import agent_context
 from agentforge.subagents.registry import AGENT_KEY, AGENT_VERSION
 
 
-def conversation_for(task) -> list[dict]:
+def conversation_for(task, *, attachment_storage=None) -> list[dict]:
     """Earlier turns as chat messages, then the person's new message (with any attached text files)."""
     grants = task.permissions_json or {}
     history = grants.get("session_context") or {}
@@ -28,9 +28,22 @@ def conversation_for(task) -> list[dict]:
         messages.append({"role": "user", "content": "\n".join(lines)})
     for item in history.get("recent_messages") or []:
         if item.get("role") in ("user", "assistant") and item.get("text"):
-            messages.append({"role": item["role"], "content": item["text"] + ("\n[shortened]" if item.get("truncated") else "")})
+            content = item["text"] + ("\n[shortened]" if item.get("truncated") else "")
+            # What the agent did to write that reply, so a later turn knows it without redoing it. Labels only, never output.
+            tools = [str(label)[:200] for label in item.get("tools") or []][:12]
+            if item["role"] == "assistant" and tools:
+                content += "\n\n[Tools used for this reply: " + "; ".join(tools) + "]"
+            messages.append({"role": item["role"], "content": content})
     attached = "".join(f"\n\nAttached file {file['name']}:\n```\n{file['content']}\n```" for file in grants.get("attachments") or [])
-    messages.append({"role": "user", "content": task.goal + attached})
+    content = task.goal + attached
+    uploads = [file for file in grants.get("attachments") or [] if file.get("upload_id")]
+    if uploads:
+        if attachment_storage is None:
+            from agentforge.integrations.attachment_storage import AttachmentStorage
+            from agentforge.settings import get_settings
+            attachment_storage = AttachmentStorage(get_settings().research_storage_path)
+        content = [{"type": "text", "text": content}, *[attachment_storage.part(task.created_by, file) for file in uploads]]
+    messages.append({"role": "user", "content": content})
     return messages
 
 

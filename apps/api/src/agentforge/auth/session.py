@@ -1,13 +1,8 @@
-"""Revocable local sessions; never accept a client-supplied identity."""
+"""Revocable sessions; never accept a client-supplied identity."""
 
-from dataclasses import dataclass
-from hashlib import sha256
 from ipaddress import ip_address
-from secrets import token_urlsafe
-from threading import Lock
-from time import monotonic
+from types import SimpleNamespace
 from urllib.parse import urlsplit
-from uuid import UUID
 
 from fastapi import HTTPException, Request
 from sqlalchemy.orm import Session
@@ -16,49 +11,6 @@ from agentforge.database.models import User
 from agentforge.settings import Settings
 
 COOKIE_NAME = "agentforge_local_session"
-
-
-@dataclass(frozen=True)
-class LocalSession:
-    user_id: UUID
-    expires_at: float
-
-
-class SessionStore:
-    """Process-local by design: restarting the API revokes every session."""
-
-    def __init__(self) -> None:
-        self._sessions: dict[str, LocalSession] = {}
-        self._lock = Lock()
-
-    def issue(self, user_id: UUID, ttl: int) -> str:
-        token = token_urlsafe(48)
-        now = monotonic()
-        with self._lock:
-            self._sessions = {key: value for key, value in self._sessions.items()
-                              if value.expires_at > now}
-            # Local setup should not create an unbounded session registry.
-            if len(self._sessions) >= 32:
-                oldest = min(self._sessions, key=lambda key: self._sessions[key].expires_at)
-                del self._sessions[oldest]
-            self._sessions[sha256(token.encode()).hexdigest()] = LocalSession(user_id, now + ttl)
-        return token
-
-    def resolve(self, token: str | None) -> LocalSession | None:
-        if not token or len(token) > 128:
-            return None
-        key = sha256(token.encode()).hexdigest()
-        with self._lock:
-            result = self._sessions.get(key)
-            if result and result.expires_at <= monotonic():
-                del self._sessions[key]
-                return None
-            return result
-
-    def revoke(self, token: str | None) -> None:
-        if token:
-            with self._lock:
-                self._sessions.pop(sha256(token.encode()).hexdigest(), None)
 
 
 def local_auth_enabled(settings: Settings) -> bool:
@@ -113,14 +65,14 @@ def current_user(request: Request) -> User:
             raise HTTPException(401, "session_required")
     else:
         require_local_transport(request, mutation=request.method not in {"GET", "HEAD", "OPTIONS"})
-        session = request.app.state.auth_sessions.resolve(request.cookies.get(COOKIE_NAME))
-        if session is None or session.user_id != settings.local_user_id:
+        identity = local_sessions(request).resolve(request.cookies.get(COOKIE_NAME))
+        if identity is None or identity != settings.local_user_id:
             raise HTTPException(401, "session_required")
-        identity = session.user_id
     # A deleted/changed identity cannot keep reading through an old cookie or SSE stream.
     with Session(request.app.state.engine) as database:
         user = database.get(User, identity)
-        if user is None:
+        # Bootstrap identities carry negative GitHub ids; they never authenticate a public deployment.
+        if user is None or (settings.auth_mode == "github_app" and (user.github_user_id or 0) < 0):
             raise HTTPException(401, "session_identity_unavailable")
         database.expunge(user)
         return user
@@ -130,6 +82,17 @@ def durable_sessions(request):
     from sqlalchemy.orm import sessionmaker
     from agentforge.auth.durable import DurableSessionStore
     return DurableSessionStore(sessionmaker(bind=request.app.state.engine, expire_on_commit=False), request.app.state.settings)
+
+
+def local_sessions(request):
+    """Local sign-in shares the durable session table, so restarting the API keeps the user signed in.
+
+    The local TTL is both the absolute and idle limit; cookie name, path and SameSite stay distinct."""
+    from sqlalchemy.orm import sessionmaker
+    from agentforge.auth.durable import DurableSessionStore
+    ttl = request.app.state.settings.local_session_ttl_sec
+    return DurableSessionStore(sessionmaker(bind=request.app.state.engine, expire_on_commit=False),
+        SimpleNamespace(session_absolute_ttl_sec=ttl, session_idle_ttl_sec=ttl))
 
 
 def require_public_transport(request: Request, *, mutation: bool = False):

@@ -130,6 +130,8 @@ export function createConversationStore(deps: StoreDeps): ConversationStore {
   let graceFor: string | null = null;
 
   function set(patch: Partial<StoreState>) {
+    // A refresh that found nothing new changes nothing: no new snapshot, so the thread does not re-render on every poll.
+    if ((Object.keys(patch) as (keyof StoreState)[]).every((key) => Object.is(state[key], patch[key]))) { arm(); return; }
     state = { ...state, ...patch };
     arm();
     listeners.forEach((listener) => listener());

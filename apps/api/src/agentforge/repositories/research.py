@@ -185,14 +185,17 @@ class ResearchRepository:
             return [self._artifact(row) for row in session.scalars(select(ResearchArtifact).where(
                 ResearchArtifact.task_id == task_id).order_by(ResearchArtifact.created_at, ResearchArtifact.id).limit(100))]
 
-    def get_artifact(self, artifact_id: str, *, task_id: UUID, owner_id: UUID, project_id: UUID) -> dict[str, Any]:
-        with self.session_factory() as session:
-            self._owned(session, task_id=task_id, owner_id=owner_id, project_id=project_id)
-            row = session.scalar(select(ResearchArtifact).where(ResearchArtifact.id == _uuid(artifact_id),
-                                                                ResearchArtifact.task_id == task_id))
-            if row is None:
-                raise ScopeDenied("artifact reference is outside the task")
-            return self._artifact(row, internal=True)
+    def get_artifact(self, artifact_id: str, *, task_id: UUID, owner_id: UUID, project_id: UUID, session=None) -> dict[str, Any]:
+        """`session`: a caller's open session to read in, so it never holds one connection while waiting for another."""
+        if session is None:
+            with self.session_factory() as session:
+                return self.get_artifact(artifact_id, task_id=task_id, owner_id=owner_id, project_id=project_id, session=session)
+        self._owned(session, task_id=task_id, owner_id=owner_id, project_id=project_id)
+        row = session.scalar(select(ResearchArtifact).where(ResearchArtifact.id == _uuid(artifact_id),
+                                                            ResearchArtifact.task_id == task_id))
+        if row is None:
+            raise ScopeDenied("artifact reference is outside the task")
+        return self._artifact(row, internal=True)
 
     def artifact_for_operation(self, ctx: TaskContext, operation_key: str) -> dict[str, Any] | None:
         with self.session_factory() as session:

@@ -17,6 +17,7 @@ from agentforge.repositories.events import EventRepository
 from agentforge.repositories.tasks import TaskNotFound, TaskRepository
 
 router = APIRouter(prefix="/api/v1/tasks", tags=["events"])
+REAUTHENTICATE_SEC = 10   # how often an open stream re-checks its session (see `events`)
 
 
 def cursor_value(header: str | None, after: int) -> int:
@@ -80,14 +81,17 @@ async def events(task_id: UUID, request: Request, user: User = Depends(current_u
         # The live text this connection has delivered: (epoch, revision) and how much of it. A new connection has
         # delivered nothing, so its first frame is always a full-state reset.
         sent_state, sent_length = None, 0
-        last_output = time.monotonic()
+        last_output = authenticated_at = time.monotonic()
         try:
             while not await request.is_disconnected():
-                # Check cookie expiry/revocation, current DB identity and task ownership
-                # for every page, not just when the streaming response was opened.
-                authenticated = await run_in_threadpool(current_user, request)
-                if authenticated.id != user.id:
-                    return
+                # Check cookie expiry/revocation and current DB identity again while the stream stays open, not just
+                # when it was opened: every REAUTHENTICATE_SEC rather than every pass (each check is a database read).
+                # Task ownership is part of every read below.
+                if time.monotonic() - authenticated_at >= REAUTHENTICATE_SEC:
+                    authenticated = await run_in_threadpool(current_user, request)
+                    if authenticated.id != user.id:
+                        return
+                    authenticated_at = time.monotonic()
                 page = await run_in_threadpool(event_repository.list_after,
                     task_id=task_id, owner_id=user.id, after_sequence=cursor, limit=100)
                 for event in page:
@@ -102,27 +106,33 @@ async def events(task_id: UUID, request: Request, user: User = Depends(current_u
                 # The live text, as increments. Not part of the durable event log (no id), so a reconnect starts again
                 # from offset 0 with a reset; saved notes and the saved message stay authoritative. Whenever the text
                 # was replaced rather than extended (a newer epoch or revision, including a clear) the whole state is sent
-                # as a reset, so a reader is never left showing text that is gone.
-                snapshot = await run_in_threadpool(event_repository.stream_snapshot, task_id, user.id)
-                if snapshot is not None:
-                    epoch, revision, kind, text = snapshot
-                    if sent_state != (epoch, revision) or len(text) < sent_length:
-                        sent_state, sent_length = (epoch, revision), len(text)
+                # as a reset, so a reader is never left showing text that is gone. Only the unsent rest of the text is read.
+                read = await run_in_threadpool(event_repository.stream_since, task_id, user.id, sent_state, sent_length)
+                if read.live is not None:
+                    epoch, revision, kind, length, text = read.live
+                    if sent_state != (epoch, revision) or length < sent_length:
+                        sent_state, sent_length = (epoch, revision), length
                         yield delta_frame(task_id, epoch, revision, kind, 0, text, True)
                         last_output = time.monotonic()
-                    elif len(text) > sent_length:
-                        yield delta_frame(task_id, epoch, revision, kind, sent_length, text[sent_length:], False)
-                        sent_length = len(text)
+                    elif length > sent_length:
+                        yield delta_frame(task_id, epoch, revision, kind, sent_length, text, False)
+                        sent_length = length
                         last_output = time.monotonic()
                 if page:
                     # Yield to cancellation/backpressure between each bounded page.
                     await asyncio.sleep(0)
                     continue
+                if read.terminal and read.event_sequence is not None and cursor >= read.event_sequence:
+                    # The task is over and every event (and the final cleared live text) has been sent: nothing more
+                    # can arrive, so the stream ends. The web client closes its EventSource once it reads the terminal
+                    # status; the long retry only spaces out reconnects from a client that does not.
+                    yield "retry: 60000\n\n"
+                    return
                 if time.monotonic() - last_output >= 10:
                     yield ": keepalive\n\n"
                     last_output = time.monotonic()
                 # Poll quickly only while text is being written (the row stays, emptied, once a note has been saved).
-                await asyncio.sleep(0.15 if snapshot is not None and snapshot[3] else 0.5)
+                await asyncio.sleep(0.15 if read.live is not None and read.live[3] else 0.5)
         except (HTTPException, TaskNotFound):
             # The response has started: close without disclosing revoked task data.
             yield "event: session.closed\ndata: {}\n\n"

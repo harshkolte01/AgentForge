@@ -95,8 +95,8 @@ class ArtifactStorage:
             raise ScopeDenied("artifact content integrity check failed")
         return content
 
-    def write(self, *, task_id: UUID, artifact_id: UUID, content: bytes) -> tuple[str, str]:
-        if len(content) > 2_000_000:
+    def write(self, *, task_id: UUID, artifact_id: UUID, content: bytes, max_bytes: int = 2_000_000) -> tuple[str, str]:
+        if len(content) > max_bytes:
             raise ValueError("artifact_size_limit")
         key = f"{task_id}/{artifact_id}.md"
         directory, filename = self._parts(key)

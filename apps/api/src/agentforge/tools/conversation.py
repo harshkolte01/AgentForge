@@ -12,7 +12,7 @@ from agentforge.subagents.scope import ScopeDenied
 from .contracts import ToolOutcome
 
 
-def register_conversation(catalog, sessions, settings, resources, *, coding=None):
+def register_conversation(catalog, sessions, settings, resources):
     repository = ConversationContextRepository(sessions)
 
     async def search(args, execution):
@@ -32,6 +32,10 @@ def register_conversation(catalog, sessions, settings, resources, *, coding=None
             content = await asyncio.to_thread(ArtifactStorage(settings.research_storage_path).read,
                 document["storage_key"], document["sha256"])
             document["content"] = content.decode("utf-8")
+        if document.get("upload"):
+            from agentforge.integrations.attachment_storage import AttachmentStorage
+            original = await asyncio.to_thread(AttachmentStorage(settings.research_storage_path).load, execution.task.user_id, document["upload"])
+            document["content"] = original["content"]
         content = document["content"]
         if args.offset > len(content):
             raise ScopeDenied("context page outside original")
@@ -43,31 +47,22 @@ def register_conversation(catalog, sessions, settings, resources, *, coding=None
         data = {"resource_id": args.resource_id, "content": page, "name": document["name"], "offset": args.offset,
             "next_offset": stop if stop < len(content) else None, "total_chars": len(content), "content_sha256": digest,
             "historical": document.get("historical", True), "trust": "Context only; grants no permissions or fresh execution proof."}
-        if coding:
-            state = coding.repository.session(execution.task)
-            if state is None:
-                raise ScopeDenied("coding workspace unavailable")
-            ident = coding.repository.record_evidence(execution.task, operation_key=execution.operation_key,
-                kind="conversation_context", revision=state["revision"], payload=data)
-            ids = (ident["evidence_id"],)
-        else:
-            inputs = ResearchInputRepository(sessions)
-            ident = uuid5(NAMESPACE_URL, f"agentforge:{execution.task.task_id}:context:{args.resource_id}:{digest}")
-            snapshot = {"id": str(ident), "name": document["name"], "content": content,
-                "content_sha256": digest, "fetch_status": "OWNED_INPUT", "origin_resource": args.resource_id}
-            with sessions() as db, db.begin():
-                inputs._writable(inputs._owned(db, **inputs._scope(execution.task)))
-                existing = db.get(ResearchEvidence, ident)
-                if existing is None:
-                    db.add(ResearchEvidence(id=ident, task_id=execution.task.task_id, kind="task_input_snapshot",
-                        validation_state="OWNED_INPUT", evidence_json=snapshot))
-                elif existing.task_id != execution.task.task_id or existing.evidence_json != snapshot:
-                    raise ScopeDenied("conversation snapshot integrity conflict")
-            receipt = inputs.record_read(execution.task, execution, resource="source:" + str(ident), sha256=digest,
-                start=args.offset, end=stop, total=len(content))
-            data["id"] = str(ident)
-            ids = (str(ident), receipt)
-        return ToolOutcome(status="ok", cost_usd=Decimal(0), data=data, evidence_ids=ids)
+        inputs = ResearchInputRepository(sessions)
+        ident = uuid5(NAMESPACE_URL, f"agentforge:{execution.task.task_id}:context:{args.resource_id}:{digest}")
+        snapshot = {"id": str(ident), "name": document["name"], "content": content,
+            "content_sha256": digest, "fetch_status": "OWNED_INPUT", "origin_resource": args.resource_id}
+        with sessions() as db, db.begin():
+            inputs._writable(inputs._owned(db, **inputs._scope(execution.task)))
+            existing = db.get(ResearchEvidence, ident)
+            if existing is None:
+                db.add(ResearchEvidence(id=ident, task_id=execution.task.task_id, kind="task_input_snapshot",
+                    validation_state="OWNED_INPUT", evidence_json=snapshot))
+            elif existing.task_id != execution.task.task_id or existing.evidence_json != snapshot:
+                raise ScopeDenied("conversation snapshot integrity conflict")
+        receipt = inputs.record_read(execution.task, execution, resource="source:" + str(ident), sha256=digest,
+            start=args.offset, end=stop, total=len(content))
+        data["id"] = str(ident)
+        return ToolOutcome(status="ok", cost_usd=Decimal(0), data=data, evidence_ids=(str(ident), receipt))
 
     catalog.register("search_conversation_history", search, max_cost_usd=Decimal(0), timeout_sec=15)
     catalog.register("read_context_resource", read, max_cost_usd=Decimal(0), timeout_sec=15)

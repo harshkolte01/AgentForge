@@ -12,7 +12,7 @@ from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
-from agentforge.integrations.e2b_sandbox import WORKSPACE, SandboxUnavailable, Workspace, SandboxConfig
+from agentforge.integrations.e2b_sandbox import GRACE_SEC, WORKSPACE, SandboxUnavailable, Workspace, SandboxConfig
 from agentforge.integrations.github_client import GitHubError
 from agentforge.integrations.github_pr import MAX_CHANGED_FILES, open_draft_pull_request
 from agentforge.tools.catalog import EFFECT_TOOLS, ToolCatalog
@@ -33,12 +33,24 @@ def path_of(command: str) -> str:
     return shlex.split(command)[-1]
 
 
+def unwrap(command: str) -> str:
+    """`bash -c <command>` as the tool wrote it, without the deadline wrapper the workspace puts around every command."""
+    parts = shlex.split(command)
+    if len(parts) == 3 and "exec timeout" in parts[2]:
+        return "bash -c " + shlex.quote(shlex.split(parts[2])[-1])
+    return command
+
+
 class Env:
     """A catalog of the coding tools wired to a FakeSandbox whose commands are answered by `answer(command)`."""
 
     def __init__(self, answer=None, *, repository=None, pull_requests=None, github=None):
         self.task_id = uuid4()
         self.sandbox = FakeSandbox(self.respond)
+        recorded = self.sandbox.commands.run
+        async def run(command, **kwargs):
+            return await recorded(unwrap(command), **kwargs)
+        self.sandbox.commands = NS(run=run)
         self.answers = answer or (lambda command: None)
         self.workspace = Workspace(self.sandbox, SandboxConfig(api_key="key"))
         self.provider = NS(open=self.open, kill=self.kill)
@@ -98,7 +110,7 @@ class BashTests(IsolatedAsyncioTestCase):
         self.assertEqual((outcome.data["exit_code"], outcome.data["timed_out"]), (3, False))
         self.assertIn("tests failed", outcome.data["output"])
         self.assertIn("AssertionError", outcome.data["output"])
-        self.assertEqual(env.sandbox.ran[-1][1]["timeout"], 300)
+        self.assertEqual(env.sandbox.ran[-1][1]["timeout"], 300 + GRACE_SEC)  # the command's own deadline ends it first
 
     async def test_the_sandbox_is_opened_once_for_many_calls(self):
         env = Env()
@@ -125,6 +137,43 @@ class BashTests(IsolatedAsyncioTestCase):
             await env.call("bash", BashArgs(command="ls"))
         self.assertEqual(caught.exception.code, "SANDBOX_UNAVAILABLE")
         self.assertNotIn("secret", caught.exception.detail)
+
+
+class RecoveryTests(IsolatedAsyncioTestCase):
+    async def test_a_connection_lost_during_a_command_is_a_result_the_agent_can_act_on_and_the_next_call_reconnects(self):
+        def flaky(command):
+            if "flaky" in command:
+                raise OSError("connection reset")
+            return None
+        env = Env(flaky)
+        with self.assertRaises(ToolError) as caught:
+            await env.call("bash", BashArgs(command="flaky"))
+        self.assertEqual(caught.exception.code, "SANDBOX_DISCONNECTED")
+        self.assertIn("may or may not have run", caught.exception.detail)
+        await env.call("bash", BashArgs(command="true"))
+        self.assertEqual(env.opened, 2)
+
+    async def test_a_write_the_sandbox_did_not_confirm_says_so(self):
+        env = Env()
+        async def broken(path, data, **kwargs):
+            raise OSError("reset")
+        env.sandbox.files = NS(read=env.sandbox.files.read, write=broken)
+        with self.assertRaises(ToolError) as caught:
+            await env.call("write", FileWriteArgs(path="a.txt", content="x"))
+        self.assertEqual(caught.exception.code, "SANDBOX_DISCONNECTED")
+
+    async def test_the_agent_is_told_once_when_its_earlier_sandbox_was_replaced(self):
+        env = Env()
+        env.workspace.recreated = True
+        first = await env.call("bash", BashArgs(command="ls"))
+        second = await env.call("bash", BashArgs(command="ls"))
+        self.assertIn("earlier sandbox had expired", first.data["notice"])
+        self.assertNotIn("notice", second.data)
+
+    def test_every_tool_deadline_leaves_room_to_start_the_sandbox_and_load_the_repository(self):
+        env = Env(pull_requests=FakeGitHub())
+        for name in ("bash", "read", "write", "edit", "grep", "find", "ls", "create_pull_request"):
+            self.assertGreater(env.catalog.get(name).timeout_sec, 600, name)
 
 
 class ReadTests(IsolatedAsyncioTestCase):
@@ -471,6 +520,16 @@ class PullRequestToolTests(IsolatedAsyncioTestCase):
         self.assertIsNone(entries["gone.txt"]["sha"])  # a deleted file stays deleted
         self.assertEqual(github.authorized[0][1], {"write": True})
         self.assertNotIn("token", str(env.sandbox.ran).lower())  # nothing credential-like was sent into the sandbox
+
+    async def test_the_approval_preview_lists_every_changed_file_and_flags_ci_configuration(self):
+        stat = " .github/workflows/ci.yml | 4 ++--\n src/a.py | 2 +-\n 2 files changed, 3 insertions(+), 3 deletions(-)\n"
+        env, _ = self.env()
+        env.answers = lambda command: (0, stat, "") if "--stat" in command else None
+        preview = await env.catalog.get("create_pull_request").preview(PullRequestArgs(title="t"), env.execution)
+        self.assertIn("src/a.py", preview)
+        self.assertIn(".github/workflows/ci.yml", preview)
+        self.assertIn("CI configuration", preview)
+        self.assertIn("git reset -q", env.sandbox.ran[-1][0])  # nothing stays staged by looking
 
     async def test_without_a_selected_repository_there_is_nothing_to_open_against(self):
         env, _ = self.env()

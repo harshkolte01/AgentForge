@@ -117,6 +117,35 @@ def estimate_tokens(text: str) -> int:
     return -(-ascii_chars // ASCII_CHARS_PER_TOKEN) + NON_ASCII_TOKENS_PER_CHAR * (len(text) - ascii_chars)
 
 
+def message_input_tokens(messages: list[dict[str, Any]]) -> int:
+    """Estimate media as visual/page input, never as the base64 transport string."""
+    sanitized, media_tokens = [], 0
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            sanitized.append(message)
+            continue
+        parts = []
+        for part in content:
+            if part.get("type") == "image_url":
+                parts.append({"type": "text", "text": "[image attachment]"})
+                media_tokens += 8192
+            elif part.get("type") == "file" and part.get("file", {}).get("file_data", "").startswith("data:application/pdf;base64,"):
+                import base64, io
+                from pypdf import PdfReader
+                try:
+                    data = base64.b64decode(part["file"]["file_data"].split(",", 1)[1], validate=True)
+                    pages = len(PdfReader(io.BytesIO(data), strict=True).pages)
+                except Exception:
+                    pages = 20  # Fail conservatively; ingestion rejects malformed files.
+                media_tokens += max(1, pages) * 32768
+                parts.append({"type": "text", "text": "[PDF attachment]"})
+            else:
+                parts.append(part)
+        sanitized.append({**message, "content": parts})
+    return estimate_tokens(json.dumps(sanitized, ensure_ascii=False, allow_nan=False)) + media_tokens
+
+
 def conservative_input_tokens(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> int:
     """An upper-biased estimate of a request's input tokens, used to bound its cost and to fit the window.
 
@@ -124,6 +153,9 @@ def conservative_input_tokens(messages: list[dict[str, Any]], tools: list[dict[s
     accounted separately from the provider's own report. It was once one token per byte, which overstated
     real usage about 3.5 times and made small windows unusable.
     """
-    payload = json.dumps({"messages": messages, "tools": tools}, ensure_ascii=False, allow_nan=False)
-    base = estimate_tokens(payload) + PROTOCOL_OVERHEAD_TOKENS + PER_MESSAGE_OVERHEAD_TOKENS * len(messages)
+    if any(isinstance(message.get("content"), list) for message in messages):
+        base = message_input_tokens(messages) + estimate_tokens(json.dumps({"tools": tools}, ensure_ascii=False, allow_nan=False)) + PROTOCOL_OVERHEAD_TOKENS + PER_MESSAGE_OVERHEAD_TOKENS * len(messages)
+    else:
+        payload = json.dumps({"messages": messages, "tools": tools}, ensure_ascii=False, allow_nan=False)
+        base = estimate_tokens(payload) + PROTOCOL_OVERHEAD_TOKENS + PER_MESSAGE_OVERHEAD_TOKENS * len(messages)
     return base + max(256, -(-base // 20))  # shared 5% fitting margin, at least 256 tokens

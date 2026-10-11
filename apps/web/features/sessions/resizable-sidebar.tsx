@@ -1,21 +1,23 @@
 "use client";
 import { forwardRef, useCallback, useEffect, useRef, useState, type ComponentPropsWithoutRef, type CSSProperties, type KeyboardEvent, type PointerEvent } from "react";
+import { readSidebarWidth, SIDEBAR_WIDTH_KEY, writeSidebarWidth } from "@/lib/preferences";
 
 const defaultWidth = 240;
 const minWidth = 220;
 const maxWidth = 360;
-const storageKey = "agentforge.sidebar.width";
 function bounded(value: number) { return Math.min(maxWidth, Math.max(minWidth, Math.round(value))); }
 function storedWidth(value: string | null) { const parsed = value?.trim() ? Number(value) : NaN; return Number.isFinite(parsed) ? bounded(parsed) : defaultWidth; }
 type Drag = { id: number; startX: number; startWidth: number; nextWidth: number; element: HTMLDivElement; userSelect: string; cursor: string; frame: number | null };
 
 export const ResizableSidebar = forwardRef<HTMLElement, ComponentPropsWithoutRef<"aside"> & { collapsed: boolean }>(function ResizableSidebar({ children, className = "", collapsed, ...props }, ref) {
-  const [width, setWidth] = useState(defaultWidth);
+  // The saved width is read before the first paint, so the thread never lays out once at the default and again at the saved width.
+  // (The workspace renders only in the browser, behind the session check, so there is no server markup to disagree with.)
+  const [width, setWidth] = useState(() => typeof window === "undefined" ? defaultWidth : storedWidth(readSidebarWidth()));
   const [dragging, setDragging] = useState(false);
-  const widthRef = useRef(defaultWidth);
+  const widthRef = useRef(width);
   const drag = useRef<Drag | null>(null);
   const setCurrent = useCallback((value: number) => { const next = bounded(value); widthRef.current = next; setWidth(next); return next; }, []);
-  const save = useCallback((value: number) => { try { localStorage.setItem(storageKey, String(value)); } catch { /* Resizing also works when browser storage is unavailable. */ } }, []);
+  const save = useCallback((value: number) => writeSidebarWidth(value), []);
   const finish = useCallback((commit: boolean) => {
     const current = drag.current;
     if (!current) return;
@@ -29,16 +31,15 @@ export const ResizableSidebar = forwardRef<HTMLElement, ComponentPropsWithoutRef
     setDragging(false);
   }, [save, setCurrent]);
   useEffect(() => {
-    const frame = requestAnimationFrame(() => { try { setCurrent(storedWidth(localStorage.getItem(storageKey))); } catch { /* Keep the default width. */ } });
     const resize = () => { if (!window.matchMedia("(min-width: 1024px)").matches) finish(false); };
-    const storage = (event: StorageEvent) => { if (event.key === storageKey && !drag.current) setCurrent(storedWidth(event.newValue)); };
+    const storage = (event: StorageEvent) => { if (event.key === SIDEBAR_WIDTH_KEY && !drag.current) setCurrent(storedWidth(event.newValue)); };
     const escape = (event: globalThis.KeyboardEvent) => { if (event.key === "Escape" && drag.current) { event.preventDefault(); finish(false); } };
     const blur = () => finish(false);
     window.addEventListener("resize", resize);
     window.addEventListener("storage", storage);
     window.addEventListener("keydown", escape);
     window.addEventListener("blur", blur);
-    return () => { cancelAnimationFrame(frame); window.removeEventListener("resize", resize); window.removeEventListener("storage", storage); window.removeEventListener("keydown", escape); window.removeEventListener("blur", blur); finish(false); };
+    return () => { window.removeEventListener("resize", resize); window.removeEventListener("storage", storage); window.removeEventListener("keydown", escape); window.removeEventListener("blur", blur); finish(false); };
   }, [finish, setCurrent]);
   useEffect(() => { if (collapsed) { const frame = requestAnimationFrame(() => finish(false)); return () => cancelAnimationFrame(frame); } }, [collapsed, finish]);
   function start(event: PointerEvent<HTMLDivElement>) {

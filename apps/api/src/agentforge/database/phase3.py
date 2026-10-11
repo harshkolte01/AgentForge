@@ -70,6 +70,8 @@ class TaskJob(Base):
         CheckConstraint("status IN ('QUEUED','RUNNING','COMPLETED')", name="status"),
         CheckConstraint("lease_generation >= 0 AND attempts >= 0", name="bounds"),
         Index("task_jobs_claim_idx", "status", "available_at", "lease_expires_at"),
+        # Only claimable rows, in claim order: finished jobs (nearly all of them) are never scanned by `claim`.
+        Index("task_jobs_claimable_idx", "available_at", "id", postgresql_where=text("status IN ('QUEUED','RUNNING')")),
     )
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, server_default=text("gen_random_uuid()"))
     task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id"), unique=True)
@@ -81,3 +83,13 @@ class TaskJob(Base):
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     attempts: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class WorkerHeartbeat(Base):
+    """One row per running worker loop, refreshed every few seconds, so the API can tell whether anything will pick up
+    a queued message. Rows of workers that stopped are pruned after a day."""
+    __tablename__ = "worker_heartbeats"
+    worker_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    version: Mapped[str | None] = mapped_column(Text, nullable=True)

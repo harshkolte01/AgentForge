@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AssistantMessage } from "@/features/sessions/assistant-message";
 import { splitAssistantContent } from "@/features/sessions/assistant-content";
 import { Timeline } from "@/features/sessions/run-steps";
@@ -10,10 +10,16 @@ import { visibleLive } from "@/lib/activity/live-text";
 import { isSettled, selectCommittedEpoch, selectEntries } from "@/lib/activity/reducer";
 import type { ActivityEntry } from "@/lib/activity/types";
 
-/** The line shown from the moment a message is sent until the run reports anything: the same one the run view starts with. */
-export function ThinkingIndicator({ text = "Thinking" }: { text?: string }) {
-  return <Timeline entries={[]} live fallback={text} />;
+/**
+ * The line shown from the moment a message is sent until the run reports anything: the same one the run view starts with. It
+ * enters once per sent message (`turnKey`), so a view that takes over the same turn shows it already in place.
+ */
+export function ThinkingIndicator({ text = "Thinking", turnKey }: { text?: string; turnKey?: string }) {
+  const [enters] = useState(() => !turnKey || !thinkingShown.has(turnKey));
+  useEffect(() => { if (turnKey) thinkingShown.add(turnKey); }, [turnKey]);
+  return <Timeline entries={[]} live fallback={text} statusEnters={enters} />;
 }
+const thinkingShown = new Set<string>();
 
 /** How long a run may show nothing new before a "Thinking" line appears under what it has already written. */
 const QUIET_MS = 2000;
@@ -52,11 +58,13 @@ function useAnnouncement(text: string, immediate: boolean): string {
  * tail renders nothing in that same commit, so there is no blank frame and no second copy. `onTerminal` fires once, only after
  * every event up to the task's end has been read, with the entries to keep in place.
  */
-export function TaskTurn({ taskId, savedReady, onTerminal, onGrow, onStreamed }: {
+export function TaskTurn({ taskId, savedReady, onTerminal, onGrow, onShift, onStreamed }: {
   taskId: string;
   savedReady: boolean;
   onTerminal: (taskId: string, entries: ActivityEntry[], status: string, durationMs: number | null) => void;
   onGrow?: () => void;
+  /** The steps above the answer just folded away by `px` (negative): the view should move with them. */
+  onShift?: (px: number) => void;
   onStreamed?: (taskId: string) => void;
 }) {
   const { sync, held, retry } = useTaskSync(taskId, savedReady);
@@ -76,7 +84,9 @@ export function TaskTurn({ taskId, savedReady, onTerminal, onGrow, onStreamed }:
   const summary = !live && over && !savedReady && task?.final_summary && answeredStatuses.has(task.status) ? task.final_summary : "";
   const raw = live || summary;
   const tailText = raw && splitAssistantContent(raw, !over).answer ? raw : "";
-  const answering = !!tailText && (!!summary || shown.kind === "answer");
+  // With tools offered the answer streams as plain progress text and is only called the answer when the call ends; text still
+  // on screen when the run is over is the answer either way, so its saved copy takes over without a second entrance.
+  const answering = !!tailText && (!!summary || shown.kind === "answer" || over);
 
   const stopping = !!task?.cancel_requested_at && !over;
   const notice = useMemo(() => syncNotice(sync), [sync]);
@@ -89,7 +99,34 @@ export function TaskTurn({ taskId, savedReady, onTerminal, onGrow, onStreamed }:
   const terminalCallback = useRef(onTerminal);
   const streamedCallback = useRef(onStreamed);
   const growCallback = useRef(onGrow);
-  useEffect(() => { terminalCallback.current = onTerminal; streamedCallback.current = onStreamed; growCallback.current = onGrow; }, [onTerminal, onStreamed, onGrow]);
+  const shiftCallback = useRef(onShift);
+  useEffect(() => { terminalCallback.current = onTerminal; streamedCallback.current = onStreamed; growCallback.current = onGrow; shiftCallback.current = onShift; }, [onTerminal, onStreamed, onGrow, onShift]);
+
+  // When the run ends its steps fold into one "Worked · 41s" line and the answer below them moves up, often by hundreds of
+  // pixels. The answer's offset within the turn is noted at every commit until then; on the commit that folds, before paint, the
+  // view is moved by exactly the difference, so the answer the reader is looking at stays still. A fold wholly below the view
+  // moves nothing the reader sees and is left alone.
+  // Only an answer on screen may take the steps' place early. Without one (it was written too fast to stream), the steps stay
+  // until the saved message replaces the whole turn in one commit: folding first would collapse the turn to a single line and
+  // then grow it again when the answer lands.
+  const fold = over && (actions > 0 || notes > 0) && !!tailText;
+  const tail = useRef<HTMLDivElement>(null);
+  const tailOffset = useRef<number | null>(null);
+  const folded = useRef(false);
+  useLayoutEffect(() => {
+    if (folded.current) return;
+    const element = tail.current;
+    const turn = element?.closest("[data-live-turn]");
+    const offset = element && turn ? element.getBoundingClientRect().top - turn.getBoundingClientRect().top : null;
+    const before = tailOffset.current;
+    tailOffset.current = offset;
+    if (!fold) return;
+    folded.current = true;
+    const scroller = element?.closest("[data-conversation-scroll]");
+    if (!element || !scroller || offset === null || before === null) return;
+    const delta = offset - before;
+    if (element.getBoundingClientRect().top - delta < scroller.getBoundingClientRect().bottom) shiftCallback.current?.(delta);
+  });
 
   const settled = over && isSettled(activity) && !!status;
   const notified = useRef<string | null>(null);
@@ -113,6 +150,6 @@ export function TaskTurn({ taskId, savedReady, onTerminal, onGrow, onStreamed }:
   const grown = entries.length + approvals.length + (notice ? 1 : 0);
   useEffect(() => { if (grown) growCallback.current?.(); }, [grown]);
 
-  return <Timeline taskId={taskId} entries={entries} live={!over} quiet={quiet} notice={notice} onRetry={retry} stopping={stopping} announcement={announcement} fold={over && (actions > 0 || notes > 0)} durationMs={durationMs} approvals={approvals}
-    tail={tailText ? <AssistantMessage content={tailText} streaming={!over} onProgress={onGrow} /> : null} />;
+  return <Timeline taskId={taskId} entries={entries} live={!over} quiet={quiet} notice={notice} onRetry={retry} stopping={stopping} announcement={announcement} fold={fold} durationMs={durationMs} approvals={approvals}
+    tail={tailText ? <div ref={tail} className="min-w-0"><AssistantMessage content={tailText} streaming={!over} onProgress={onGrow} /></div> : null} />;
 }

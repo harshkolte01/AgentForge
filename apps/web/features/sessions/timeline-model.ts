@@ -41,7 +41,8 @@ export function syncNotice(sync: NoticeInput): TimelineNotice | null {
     if (sync.attempts >= RECONNECT_ATTEMPTS) return { kind: "failed", text: "Couldn't load the latest activity" };
     return sync.error?.kind === "incomplete" ? { kind: "catching_up", text: "Catching up…" } : { kind: "reconnecting", text: "Reconnecting…" };
   }
-  if (sync.phase === "catching_up" && sync.loading && !sync.awaitingAnswer) return { kind: "catching_up", text: "Catching up…" };
+  // Reading events the view has not seen yet is how a live run is followed (every new step is read this way), not trouble:
+  // naming it would swap "Thinking" for "Catching up…" and back several times a run. Only a failed read is worth a line.
   return null;
 }
 

@@ -9,6 +9,7 @@ count, cap or deduplicate calls: how many a run makes is the model's decision.
 import asyncio
 import hashlib
 import json
+import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -101,9 +102,21 @@ class ToolGateway:
         return name in self.scope.allowed_tools and name not in EFFECT_TOOLS and not self._is_paid(name)
 
     # --- argument handling ------------------------------------------------------------------
+    @staticmethod
+    def _loads(raw_args: str):
+        """The JSON object a model meant: empty arguments are `{}`, and a Markdown code fence around it is ignored.
+        Anything else is not guessed at (two objects run together may be two calls); validation still applies."""
+        text = raw_args.strip()
+        if not text:
+            return {}
+        try:
+            return json.loads(text)
+        except ValueError:
+            return json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", text))
+
     def _parse(self, name: str, tool, raw_args: str):
         try:
-            data = json.loads(raw_args)
+            data = self._loads(raw_args)
         except ValueError:
             raise ToolError("SCHEMA_INVALID", "The arguments are not valid JSON. Send one JSON object.") from None
         if not isinstance(data, dict):
@@ -173,10 +186,24 @@ class ToolGateway:
             authorize_tool(name, args, self.ctx, self.scope, resolved_web_url=web_url)
             await self.resources.verify_tool_inputs(self.ctx, name, args)
             if self.approvals is not None and name in ASKS_BEFORE:
-                if not await self.approvals.allows(self.ctx, operation_key=operation_key, tool=name,
-                        summary=approval_summary(name, args), detail=arguments, check=self.reauthorize):
+                extra = ""
+                asks = getattr(self.approvals, "asks", None)
+                if tool.preview is not None and (asks is None or await asks(self.ctx)):
+                    try:
+                        async with asyncio.timeout(60):
+                            extra = await tool.preview(args, ToolExecutionContext(
+                                self.ctx, self.run_id, operation_key, self.scope, web_url, web_hosts, self.reauthorize))
+                    except ToolError:
+                        raise
+                    except Exception:
+                        extra = "(The list of changed files could not be read.)"
+                summary, truncated = approval_summary(name, args, extra)
+                if not await self.approvals.allows(self.ctx, operation_key=operation_key, tool=name, summary=summary,
+                        truncated=truncated, detail=arguments, check=self.reauthorize):
                     raise ToolError("DECLINED", "The person declined this action, so nothing was run. Do not do it another way "
                                     "without asking: say what you were about to do and ask how they want to continue.")
+                # A call's duration is how long it ran, not how long it waited for the person.
+                started = time.monotonic()
             # Announced just before the budget is claimed so a failed event write costs nothing; a refusal
             # from here on shows as a blocked step.
             events.start()

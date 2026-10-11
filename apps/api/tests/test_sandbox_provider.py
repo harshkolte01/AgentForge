@@ -8,14 +8,16 @@ import gzip
 import hashlib
 import io
 import json
+import shlex
 import tarfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace as NS
+from unittest.mock import patch
 
 from agentforge.integrations.e2b_sandbox import (
-    JSON_BYTES, OUTPUT_CHARS, WORKSPACE, SandboxConfig, SandboxProvider, SandboxUnavailable, Workspace, bound_output,
-    redact_output,
+    COMMAND_ENV, GRACE_SEC, JSON_BYTES, OPEN_ATTEMPTS, OUTPUT_CHARS, WORKSPACE, SandboxConfig, SandboxProvider, SandboxUnavailable, Workspace,
+    bound_output, redact_output,
 )
 from agentforge.sandbox.workspace import (build_diff, import_archive, read_text, validate_workspace, workspace_revision, write_text)
 
@@ -237,13 +239,22 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(created)
         self.assertEqual(len(sdk.created), 1)
 
-    async def test_any_other_connect_failure_is_reported_and_never_replaces_the_sandbox(self):
+    async def test_any_other_connect_failure_is_retried_reported_and_never_replaces_the_sandbox(self):
         sdk = FakeSDK(connect_error=OSError("private diagnostic"))
-        with self.assertRaises(SandboxUnavailable) as caught:
+        with patch("agentforge.integrations.e2b_sandbox.OPEN_RETRY_SEC", 0), self.assertRaises(SandboxUnavailable) as caught:
             await SandboxProvider(config(), factory=sdk).open("sbx-old", metadata={})
         self.assertEqual(caught.exception.code, "SANDBOX_CONNECT_FAILED")
         self.assertNotIn("private", str(caught.exception))
+        self.assertEqual(len(sdk.connected), OPEN_ATTEMPTS)
         self.assertEqual(sdk.created, [])  # the person's files are not abandoned for a temporary error
+
+    async def test_a_replaced_sandbox_is_marked_as_recreated(self):
+        from e2b import NotFoundException
+        workspace, created = await SandboxProvider(config(), factory=FakeSDK(connect_error=NotFoundException("gone"))).open(
+            "sbx-old", metadata={})
+        self.assertTrue(created and workspace.recreated)
+        fresh, _ = await SandboxProvider(config(), factory=FakeSDK()).open(None, metadata={})
+        self.assertFalse(fresh.recreated)
 
     async def test_a_failed_creation_is_reported_safely(self):
         sdk = FakeSDK(create_error=OSError("private allocation detail"))
@@ -271,13 +282,34 @@ class WorkspaceTests(unittest.IsolatedAsyncioTestCase):
         kwargs = {"clock": clock} if clock else {}
         return Workspace(sandbox, config(), **kwargs), sandbox
 
-    async def test_a_command_runs_in_bash_in_the_workspace_with_an_empty_environment(self):
+    async def test_a_command_runs_in_bash_in_the_workspace_without_secrets_or_a_terminal(self):
         workspace, sandbox = self.workspace(lambda command: (0, "hello\n", ""))
         outcome = await workspace.run("echo 'hi there' && ls")
         command, kwargs = sandbox.ran[0]
-        self.assertEqual(command, "bash -c 'echo '\"'\"'hi there'\"'\"' && ls'")
-        self.assertEqual((kwargs["cwd"], kwargs["envs"], kwargs["timeout"]), (WORKSPACE, {}, 120))
+        inner = shlex.split(shlex.split(command)[2])
+        # bash -c "… && exec timeout -k 5 120 bash -c <the command, untouched>"
+        self.assertEqual(shlex.split(command)[:2], ["bash", "-c"])
+        self.assertIn("exec timeout -k 5 120 bash -c", shlex.split(command)[2])
+        self.assertEqual(inner[-1], "echo 'hi there' && ls")
+        self.assertEqual((kwargs["cwd"], kwargs["envs"], kwargs["timeout"]), (WORKSPACE, COMMAND_ENV, 120 + GRACE_SEC))
+        self.assertTrue(all(not any(word in key.upper() for word in ("KEY", "TOKEN", "SECRET")) for key in kwargs["envs"]))
         self.assertEqual((outcome.exit_code, outcome.output, outcome.timed_out, outcome.truncated), (0, "hello\n", False, False))
+
+    async def test_a_command_its_own_deadline_ended_is_reported_as_timed_out_with_its_output(self):
+        outcome = await self.workspace(lambda command: (124, "step 1\n", ""))[0].run("make", timeout_sec=5)
+        self.assertEqual((outcome.exit_code, outcome.timed_out), (None, True))
+        self.assertIn("step 1", outcome.output)
+        self.assertIn("stopped after 5 seconds", outcome.output)
+
+    async def test_a_lost_connection_or_a_stop_ends_the_commands_process_group_in_the_vm(self):
+        from e2b import TimeoutException
+        def slow(command):
+            if "kill -TERM" in command:
+                return 0, "", ""
+            raise TimeoutException("deadline")
+        workspace, sandbox = self.workspace(slow)
+        await workspace.run("sleep 999", timeout_sec=1)
+        self.assertIn("kill -TERM -- -$p", sandbox.ran[-1][0])
 
     async def test_a_failing_command_is_a_normal_outcome_with_its_output(self):
         workspace, _ = self.workspace(lambda command: (2, "partial\n", "boom: no such file"))

@@ -5,7 +5,7 @@ host filesystem, executes files, follows redirects, or uses ambient credentials.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import wraps
 import asyncio
 import gzip
@@ -40,6 +40,8 @@ class RepositorySnapshot:
     repo_id: str
     commit_sha: str
     files: dict[str, bytes]
+    # Unix mode per path (0o755 executable, 0o644 otherwise) when the source knows it; empty means 0o644 for all.
+    modes: dict[str, int] = field(default_factory=dict)
 
 
 def validate_repo_id(repo_id: str) -> str:

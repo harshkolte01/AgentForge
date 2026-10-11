@@ -36,6 +36,12 @@ async def prepare_task(body: TaskCreate, request: Request, user: User, repositor
 async def create_task(body: TaskCreate, request: Request, user: User = Depends(current_user),
                 repository: TaskRepository = Depends(task_repository)) -> TaskView:
     try:
+        from agentforge.integrations.attachment_storage import validate_uploads, InvalidAttachment
+        from starlette.concurrency import run_in_threadpool
+        try:
+            await run_in_threadpool(validate_uploads, body.attachments, user.id, request.app.state.settings)
+        except InvalidAttachment as failure:
+            raise HTTPException(422, str(failure)) from None
         prepared = await prepare_task(body, request, user, repository)
         return await run_in_threadpool(repository.create, owner_id=user.id, request=prepared)
     except GitHubError as exc:

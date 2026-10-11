@@ -1,22 +1,43 @@
 """Async heartbeat supervision; lease release follows child cancellation."""
 import asyncio
+import logging
+import time
+from sqlalchemy.exc import DBAPIError, OperationalError, TimeoutError as PoolTimeout
 from agentforge.repositories.jobs import TaskCancelled
 
+logger = logging.getLogger(__name__)
 
 # A stop request is noticed within about a second; the lease heartbeat keeps its own, slower rhythm.
 CANCEL_POLL_SEC = 1.0
 
 
+def transient(error: BaseException) -> bool:
+    """A dropped connection or a saturated pool: worth retrying while the lease still has time left."""
+    return isinstance(error, (OperationalError, PoolTimeout)) or (
+        isinstance(error, DBAPIError) and error.connection_invalidated)
+
+
 async def monitor(jobs, lease, store, heartbeat_sec):
-    since_heartbeat = 0.0
+    # The database calls run in a thread: with several tasks per worker, one slow statement must not stall the others'
+    # model streams and heartbeats. A transient database error is retried every poll until half the lease has gone
+    # without a heartbeat; only then does it fail the run (well before another worker could claim the job).
+    patience = getattr(jobs, "lease_sec", 90) / 2
+    since_heartbeat, last_beat = 0.0, time.monotonic()
     while True:
         pause = min(CANCEL_POLL_SEC, heartbeat_sec)
         await asyncio.sleep(pause)
         since_heartbeat += pause
-        if since_heartbeat >= heartbeat_sec:
-            jobs.heartbeat(lease)
-            since_heartbeat = 0.0
-        if store.task().cancel_requested_at is not None:
+        try:
+            if since_heartbeat >= heartbeat_sec:
+                await asyncio.to_thread(jobs.heartbeat, lease)
+                since_heartbeat, last_beat = 0.0, time.monotonic()
+            task = await asyncio.to_thread(store.task)
+        except Exception as error:
+            if not transient(error) or time.monotonic() - last_beat >= patience:
+                raise
+            logger.warning("Worker heartbeat retrying after a database error; task_id=%s", getattr(lease, "task_id", None))
+            continue
+        if task.cancel_requested_at is not None:
             raise TaskCancelled("task_cancelled")
 
 

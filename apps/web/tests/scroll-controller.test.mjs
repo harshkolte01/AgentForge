@@ -431,3 +431,32 @@ test("selection transitions are idempotent", () => {
   h.controller.selection(false);
   assert.equal(h.snapshot().following, true, "ended at the live edge");
 });
+
+test("a fold above the reader shifts the view with it, keeping following and the reader's place", () => {
+  // Following at the live edge: the steps (b8) above the answer (b9) fold away by 570px.
+  const h = landed();
+  h.grow("b8", 600);
+  h.layout();
+  h.settle();
+  const before = h.y("b9") - h.state.top;
+  h.grow("b8", -570);
+  h.controller.shift(-570);
+  assert.equal(h.y("b9") - h.state.top, before, "the answer stays where it was on screen");
+  h.tick();
+  h.layout();
+  assert.equal(h.y("b9") - h.state.top, before, "and the next layout pass leaves it there");
+  assert.equal(h.snapshot().following, true);
+
+  // Paused, reading the answer: the remembered place is the shifted one, so the pass does not undo the shift.
+  const p = landed();
+  pausedAt(p, 900);
+  const reading = p.y("b9") - p.state.top;
+  p.grow("b8", -40);
+  p.controller.shift(-40);
+  p.layout();
+  p.tick();
+  assert.equal(p.y("b9") - p.state.top, reading);
+  assert.equal(p.snapshot().following, false);
+  p.settle();
+  assert.equal(p.snapshot().following, false, "our own scroll never counts as the reader's");
+});

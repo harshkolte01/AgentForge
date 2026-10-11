@@ -35,13 +35,24 @@ class ReplyStream:
         self.emit = emit
         self.narrates = emit is not None
         self.disabled = False
-        self._text = ""
-        self._answer = False            # the call ended without tool calls: the text is the answer
+        self._parts: list[str] = []     # the text so far, as chunks: joined only when it is written (see `_text`)
+        self._length = 0
+        self._answer = False           # the call ended without tool calls: the text is the answer
         self._epoch: int | None = None  # the live segment this stream owns, once it has shown anything
         self._revision = 0
         self._shown = ""                # what the row holds for this stream: the most a reader can have
         self._shown_kind = KIND_PROGRESS
         self._last = 0.0
+
+    @property
+    def _text(self) -> str:
+        if len(self._parts) > 1:
+            self._parts = ["".join(self._parts)]
+        return self._parts[0] if self._parts else ""
+
+    @_text.setter
+    def _text(self, value: str) -> None:
+        self._parts, self._length = ([value] if value else []), len(value)
 
     # --- one model call -----------------------------------------------------------------------
     def begin(self) -> None:
@@ -55,9 +66,12 @@ class ReplyStream:
 
     def feed(self, chunk: str) -> None:
         """Text the model is writing."""
-        if not chunk:
+        if not chunk or self._length >= MAX_ANSWER_CHARS:
             return
-        self._text = (self._text + chunk)[:MAX_ANSWER_CHARS]
+        # Appended, not concatenated: a long reply arrives in thousands of chunks.
+        chunk = chunk[:MAX_ANSWER_CHARS - self._length]
+        self._parts.append(chunk)
+        self._length += len(chunk)
         self._sync()
 
     feed_narration = feed
@@ -103,6 +117,10 @@ class ReplyStream:
     def _sync(self, force: bool = False, new_epoch: bool = False) -> None:
         """Bring the row in line with the buffer. Growth is throttled; any other change is written at once."""
         if self.disabled:
+            return
+        if not force and not new_epoch and self._epoch is not None and self._clock() - self._last < FLUSH_SECONDS:
+            # Unforced syncs come only from new text: plain growth of what is shown, held back inside the throttle
+            # window. Returning before the text is joined keeps each chunk's cost independent of the reply's length.
             return
         text, kind = self._wanted()
         if self._epoch is None:

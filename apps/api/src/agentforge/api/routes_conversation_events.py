@@ -1,13 +1,14 @@
 """Owner-reauthorized durable conversation changes, independent of a task stream."""
 import asyncio
 import json
+import time
 from uuid import UUID
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from sqlalchemy import select
 from agentforge.api.dependencies import sessions
-from agentforge.api.routes_events import cursor_value
+from agentforge.api.routes_events import REAUTHENTICATE_SEC, cursor_value
 from agentforge.auth.session import current_user
 from agentforge.database.sessions import ConversationChange
 from agentforge.repositories.sessions import SessionRepository
@@ -40,11 +41,15 @@ async def events(session_id: UUID, request: Request, after: int = Query(0, ge=0)
         nonlocal cursor
         yield "retry: 3000\n\n"
         quiet = 0
+        authenticated_at = time.monotonic()
         try:
             while not await request.is_disconnected():
-                identity = await run_in_threadpool(current_user, request)
-                if identity.id != user.id:
-                    return
+                # The session is re-checked every few seconds, not on every pass; ownership is part of every read.
+                if time.monotonic() - authenticated_at >= REAUTHENTICATE_SEC:
+                    identity = await run_in_threadpool(current_user, request)
+                    if identity.id != user.id:
+                        return
+                    authenticated_at = time.monotonic()
                 page = await run_in_threadpool(changes, factory, session_id, user.id, cursor)
                 for item in page:
                     cursor = item["sequence"]

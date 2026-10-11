@@ -75,13 +75,12 @@ database during this implementation. From the repository root:
 uv sync --locked --project apps/api
 cd apps/api
 uv run alembic upgrade head
-uv run python -m agentforge.workers.checkpoints setup
 ```
 
 The migration command applies application schema through `0005_phase4_coding` to
-the database selected by Settings. Review that target before running it. The
-checkpoint setup is needed for a new installation; existing Phase 3 deployments
-already have those framework tables.
+the database selected by Settings. Review that target before running it. (A
+separate LangGraph checkpoint setup step existed at this phase; it has since been
+removed.)
 
 After adding the key to the root `.env`, explicitly build the remote template:
 

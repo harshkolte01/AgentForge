@@ -4,9 +4,11 @@ Official contracts reviewed:
 https://developers.openai.com/api/reference/python
 https://developers.openai.com/api/reference/python/resources/chat/subresources/completions/methods/create
 
-The SDK's own retries stay disabled so no hidden request bypasses the ledger. This adapter retries
-only failures that produced no completion (rate limits, 5xx, failed connections), a bounded number
-of times with jittered backoff, because such a request was not billed and the run can continue.
+The SDK's own retries stay disabled; this adapter does its own, bounded and visible. It retries failures that
+produced no completion (rate limits, 5xx, failed or dropped connections, timeouts), with jittered backoff that
+honours the provider's retry-after. A stream that breaks after it started is retried too, since repeating one
+request costs far less than failing the whole run; `on_retry` tells the caller to throw away what it showed.
+Quota and credential errors are never retried.
 """
 
 import asyncio
@@ -16,6 +18,7 @@ import random
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
+import httpx
 import openai
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessageParam, ChatCompletionToolParam
@@ -27,8 +30,15 @@ from .models import (
 )
 from .limits import LUNA_LONG_CONTEXT_THRESHOLD, LUNA_WINDOW, input_limit, is_luna
 
-MAX_RETRY_WAIT_SEC = 8.0
-BASE_RETRY_WAIT_SEC = 0.5
+
+
+class _StreamBroke(Exception):
+    """A stream failed after it had started delivering output; the provider's error is its __cause__."""
+
+
+MAX_RETRY_WAIT_SEC = 30.0
+BASE_RETRY_WAIT_SEC = 1.0
+CONNECT_TIMEOUT_SEC = 15.0
 
 
 class OpenAIAdapter:
@@ -40,8 +50,8 @@ class OpenAIAdapter:
                  max_retries: int = 2, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
         if not api_key or not model_id or context_window_tokens <= max_output_tokens or max_output_tokens < 1:
             raise ModelConfigurationError("explicit model, API key and valid token limits are required")
-        if not 0 <= max_retries <= 5:
-            raise ModelConfigurationError("model retries must be between 0 and 5")
+        if not 0 <= max_retries <= 8:
+            raise ModelConfigurationError("model retries must be between 0 and 8")
         self.model_id = model_id
         self.rates = rates
         self.long_context_rates = long_context_rates
@@ -66,8 +76,10 @@ class OpenAIAdapter:
                 raise ModelConfigurationError("long-context rates cannot be lower than standard rates")
         # Pin the official origin; user/model data and ambient OPENAI_BASE_URL
         # cannot redirect credentials. No hidden SDK retry may bypass the ledger.
+        # `timeout_sec` bounds each wait for data (a reasoning model can think a while before its first token); connecting
+        # gets a short limit of its own so an unreachable provider fails fast and is retried.
         self._client = AsyncOpenAI(api_key=api_key, base_url="https://api.openai.com/v1",
-                                   timeout=timeout_sec, max_retries=0)
+                                   timeout=httpx.Timeout(timeout_sec, connect=min(CONNECT_TIMEOUT_SEC, timeout_sec)), max_retries=0)
 
     @property
     def max_input_tokens(self) -> int:
@@ -124,7 +136,7 @@ class OpenAIAdapter:
 
     # --- failure handling -------------------------------------------------------------------
     @staticmethod
-    def _classify(exc: BaseException, *, before_output: bool = True) -> ModelProviderError | ModelContextLimit:
+    def _classify(exc: BaseException) -> ModelProviderError | ModelContextLimit:
         """Map an SDK failure to an error that carries the provider's own message (see `provider_detail`), so the
         person reads what the provider actually said. The request itself is never included."""
         if isinstance(exc, (ModelProviderError, ModelContextLimit)):
@@ -133,41 +145,51 @@ class OpenAIAdapter:
         if isinstance(exc, openai.RateLimitError):
             if getattr(exc, "code", None) == "insufficient_quota":
                 return ModelProviderError("model quota exhausted", code="MODEL_QUOTA_EXCEEDED", detail=detail)
-            return ModelProviderError("model rate limited", code="RATE_LIMIT", retriable=before_output, detail=detail)
+            return ModelProviderError("model rate limited", code="RATE_LIMIT", retriable=True, detail=detail)
         if isinstance(exc, openai.BadRequestError) and getattr(exc, "code", None) == "context_length_exceeded":
             return ModelContextLimit(detail or "provider context window exceeded")
         if isinstance(exc, (openai.AuthenticationError, openai.PermissionDeniedError)):
             return ModelProviderError("model credentials were rejected", code="AUTH_ERROR", detail=detail)
-        if isinstance(exc, openai.InternalServerError):
-            return ModelProviderError("model provider unavailable", retriable=before_output, detail=detail)
+        if isinstance(exc, openai.InternalServerError) or (
+                isinstance(exc, openai.APIStatusError) and exc.status_code in (408, 409, 425, 502, 503, 504, 529)):
+            return ModelProviderError("model provider unavailable", retriable=True, detail=detail)
         if isinstance(exc, openai.APITimeoutError):
-            # The provider may have started (and billed) generation, so a timeout is not repeated.
-            return ModelProviderError("model request timed out", detail=detail)
-        if isinstance(exc, openai.APIConnectionError):
-            return ModelProviderError("model provider unreachable", retriable=before_output, detail=detail)
+            return ModelProviderError("model request timed out", retriable=True, detail=detail)
+        if isinstance(exc, openai.APIConnectionError) or isinstance(exc, (httpx.TransportError, ConnectionError)):
+            return ModelProviderError("model provider unreachable", retriable=True, detail=detail)
         return ModelProviderError("model provider request failed", detail=detail)
 
     @staticmethod
     def _retry_after(exc: BaseException) -> float | None:
+        cause = exc.__cause__ if isinstance(exc, _StreamBroke) else exc
         try:
-            value = exc.response.headers.get("retry-after")  # type: ignore[attr-defined]
+            headers = cause.response.headers  # type: ignore[attr-defined]
+            if headers.get("retry-after-ms") is not None:
+                return float(headers["retry-after-ms"]) / 1000
+            value = headers.get("retry-after")
             return float(value) if value is not None else None
         except Exception:
             return None
 
-    async def _with_retries(self, call: Callable[[], Awaitable[ModelResponse]]) -> ModelResponse:
+    async def _with_retries(self, call: Callable[[], Awaitable[ModelResponse]],
+                            on_retry: Callable[[], None] | None = None) -> ModelResponse:
         for attempt in range(self.max_retries + 1):
             try:
                 return await call()
             except ModelContextLimit:
                 raise
             except Exception as exc:
-                error = self._classify(exc)
+                error = self._classify(exc.__cause__ if isinstance(exc, _StreamBroke) else exc)
                 if not isinstance(error, ModelProviderError) or not error.retriable or attempt >= self.max_retries:
                     raise error from None
+                if isinstance(exc, _StreamBroke) and on_retry is not None:
+                    try:
+                        on_retry()  # what the broken attempt showed is void
+                    except Exception:
+                        pass
                 wait = self._retry_after(exc)
                 if wait is None:
-                    wait = BASE_RETRY_WAIT_SEC * (2 ** attempt) + random.uniform(0, 0.25)
+                    wait = BASE_RETRY_WAIT_SEC * (2 ** attempt) + random.uniform(0, 0.5)
                 await self._sleep(min(max(wait, 0.0), MAX_RETRY_WAIT_SEC))
         raise ModelProviderError("model provider request failed")  # unreachable; keeps the type checker honest
 
@@ -175,14 +197,16 @@ class OpenAIAdapter:
     async def complete(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
                        on_text: Callable[[str], None] | None = None,
                        tool_choice: dict[str, Any] | str | None = None,
-                       on_narration: Callable[[str], None] | None = None) -> ModelResponse:
+                       on_narration: Callable[[str], None] | None = None,
+                       on_retry: Callable[[], None] | None = None) -> ModelResponse:
         """One completion. With on_text, the person-facing reply is delivered as it arrives; with on_narration,
         so is the plain text the model writes next to its tool calls. The returned response (message, usage,
-        finish reason) is identical to the non-streaming path."""
+        finish reason) is identical to the non-streaming path. `on_retry` runs before a broken stream is requested
+        again, so the caller can clear what that attempt showed."""
         self.maximum_request_cost(messages, tools)
         request = self._request(messages, tools, tool_choice)
         if on_text is not None or on_narration is not None:
-            return await self._with_retries(lambda: self._complete_streaming(request, bool(tools), on_text, on_narration))
+            return await self._with_retries(lambda: self._complete_streaming(request, bool(tools), on_text, on_narration), on_retry)
         return await self._with_retries(lambda: self._complete_once(request))
 
     async def _complete_once(self, request: dict[str, Any]) -> ModelResponse:
@@ -248,8 +272,9 @@ class OpenAIAdapter:
                 if choice.finish_reason:
                     finish_reason = choice.finish_reason
         except Exception as exc:
-            # Once output has started the request may be billed, so it is no longer safe to repeat.
-            raise self._classify(exc, before_output=not received) from None
+            if received and not isinstance(exc, (ModelProviderError, ModelContextLimit)):
+                raise _StreamBroke() from exc
+            raise self._classify(exc) from None
         finally:
             if stream is not None:
                 try:

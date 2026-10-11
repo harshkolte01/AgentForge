@@ -19,7 +19,7 @@ from agentforge.api import routes_events
 from agentforge.contracts.activity import LiveStreamSnapshot
 from agentforge.llm.models import ModelProviderError, ModelResponse, ModelUsage
 from agentforge.orchestration.stream import FLUSH_SECONDS, ReplyStream, clear_stream
-from agentforge.repositories.events import EventRepository
+from agentforge.repositories.events import EventRepository, LiveRead
 from agentforge.repositories.tasks import TaskNotFound
 
 from test_child_runtime import FakeGateway, ScriptedModel, calls, cut_off, run, text
@@ -278,6 +278,43 @@ class RepositoryTests(TestCase):
         row = NS(epoch=3, revision=3, kind="progress", text="", status="COMPLETED")
         self.assertEqual(self.snapshot(row), (3, 3, "progress", ""))
 
+    def since(self, row, state=None, sent=0):
+        return EventRepository(ScriptedRows(row)).stream_since(uuid4(), uuid4(), state, sent)
+
+    def test_a_pass_reads_status_watermark_and_the_live_text_together(self):
+        row = NS(status="RUNNING", event_sequence=12, epoch=2, revision=1, kind="answer", length=11, text=" world")
+        self.assertEqual(self.since(row, (2, 1), 5), LiveRead(False, 12, (2, 1, "answer", 11, " world")))
+
+    def test_a_task_without_a_live_row_has_no_live_text(self):
+        row = NS(status="COMPLETED", event_sequence=4, epoch=None, revision=None, kind=None, length=None, text=None)
+        self.assertEqual(self.since(row), LiveRead(True, 4, None))
+
+    def test_text_left_on_a_terminal_task_is_read_as_cleared(self):
+        row = NS(status="FAILED", event_sequence=4, epoch=3, revision=2, kind="answer", length=5, text="stale")
+        self.assertEqual(self.since(row), LiveRead(True, 4, (3, 3, "progress", 0, "")))
+
+    def test_a_failed_or_foreign_read_never_ends_the_stream(self):
+        self.assertEqual(self.since(None), LiveRead(False, None, None))
+        failing = ScriptedRows()
+        failing.fail = True
+        self.assertEqual(EventRepository(failing).stream_since(uuid4(), uuid4()), LiveRead(False, None, None))
+
+    def test_the_rest_of_the_text_is_cut_by_postgresql_in_characters(self):
+        from sqlalchemy.dialects import postgresql
+        captured = []
+
+        class Capture(ScriptedRows):
+            def __call__(self):
+                session = super().__call__()
+                original = session.execute
+                session.execute = lambda statement: (captured.append(statement), original(statement))[1]
+                return session
+        EventRepository(Capture(None)).stream_since(uuid4(), uuid4(), (2, 1), 5)
+        sql = str(captured[0].compile(dialect=postgresql.dialect()))
+        self.assertIn("substr(task_streams.text", sql)
+        self.assertIn("length(task_streams.text)", sql)
+        self.assertIn("LEFT OUTER JOIN task_streams", sql)
+
     def test_the_snapshot_carries_the_watermark_and_terminal_flag(self):
         task = NS(event_sequence=42, status="RUNNING")
         live = NS(epoch=2, revision=1, kind="progress", text="Working", status="RUNNING")
@@ -358,20 +395,31 @@ class FakeRequest:
 
 
 class StreamRepository:
-    def __init__(self, snapshots, pages=()):
-        self.snapshots, self.pages, self.done = list(snapshots), list(pages), False
+    """Scripted live rows, given whole as (epoch, revision, kind, text); `stream_since` answers as the SQL does, with
+    only the unsent rest of the text when the reader's (epoch, revision) still matches. `terminal` scripts the task's
+    status and watermark per pass ((terminal, event_sequence)); by default the task keeps running."""
+
+    def __init__(self, snapshots, pages=(), terminal=()):
+        self.snapshots, self.pages, self.terminal, self.done = list(snapshots), list(pages), list(terminal), False
+        self.reads = []
 
     def list_after(self, task_id, owner_id, after_sequence=0, limit=100):
         return self.pages.pop(0) if self.pages else []
 
-    def stream_snapshot(self, task_id, owner_id):
+    def stream_since(self, task_id, owner_id, state=None, sent=0):
+        self.reads.append((state, sent))
+        terminal, sequence = self.terminal.pop(0) if self.terminal else (False, 100)
         if not self.snapshots:
             self.done = True
-            return None
+            return LiveRead(terminal, sequence, None)
         value = self.snapshots.pop(0)
         if not self.snapshots:
             self.done = True  # the loop ends after this pass
-        return value
+        if value is None:
+            return LiveRead(terminal, sequence, None)
+        epoch, revision, kind, text = value
+        same = state == (epoch, revision) and len(text) >= sent
+        return LiveRead(terminal, sequence, (epoch, revision, kind, len(text), text[sent:] if same else text))
 
 
 def event(sequence, kind="tool.started"):
@@ -491,20 +539,47 @@ class StreamTests(IsolatedAsyncioTestCase):
         await self.open(StreamRepository([(1, 0, "progress", "Writing"), (1, 1, "progress", ""), None]), sleeps=sleeps)
         self.assertEqual(sleeps[:3], [0.15, 0.5, 0.5])
 
-    async def test_the_session_is_checked_again_on_every_pass_and_revocation_closes_the_stream(self):
+    async def test_the_session_is_checked_again_every_ten_seconds_and_revocation_closes_the_stream(self):
         calls = []
+        now = [0.0]
+
+        def clock():
+            now[0] += 2.5  # every reading of the clock moves it on
+            return now[0]
 
         def authenticate(user):
             def check(request):
-                calls.append(1)
+                calls.append(now[0])
                 if len(calls) > 2:
                     raise HTTPException(401, "session_required")
                 return user
             return check
-        _, frames = await self.open(StreamRepository([(1, 0, "progress", "A")] * 10), authenticate=authenticate)
+        repository = StreamRepository([(1, 0, "progress", "A")] * 30)
+        _, frames = await self.open(repository, authenticate=authenticate, clock=clock)
         self.assertEqual(len(calls), 3)
+        self.assertTrue(all(later - earlier >= routes_events.REAUTHENTICATE_SEC for earlier, later in zip(calls, calls[1:])))
+        self.assertLess(len(calls), len(repository.reads))  # not once per pass
         self.assertEqual(frames[-1], "event: session.closed\ndata: {}\n\n")
         self.assertEqual(len(self.deltas(frames)), 1)  # nothing further is read after revocation
+
+    async def test_only_the_unsent_rest_of_the_text_is_read(self):
+        repository = StreamRepository([(2, 1, "answer", "Hello"), (2, 1, "answer", "Hello world"), (2, 2, "answer", "New")])
+        await self.open(repository)
+        self.assertEqual(repository.reads, [(None, 0), ((2, 1), 5), ((2, 1), 11)])
+
+    async def test_a_finished_task_whose_events_were_all_sent_ends_the_stream(self):
+        repository = StreamRepository([(1, 3, "progress", "")] * 5, pages=[[event(7), event(8, "task.finished")]],
+                                      terminal=[(True, 8)] * 5)
+        _, frames = await self.open(repository, after=6)
+        self.assertEqual(frames[-1], "retry: 60000\n\n")
+        self.assertEqual([f.split("\n")[0] for f in frames if f.startswith("id: ")], ["id: 7", "id: 8"])
+        self.assertEqual(len(repository.reads), 2)  # the page with the last events, then one pass that finds nothing more
+
+    async def test_a_finished_task_with_events_still_unsent_keeps_streaming(self):
+        repository = StreamRepository([None] * 3, terminal=[(True, 9)] * 3)
+        _, frames = await self.open(repository, after=6)
+        self.assertNotIn("retry: 60000\n\n", frames)
+        self.assertEqual(len(repository.reads), 3)
 
     async def test_a_cursor_ahead_of_the_task_is_refused(self):
         with self.assertRaises(HTTPException) as caught:

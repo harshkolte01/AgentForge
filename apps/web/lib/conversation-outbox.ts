@@ -1,3 +1,4 @@
+import { attachmentGoal } from "@/lib/attachments";
 /** Unresolved admission intents survive reload; no credentials are stored here. */
 import { api, type SessionInfo } from "@/lib/task-api";
 import type { ConversationSession, TurnInput, TurnResult } from "@/lib/workspace-api";
@@ -63,11 +64,24 @@ export async function discardPending(id: string): Promise<void> {
   } finally { db.close(); }
 }
 
-export async function accountId(): Promise<string> {
-  const session = await api<SessionInfo>("/auth/session");
-  if (!session.authenticated || !session.user?.id) throw new Error("Sign in again before sending this message.");
-  return session.user.id;
+let cachedAccount: Promise<string> | null = null;
+/**
+ * The signed-in account's id. Read once and reused (drafts and pending sends are looked up on every conversation switch) until
+ * the session changes: sign-in, sign-out and expiry call `forgetAccount`. `fresh` always asks the server, for checks that guard
+ * a login boundary.
+ */
+export function accountId({ fresh = false }: { fresh?: boolean } = {}): Promise<string> {
+  if (fresh || !cachedAccount) {
+    const read = api<SessionInfo>("/auth/session").then((session) => {
+      if (!session.authenticated || !session.user?.id) throw new Error("Sign in again before sending this message.");
+      return session.user.id;
+    });
+    cachedAccount = read;
+    read.catch(() => { if (cachedAccount === read) cachedAccount = null; });
+  }
+  return cachedAccount;
 }
+export function forgetAccount() { cachedAccount = null; }
 
 export async function pendingTurns(account: string): Promise<PendingTurn[]> {
   return (await records()).filter((item) => item.account === account).sort((a, b) => a.createdAt - b.createdAt);
@@ -88,7 +102,7 @@ export async function saveIntent(account: string, sessionId: string | null, inpu
 
 export async function deliverIntent(record: PendingTurn, signal?: AbortSignal): Promise<{ result: TurnResult; session: ConversationSession | null }> {
   // Recheck account before each delivery; replay never crosses a login boundary.
-  if (await accountId() !== record.account) throw new Error("Sign in to the account that sent this message to retry it.");
+  if (await accountId({ fresh: true }) !== record.account) throw new Error("Sign in to the account that sent this message to retry it.");
   let session: ConversationSession | null = null;
   if (!record.sessionId) {
     session = await api<ConversationSession>("/sessions", { signal, method: "POST", body: JSON.stringify({
@@ -110,7 +124,7 @@ export async function deliverIntent(record: PendingTurn, signal?: AbortSignal): 
       const request = drafts.get(draftId);
       request.onsuccess = () => {
         const draft = request.result as ConversationDraft | undefined;
-        if (draft && draft.goal.trim() === record.input.goal && JSON.stringify(draft.attachments) === JSON.stringify(record.input.attachments)) {
+        if (draft && attachmentGoal(draft.goal, draft.attachments) === record.input.goal && JSON.stringify(draft.attachments) === JSON.stringify(record.input.attachments)) {
           cleared = true;
           drafts.put({ id: draftId, goal: "", attachments: [], revision: Math.max(Date.now(), draft.revision + 1) });
         }

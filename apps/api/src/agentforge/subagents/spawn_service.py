@@ -27,6 +27,7 @@ from agentforge.tools.gateway import ToolGateway, UnknownToolOutcome
 from agentforge.tools.lifecycle import LifecycleSink
 
 from .budget import BudgetExceeded, BudgetService
+from .environment import turn_environment
 from .prompt_builder import compile_chat
 from .registry import AgentRegistry
 from .resources import DenyUnknownResources, ResourceResolver
@@ -65,8 +66,10 @@ class SpawnService:
                  calls: ToolCallRepository, catalog: ToolCatalog, models: ModelRouter,
                  resources: ResourceResolver | None = None,
                  runtime: ChildRuntime | None = None,
-                 lifecycle: LifecycleSink | None = None, approvals=None) -> None:
+                 lifecycle: LifecycleSink | None = None, approvals=None, sessions=None) -> None:
         self.registry, self.authorizer, self.budgets = registry, authorizer, budgets
+        # Reads the facts of each turn for the prompt's Environment block (subagents/environment.py); None: none shown.
+        self.sessions = sessions
         # Asks the person before a tool that changes something runs (tools/approvals.py); None: nothing asks.
         self.approvals = approvals
         self.runs, self.calls, self.catalog, self.models = runs, calls, catalog, models
@@ -116,8 +119,16 @@ class SpawnService:
             # cap and revalidate before storing the effective security snapshot.
             scope = replace(scope, budget=Budget.model_validate({
                 **scope.budget.model_dump(), "max_llm_cost_usd": float(reservation.amount_usd)}))
-            messages = compile_chat(resolved.definition, scope, context, tuple(tool.name for tool in available),
-                                    conversation or [{"role": "user", "content": request.prompt}])
+            names = tuple(tool.name for tool in available)
+            environment = None
+            if self.sessions is not None:
+                try:
+                    environment = await asyncio.to_thread(turn_environment, self.sessions, task_id=ctx.task_id,
+                                                          user_id=ctx.user_id, tools=names)
+                except Exception:
+                    log.warning("turn environment unavailable: task_id=%s", ctx.task_id, exc_info=True)
+            messages = compile_chat(resolved.definition, scope, context, names,
+                                    conversation or [{"role": "user", "content": request.prompt}], environment)
             self.runs.record_start(
                 run_id=run_id, task_id=ctx.task_id, owner_id=ctx.user_id, project_id=ctx.project_id,
                 definition_version_id=resolved.version_id, definition_sha256=resolved.sha256,

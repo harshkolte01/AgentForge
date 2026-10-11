@@ -174,6 +174,11 @@ class ReadBoundaryTests(unittest.TestCase):
         self.assertTrue(result["coding_configured"])  # the sandbox needs only its API key; no template qualification
         self.assertEqual(result["coding_missing_settings"], [])
         self.assertNotIn("private-", str(result))
+        self.assertTrue(result["web_research_configured"])
+        self.assertFalse(result["github_writes_enabled"])
+        # No database behind this request: the worker reads as offline instead of failing the page.
+        self.assertEqual(result["worker"], {"status": "offline", "last_seen_at": None})
+        self.assertNotIn("worker_status", result)
         settings.e2b_api_key = None
         result = configuration(SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(settings=settings))), SimpleNamespace(github_user_id=123))
         self.assertFalse(result["coding_configured"])

@@ -239,7 +239,6 @@ try:
         connection.execute(text('CREATE DATABASE "' + name + '" OWNER ' + owner))
     created = True
     settings = Settings(_env_file=None, database_url=source.set(database=name).render_as_string(hide_password=False),
-        langgraph_checkpoint_db_url=source.set(drivername="postgresql", database=name).render_as_string(hide_password=False),
         app_env="test", auth_mode="disabled", llm_api_key=None, tavily_api_key=None, neatlogs_api_key=None)
     with patch.object(settings_module, "get_settings", return_value=settings):
         # admission imported after patch, ensuring no live URL/settings are reused.

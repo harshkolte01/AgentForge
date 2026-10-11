@@ -11,13 +11,12 @@ from agentforge.settings import get_settings
 def inspect(connection):
     connection.execute(text("SET TRANSACTION READ ONLY"))
     connection.execute(text("SET LOCAL statement_timeout = '5s'"))
-    tables = connection.execute(text("SELECT to_regclass('public.alembic_version'), to_regclass('public.checkpoints'), to_regclass('public.task_jobs')")).one()
+    tables = connection.execute(text("SELECT to_regclass('public.alembic_version'), to_regclass('public.task_jobs')")).one()
     result = {"database": "reachable", "application_revision": None,
-              "checkpoint_tables": "present" if tables[1] else "missing",
               "worker_process": "not_observed", "jobs": None}
     if tables[0]:
         result["application_revision"] = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-    if tables[2]:
+    if tables[1]:
         row = connection.execute(text("""SELECT
             count(*) FILTER (WHERE status = 'QUEUED') AS queued,
             count(*) FILTER (WHERE status = 'RUNNING') AS running,
@@ -40,7 +39,7 @@ def main():
         result["artifact_directory"] = "accessible" if path.is_dir() and os.access(path, os.R_OK | os.W_OK | os.X_OK) else "unavailable"
         result["artifact_write_test"] = "not_performed"
         print(json.dumps(result, sort_keys=True))
-        return 0 if result["application_revision"] and result["checkpoint_tables"] == "present" and result["artifact_directory"] == "accessible" else 1
+        return 0 if result["application_revision"] and result["artifact_directory"] == "accessible" else 1
     except Exception:
         print(json.dumps({"status": "inspection_failed", "detail": "Check configuration and migrations; private exception details suppressed."}))
         return 1

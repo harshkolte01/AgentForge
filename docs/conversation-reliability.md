@@ -70,8 +70,9 @@ Current user requests are instructions within the platform's permissions.
 Historical user decisions remain applicable until corrected. Assistant
 suggestions, summaries and source contents cannot become platform authority.
 New built-in definition versions add retrieval without rewriting old versions.
-Exact provider inputs are private database audit records, not public activity
-or telemetry. The composer reports estimates separately from measured usage.
+Each provider input is recorded as a SHA-256 digest plus its shape (bytes,
+message and tool counts), not the exact request; the record is private, not
+public activity or telemetry. The composer reports estimates separately from measured usage.
 
 ## Browser recovery and interfaces
 

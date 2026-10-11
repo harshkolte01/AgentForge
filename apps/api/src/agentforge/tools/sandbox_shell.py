@@ -31,15 +31,18 @@ MARKER = ".agentforge/repo"
 # Folders no search or listing should wander into.
 NOISE = ("node_modules", ".git", ".agentforge", "__pycache__", ".venv", "dist", "build")
 READ_CHARS = 12000
+# Starting a VM and loading a repository snapshot into it (download, upload, git init) can take minutes for a large repository.
+SETUP_SEC = 600
 
 
-def _tarball(files: dict[str, bytes]) -> bytes:
+def _tarball(files: dict[str, bytes], modes: dict[str, int] | None = None) -> bytes:
+    """A gzip tarball of the snapshot. Executable files stay executable (scripts such as ./gradlew must still run)."""
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
         for path, data in files.items():
             info = tarfile.TarInfo(path)
             info.size = len(data)
-            info.mode = 0o644
+            info.mode = 0o755 if (modes or {}).get(path) == 0o755 else 0o644
             archive.addfile(info, io.BytesIO(data))
     return buffer.getvalue()
 
@@ -47,10 +50,21 @@ def _tarball(files: dict[str, bytes]) -> bytes:
 class ConversationSandbox:
     """Opens the conversation's sandbox once per run and loads the selected repository into it."""
 
-    def __init__(self, sessions, provider: SandboxProvider, github=None) -> None:
+    def __init__(self, sessions, provider: SandboxProvider, github=None, *, attachment_storage=None) -> None:
         self.sessions, self.provider, self.github = sessions, provider, github
+        self.attachment_storage = attachment_storage
         self._lock = asyncio.Lock()
         self._workspace: Workspace | None = None
+        # Said once, with the first result after it happened, so the agent never assumes earlier work is still there.
+        self.notice: str | None = None
+
+    def forget(self) -> None:
+        """The workspace stopped answering: the next call reconnects instead of reusing a dead connection."""
+        self._workspace = None
+
+    def take_notice(self) -> str | None:
+        notice, self.notice = self.notice, None
+        return notice
 
     def _lookup(self, task_id: UUID) -> tuple[UUID | None, str | None, dict | None]:
         with self.sessions() as db:
@@ -83,7 +97,29 @@ class ConversationSandbox:
             await asyncio.to_thread(self._remember, session_id, workspace.sandbox_id)
         if repository and not loaded:
             await self._load_repository(workspace, repository)
+        if getattr(workspace, "recreated", False):
+            self.notice = ("This conversation's earlier sandbox had expired, so a new one was created: files, installed packages and "
+                           "changes from earlier turns are gone" + (" (the repository was checked out again at its pinned commit)"
+                           if repository else "") + ". Check what is there before relying on earlier work.")
+        if self.attachment_storage is not None:
+            await self._stage_attachments(workspace, task_id)
         return workspace
+
+    async def _stage_attachments(self, workspace: Workspace, task_id: UUID) -> None:
+        import base64
+        from agentforge.integrations.attachment_storage import workspace_attachment_path
+        def inputs():
+            with self.sessions() as db:
+                task = db.get(Task, task_id)
+                return task.created_by, (task.permissions_json or {}).get("attachments", [])
+        owner, files = await asyncio.to_thread(inputs)
+        for index, file in enumerate(files):
+            if file.get("upload_id"):
+                record = await asyncio.to_thread(self.attachment_storage.load, owner, file)
+                data = base64.b64decode(record["data"])
+            else:
+                data = file["content"].encode()
+            await workspace.write(workspace_attachment_path(task_id, index, file["name"]), data)
 
     async def _loaded_repository(self, workspace: Workspace) -> str | None:
         outcome = await workspace.run(f"cat {MARKER} 2>/dev/null || true", timeout_sec=30)
@@ -94,7 +130,9 @@ class ConversationSandbox:
         if self.github is None:
             raise SandboxUnavailable("REPOSITORY_UNAVAILABLE")
         snapshot = await self.github.snapshot(repository["repo_id"], repository["ref"])
-        await workspace.write("/tmp/agentforge-repo.tgz", _tarball(snapshot.files))
+        # Compressing a large repository takes a while; other runs on this worker keep streaming meanwhile.
+        await workspace.write("/tmp/agentforge-repo.tgz", await asyncio.to_thread(_tarball, snapshot.files,
+                                                                               getattr(snapshot, "modes", None)))
         script = (f"set -e; tar -xzf /tmp/agentforge-repo.tgz -C {WORKSPACE}; rm -f /tmp/agentforge-repo.tgz; cd {WORKSPACE}; "
                   f"mkdir -p .agentforge; printf '%s' {shlex.quote(repository['repo_id'] + '@' + snapshot.commit_sha)} > {MARKER}; "
                   "git init -q; git config user.email agentforge@users.noreply.github.com; git config user.name AgentForge; "
@@ -140,14 +178,22 @@ def register_sandbox_shell(catalog, sandbox: ConversationSandbox, *, pull_reques
         try:
             return await workspace.run(command, timeout_sec=timeout_sec)
         except SandboxUnavailable as exc:
-            raise ToolError(exc.code, "The sandbox did not answer.") from None
+            sandbox.forget()
+            raise ToolError(exc.code, "The sandbox did not answer. Try again; it reconnects on the next call.") from None
 
     def ok(**data) -> ToolOutcome:
-        return ToolOutcome(status="ok", cost_usd=Decimal(0), data=data)
+        notice = sandbox.take_notice()
+        return ToolOutcome(status="ok", cost_usd=Decimal(0), data={**data, **({"notice": notice} if notice else {})})
 
     async def bash(args, execution):
         workspace = await opened(execution)
-        outcome = await workspace.run(args.command, timeout_sec=args.timeout_sec)
+        try:
+            outcome = await workspace.run(args.command, timeout_sec=args.timeout_sec)
+        except SandboxUnavailable:
+            # Only the sandbox could have been affected, and it can be inspected: the agent checks and decides, the run goes on.
+            sandbox.forget()
+            raise ToolError("SANDBOX_DISCONNECTED", "The connection to the sandbox dropped, so the command may or may not have run. "
+                            "Check its effects (files, processes) before running it again.") from None
         return ok(exit_code=outcome.exit_code, output=outcome.output, timed_out=outcome.timed_out, truncated=outcome.truncated)
 
     async def read(args, execution):
@@ -176,8 +222,18 @@ def register_sandbox_shell(catalog, sandbox: ConversationSandbox, *, pull_reques
     async def write(args, execution):
         workspace = await opened(execution)
         existed = await shell(workspace, f"test -e {shlex.quote(args.path)}")
-        await workspace.write(args.path, args.content)
+        await store(workspace, args.path, args.content)
         return ok(path=args.path, bytes=len(args.content.encode()), created=existed.exit_code != 0)
+
+    async def store(workspace: Workspace, path: str, content: str) -> None:
+        try:
+            await workspace.write(path, content)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            sandbox.forget()
+            raise ToolError("SANDBOX_DISCONNECTED", f"The sandbox did not confirm the write, so {path} may or may not have changed. "
+                            "Read it before writing again.") from None
 
     async def edit(args, execution):
         workspace = await opened(execution)
@@ -190,7 +246,7 @@ def register_sandbox_shell(catalog, sandbox: ConversationSandbox, *, pull_reques
             raise ToolError("EDIT_NO_MATCH", "old_string was not found. Read the file again and copy the text exactly, including whitespace.")
         if count > 1 and not args.replace_all:
             raise ToolError("EDIT_AMBIGUOUS", f"old_string matches {count} places. Add surrounding lines to make it unique, or set replace_all.")
-        await workspace.write(args.path, text.replace(args.old_string, args.new_string) if args.replace_all else text.replace(args.old_string, args.new_string, 1))
+        await store(workspace, args.path, text.replace(args.old_string, args.new_string) if args.replace_all else text.replace(args.old_string, args.new_string, 1))
         return ok(path=args.path, replacements=count if args.replace_all else 1)
 
     def noise_filter() -> str:
@@ -222,6 +278,17 @@ def register_sandbox_shell(catalog, sandbox: ConversationSandbox, *, pull_reques
             raise ToolError("FILE_NOT_FOUND", f"{args.path} does not exist.")
         text, truncated = bound_output(outcome.output)
         return ok(path=args.path, listing=text, truncated=truncated)
+
+    async def changed_files(args, execution) -> str:
+        """For the approval card: every file the pull request would publish, with line counts (read only; the index is restored)."""
+        workspace = await opened(execution)
+        code, stat = await workspace.capture(f"git add -A && git diff --cached --stat=200 {BASE_TAG}; git reset -q", timeout_sec=60)
+        if code != 0 or not stat.strip():
+            return "Changed files: none found compared with the repository's pinned commit."
+        # CI configuration runs with the repository's own secrets once the branch is pushed: worth a second look.
+        warning = ("\n\nNote: this changes CI configuration (.github/), which runs with the repository's secrets."
+                   if ".github/" in stat else "")
+        return "Changed files:\n" + stat.rstrip() + warning
 
     async def create_pull_request(args, execution):
         from agentforge.integrations.github_client import GitHubError
@@ -264,8 +331,11 @@ def register_sandbox_shell(catalog, sandbox: ConversationSandbox, *, pull_reques
             raise ToolError("GITHUB_WRITE_FAILED", f"GitHub publication could not be confirmed ({exc}). A branch or draft pull request may already exist; do not retry blindly.") from None
         return ok(pr_url=result["pr_url"], pr_number=result["pr_number"], branch=result["branch"], files=len(changes))
 
+    # Whichever call comes first also starts the sandbox and loads the repository into it, so every deadline includes that
+    # setup; each operation inside is bounded on its own.
     for name, handler, timeout in (("bash", bash, 3700), ("read", read, 60), ("write", write, 90), ("edit", edit, 90),
                                    ("grep", grep, 90), ("find", find, 90), ("ls", ls, 60)):
-        catalog.register(name, handler, max_cost_usd=Decimal(0), timeout_sec=timeout)
+        catalog.register(name, handler, max_cost_usd=Decimal(0), timeout_sec=timeout + SETUP_SEC)
     if pull_requests is not None:
-        catalog.register("create_pull_request", create_pull_request, max_cost_usd=Decimal(0), timeout_sec=300)
+        catalog.register("create_pull_request", create_pull_request, max_cost_usd=Decimal(0), timeout_sec=300 + SETUP_SEC,
+                         preview=changed_files)

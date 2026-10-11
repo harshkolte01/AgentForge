@@ -330,7 +330,7 @@ class ActivityRepository:
         row = session.scalar(select(CodingEvidence).where(
             CodingEvidence.task_id == scope["task_id"], CodingEvidence.id.in_(ids),
             CodingEvidence.kind.in_(("test", "build"))).order_by(CodingEvidence.created_at).limit(1)) if ids else None
-        items, reason = self._resolve(coding, _uuids(result.get("artifact_ids")), scope)
+        items, reason = self._resolve(coding, _uuids(result.get("artifact_ids")), scope, session)
         detail: dict[str, Any] = dict(artifacts=[self._entry(item, scope) for item in items])
         if row is None:
             detail["unavailable_reason"] = self._missing_reason(call, "evidence_unavailable")
@@ -352,7 +352,7 @@ class ActivityRepository:
         row = session.scalar(select(CodingEvidence).where(
             CodingEvidence.task_id == scope["task_id"], CodingEvidence.id.in_(ids), CodingEvidence.kind == "diff")
             .order_by(CodingEvidence.created_at).limit(1)) if ids else None
-        items, reason = self._resolve(coding, _uuids(result.get("artifact_ids")), scope)
+        items, reason = self._resolve(coding, _uuids(result.get("artifact_ids")), scope, session)
         files: list[ToolDetailFile] = []
         diff: ToolDetailText | None = None
         if items:
@@ -387,7 +387,7 @@ class ActivityRepository:
             ids = _uuids([result["arguments"].get("artifact_id")])
         if not ids:
             return dict(unavailable_reason=self._missing_reason(call, "artifact_missing"))
-        items, reason = self._resolve(research, ids, scope)
+        items, reason = self._resolve(research, ids, scope, session)
         preview = None
         if items and items[0]["mime_type"].startswith("text/"):
             data = self._read(items[0])
@@ -398,12 +398,14 @@ class ActivityRepository:
         return dict(artifacts=[self._entry(item, scope) for item in items], preview=preview, unavailable_reason=reason)
 
     @staticmethod
-    def _resolve(repository, ids: list[UUID], scope: dict) -> tuple[list[dict[str, Any]], str | None]:
-        """Artifact records that really belong to this task and its project owner; any other id becomes a reason."""
+    def _resolve(repository, ids: list[UUID], scope: dict, session: Session) -> tuple[list[dict[str, Any]], str | None]:
+        """Artifact records that really belong to this task and its project owner; any other id becomes a reason.
+
+        Read in the detail's own session: opening a second one while holding the first could exhaust the pool."""
         items, reason = [], None
         for artifact_id in ids[:20]:
             try:
-                items.append(repository.get_artifact(str(artifact_id), **scope))
+                items.append(repository.get_artifact(str(artifact_id), **scope, session=session))
             except (ScopeDenied, ValueError):
                 reason = "artifact_missing"
         return items, reason

@@ -114,6 +114,11 @@ export type ScrollController = {
   layoutChanged(): void;
   /** The layout may have changed; handle it on the next frame (coalesced). */
   requestPass(): void;
+  /**
+   * Content above what the reader is looking at just changed height by `px` (negative: it shrank), already laid out: scroll by
+   * the same amount so the view does not move, whether following or not. Used when a finished run folds its steps away.
+   */
+  shift(px: number): void;
   /** The reader sent a message: pin its turn near the top and follow what is written beneath it. */
   beginTurn(): void;
   /** A conversation was opened: land on its latest content, or on the running turn's start. */
@@ -310,6 +315,14 @@ export function createScrollController(deps: ScrollDeps): ScrollController {
       pass();
     },
     requestPass,
+    shift(px) {
+      if (Math.abs(px) < 1) return;
+      move(host.metrics().top + px, "auto");
+      // The view is where the reader left it: remember that place, so the next pass does not "correct" it back.
+      pinned = null;
+      if (!following) anchor = host.captureAnchor();
+      requestPass();
+    },
     beginTurn() {
       resume(host.metrics());
       turnPin = { behavior: "smooth" };

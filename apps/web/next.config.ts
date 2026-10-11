@@ -14,6 +14,17 @@ const nextConfig: NextConfig = {
       },
     ];
   },
+  // Old URLs keep working. The request's query is passed through (`?agent=`, `?create=1`, `?auth_error=`).
+  async redirects() {
+    return [
+      { source: "/workspace", has: [{ type: "query", key: "session", value: "(?<session>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})" }], destination: "/chat/:session", permanent: false },
+      { source: "/workspace", destination: "/chat", permanent: false },
+      { source: "/connections", destination: "/settings?section=github", permanent: false },
+      { source: "/integrations", destination: "/settings?section=github", permanent: false },
+      { source: "/agents/new", destination: "/settings?section=agents&create=1", permanent: false },
+      { source: "/agents", destination: "/settings?section=agents", permanent: false },
+    ];
+  },
   turbopack: {
     rules: {
       "*.css": {

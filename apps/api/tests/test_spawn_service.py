@@ -188,3 +188,25 @@ class SetupTests(IsolatedAsyncioTestCase):
             await service.spawn_subagent(request(), context(), authority=authority)
         run.assert_not_awaited()
         self.assertEqual(recorder.reserved, [])
+
+
+class BuiltinResolutionTests(IsolatedAsyncioTestCase):
+    """The built-in is re-resolved before every step; the shared definition row is not touched each time."""
+
+    async def test_a_resolved_built_in_is_reused_for_a_minute(self):
+        from unittest.mock import patch
+        from agentforge.subagents import registry as module
+        resolved = ResolvedDefinition(uuid4(), uuid4(), AGENT_KEY, load_builtin("agent", AGENT_VERSION), "a" * 64)
+        reads, now = [], [0.0]
+        reg = module.AgentRegistry(None, NS(check_context=AsyncMock()))
+        module._builtin_cache.clear()
+        self.addCleanup(module._builtin_cache.clear)
+        with patch.object(module.AgentRegistry, "_resolve_builtin", lambda self, *args: reads.append(args) or resolved), \
+             patch.object(module.time, "monotonic", lambda: now[0]):
+            for _ in range(3):
+                self.assertIs(await reg.resolve_for_task(AGENT_KEY, AGENT_VERSION, NS()), resolved)
+            self.assertEqual(len(reads), 1)
+            self.assertEqual(reg.authorizer.check_context.await_count, 3)  # ownership is still checked every time
+            now[0] += module.BUILTIN_CACHE_SEC + 1
+            await reg.resolve_for_task(AGENT_KEY, AGENT_VERSION, NS())
+            self.assertEqual(len(reads), 2)

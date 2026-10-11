@@ -12,6 +12,7 @@ How an agent works:
 """
 
 import asyncio
+import inspect
 import json
 from collections.abc import Awaitable, Callable
 from typing import Any, TypedDict
@@ -37,6 +38,12 @@ CUTOFF_NOTICE = ("Your last reply was cut off by the output length limit, so non
                  "summarise instead of listing everything, and keep any file content within about 3000 words.")
 EMPTY_NOTICE = "Your last reply was empty. Reply to the user now."
 CUT_OFF_NOTE = "\n\n[The model's reply was cut off by its output length limit.]"
+# A final answer that reached the output limit is continued this many times before it is shown with CUT_OFF_NOTE.
+MAX_CONTINUATIONS = 2
+CONTINUE_NOTICE = "Your reply reached the output length limit. Continue it exactly where it stopped, without repeating anything."
+# A reply that ends by announcing a next step ("Let me check the tests:") but makes no tool call has stopped too early.
+STALLED_NOTICE = ("Your last message announced a next step but made no tool call, so nothing happened. Do it now, or give your "
+                  "final answer if you are done.")
 RESULT_PREVIEW_BYTES = 16000
 # A rendered tool result is capped near 16 KB, which is about this many tokens. A turn may only request as
 # many results as fit in the room left in the window.
@@ -53,6 +60,15 @@ class ChildState(TypedDict):
     empties: int   # empty replies so far
     again: bool    # the last reply must be asked for again
     answer: str | None
+    partial: str   # the start of an answer that reached the output limit and is being continued
+    conts: int     # continuations asked for so far
+    nudged: bool   # a stalled reply was already sent back once
+
+
+def stalled(text: str) -> bool:
+    """The reply ends by introducing something that never came: its last line ends with a colon."""
+    last = text.rstrip().rsplit("\n", 1)[-1].strip()
+    return last.endswith(":") and not last.startswith(("|", "#", "-", "*", ">")) and len(last) < 300
 
 
 class ChildRuntime:
@@ -70,6 +86,8 @@ class ChildRuntime:
             if discard is not None:
                 discard()
 
+        # Models that retry a broken stream themselves say so by taking `on_retry`; others are simply not told.
+        accepts_retry = "on_retry" in inspect.signature(model.complete).parameters
         context_budget = getattr(model, "context_budget_tokens", None)
         max_input = getattr(model, "max_input_tokens", None)
 
@@ -98,17 +116,39 @@ class ChildRuntime:
             if fitted is None:
                 raise ModelContextLimit("The conversation no longer fits in the model's context window, even with old tool results removed.")
             sent, bound = fitted
-            stubbed = [kept.get("tool_call_id") for original, kept in zip(conversation, sent) if original is not kept]
+            stubbed = [kept.get("tool_call_id") for original, kept in zip(conversation, sent)
+                       if original is not kept and kept.get("role") == "tool"]
             operation_key = f"{reservation.run_id}:model:{steps}"
             auditor = getattr(resources, "record_provider_input", None)
             if auditor is not None:
                 await auditor(ctx, operation_key, sent, schemas)
             budgets.authorize_operation(reservation.id, operation_key, bound, kind="model")
             extra: dict[str, Any] = {}
+            partial = state["partial"]
+            broken = 0
+
+            def restart() -> None:
+                # A new attempt (or a retried, broken one) starts from the part of the answer already written.
+                stream.begin()
+                if partial:
+                    stream.feed(partial)
+
+            def retried() -> None:
+                # A stream that broke midway was billed for what it produced, which the provider never reported, so the
+                # ledger records that attempt as its own operation of unknown cost before the request is sent again.
+                nonlocal broken
+                broken += 1
+                key = f"{operation_key}:broken:{broken}"
+                budgets.authorize_operation(reservation.id, key, bound, kind="model")
+                budgets.record_usage(reservation.id, key, None)
+                if stream is not None:
+                    restart()
+            if accepts_retry:
+                extra["on_retry"] = retried
             if stream is not None:
                 extra["on_text"] = stream.feed
                 extra["on_narration"] = stream.feed_narration
-                stream.begin()
+                restart()
             try:
                 response = await model.complete(sent, schemas, **extra)
                 if stream is not None:
@@ -144,14 +184,24 @@ class ChildRuntime:
                 # Text next to tool calls was a note for the person: keep it in the run's history, in order.
                 if stream is not None:
                     stream.commit_narration()
-                return {"messages": [*conversation, message], "pending": pending, "steps": steps + 1, "again": False}
-            text = (message.get("content") or "").strip()
-            if not text:
+                return {"messages": [*conversation, message], "pending": pending, "steps": steps + 1, "again": False,
+                        "partial": "", "conts": 0}
+            written = message.get("content") or ""
+            if not written.strip() and not partial:
                 drop_live()
                 if state["empties"] >= 1:
                     raise ModelProviderError("The model returned an empty reply.", detail="empty completion")
                 return {"messages": [*conversation, {"role": "user", "content": EMPTY_NOTICE}], "pending": [],
                         "steps": steps + 1, "empties": state["empties"] + 1, "again": True}
+            if reason == "length" and state["conts"] < MAX_CONTINUATIONS and len(partial) + len(written) < MAX_ANSWER_CHARS:
+                # The answer ran into the output limit: keep what was written and ask for the rest.
+                return {"messages": [*conversation, message, {"role": "user", "content": CONTINUE_NOTICE}], "pending": [],
+                        "steps": steps + 1, "partial": partial + written, "conts": state["conts"] + 1, "again": True}
+            text = (partial + written).strip()
+            if schemas and not partial and not state["nudged"] and reason == "stop" and stalled(text):
+                drop_live()
+                return {"messages": [*conversation, message, {"role": "user", "content": STALLED_NOTICE}], "pending": [],
+                        "steps": steps + 1, "nudged": True, "again": True}
             if reason == "length":
                 text += CUT_OFF_NOTE
             if stream is not None:
@@ -244,7 +294,8 @@ class ChildRuntime:
         invoke_config["configurable"] = configurable
         try:
             output = await child.ainvoke({"messages": messages, "pending": [], "steps": 0, "cuts": 0, "empties": 0,
-                                          "again": False, "answer": None}, invoke_config)
+                                          "again": False, "answer": None, "partial": "", "conts": 0, "nudged": False},
+                                         invoke_config)
         except BaseException:
             # An error or a stop request ends the run without a reply: nothing may stay on screen.
             drop_live()

@@ -10,6 +10,7 @@ or a pinned commit. GitHub/E2B adapters must bind checkout/read operations to th
 task's approved immutable base and enforce symlink containment before use.
 """
 
+import asyncio
 from dataclasses import dataclass
 from collections.abc import Callable
 from ipaddress import ip_address
@@ -33,6 +34,10 @@ class AuthorizationService:
     async def check_context(self, ctx: TaskContext) -> None:
         # Query afresh on every boundary so cached contexts do not preserve
         # access after ownership changes. Membership expansion is not MVP scope.
+        # Runs before every model step and tool call, so it stays off the event loop other runs share.
+        await asyncio.to_thread(self._check_context, ctx)
+
+    def _check_context(self, ctx: TaskContext) -> None:
         with self.session_factory() as session:
             owner = session.scalar(select(Project.id).where(
                 Project.id == ctx.project_id, Project.owner_id == ctx.user_id,

@@ -89,7 +89,7 @@ class TaskRepository:
             max_cost_usd=UNLIMITED_COST_USD, max_wall_time_sec=UNLIMITED_WALL_TIME_SEC,
             event_sequence=0, permissions_json={"kind": request.kind, "web": request.kind in {"research", "general"},
                 "allowed_web_hosts": list(request.allowed_web_hosts),
-                "attachments": [item.model_dump() for item in request.attachments],
+                "attachments": [item.model_dump(mode="json") for item in request.attachments],
                 **({"agent_key": request.agent_key, "agent_version": request.agent_version} if request.agent_key else {}),
                 **({"session_context": context} if context else {}),
                 **({"automatic": automatic} if automatic else {}),
@@ -154,18 +154,5 @@ class TaskRepository:
                 conversation.queue_paused = True
                 from .sessions import bump_conversation
                 bump_conversation(session, conversation, "queue.paused")
-            if task.status == "AWAITING_APPROVAL":
-                # Its worker job has already finished; no worker remains to
-                # observe the flag and settle the task. Keep executing approvals
-                # recoverable because an effect may already have been sent.
-                from agentforge.database.identity import Approval
-                for approval in session.scalars(select(Approval).where(Approval.task_id == task.id).with_for_update()):
-                    if approval.state in {"PENDING", "APPROVED"}:
-                        approval.state = "INVALIDATED"
-                task.status = "CANCELLED"
-                task.final_summary = "Task cancelled. GitHub operations already sent may still require reconciliation."
-                append_event(session, task, "task.finished", {"status": task.status})
-                from .sessions import complete_task_conversation
-                complete_task_conversation(session, task.id)
             session.flush()
             return TaskView.model_validate(task)

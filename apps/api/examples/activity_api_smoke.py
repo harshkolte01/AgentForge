@@ -35,7 +35,6 @@ try:
         c.execute(text('CREATE DATABASE "' + name + '" OWNER ' + c.dialect.identifier_preparer.quote_identifier(source.username)))
     created = True
     settings = Settings(_env_file=None, database_url=source.set(database=name).render_as_string(hide_password=False),
-        langgraph_checkpoint_db_url=source.set(drivername="postgresql", database=name).render_as_string(hide_password=False),
         app_env="test", auth_mode="disabled", llm_api_key=None, tavily_api_key=None, neatlogs_api_key=None,
         research_storage_path=storage_root)
     with patch.object(settings_module, "get_settings", return_value=settings):

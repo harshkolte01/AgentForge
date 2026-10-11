@@ -26,16 +26,19 @@ def scope(context_refs=()):
 class AgentDefinitionTests(TestCase):
     def test_the_agent_is_the_only_built_in_and_loads_at_its_version(self):
         self.assertEqual(set(BUILTIN_KEYS), {"agent"})
-        self.assertEqual((AGENT_KEY, AGENT_VERSION), ("builtin/agent", 1))
+        self.assertEqual((AGENT_KEY, AGENT_VERSION), ("builtin/agent", 2))
         definition = load_builtin("agent", AGENT_VERSION)
-        self.assertEqual((definition.name, definition.version, definition.enabled), ("agent", 1, True))
+        self.assertEqual((definition.name, definition.version, definition.enabled), ("agent", 2, True))
+
+    def test_earlier_versions_still_load_for_the_tasks_that_used_them(self):
+        self.assertEqual(load_builtin("agent", 1).version, 1)
 
     def test_the_old_pipeline_roles_are_gone(self):
         for name in ("researcher", "general-executor", "code-reviewer", "code-executor", "code-verifier", "verifier", "intent-router"):
             with self.subTest(name=name), self.assertRaises(ScopeDenied):
                 load_builtin(name, 1)
         with self.assertRaises(ScopeDenied):
-            load_builtin("agent", 2)
+            load_builtin("agent", AGENT_VERSION + 1)
 
     def test_the_definition_is_valid_and_survives_a_round_trip_unchanged(self):
         definition = load_builtin("agent", AGENT_VERSION)
@@ -137,6 +140,26 @@ class CompileChatTests(TestCase):
                      developer.index("# Environment")]
         self.assertEqual(positions, sorted(positions))
         self.assertIn("Tools: web_search, fetch_webpage", developer)
+
+    def test_facts_about_the_turn_are_in_the_environment_after_the_rules(self):
+        definition = load_builtin("agent", AGENT_VERSION)
+        developer = compile_chat(definition, scope(), {}, ("bash", "write"), [{"role": "user", "content": "hi"}],
+                                 {"Workspace": "/home/user/workspace, resumed", "Approvals": "Ask me: bash wait", "Empty": ""})[0]["content"]
+        environment = developer[developer.index("# Environment"):]
+        self.assertIn("Workspace: /home/user/workspace, resumed", environment)
+        self.assertIn("Approvals: Ask me: bash wait", environment)
+        self.assertNotIn("Empty", environment)
+
+    def test_the_rules_depend_only_on_the_tools_so_requests_share_a_cacheable_prefix(self):
+        definition = load_builtin("agent", AGENT_VERSION)
+        first = compile_chat(definition, scope(), {}, ("bash", "web_search"), [], {"Workspace": "a"})[0]["content"]
+        second = compile_chat(definition, scope(), {}, ("bash", "web_search"), [], {"Workspace": "b"})[0]["content"]
+        prefix = first[:first.index("# Environment")]
+        self.assertEqual(prefix, second[:second.index("# Environment")])
+        self.assertIn("## Workspace", prefix)
+        self.assertIn("## Research", prefix)
+        chat_only = compile_chat(definition, scope(), {}, ("search_conversation_history",), [])[0]["content"]
+        self.assertNotIn("## Workspace", chat_only)
 
     def test_the_current_date_is_today_in_utc(self):
         developer = self.compile()[0]["content"]

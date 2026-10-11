@@ -11,6 +11,7 @@ import logging
 import re
 import shlex
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -22,6 +23,18 @@ OUTPUT_CHARS = 12000
 JSON_BYTES = 12500
 COLLECT_CHARS = 2_000_000
 KEEP_ALIVE_EVERY_SEC = 60
+# Commands run without a terminal and nobody can answer a prompt: anything that would wait for input, open a pager or ask
+# for credentials should fail fast or take the default instead. None of these is a secret.
+COMMAND_ENV = {"CI": "1", "DEBIAN_FRONTEND": "noninteractive", "GIT_TERMINAL_PROMPT": "0", "GIT_PAGER": "cat", "PAGER": "cat",
+               "TERM": "dumb", "PIP_NO_INPUT": "1", "PIP_DISABLE_PIP_VERSION_CHECK": "1", "npm_config_yes": "true",
+               "NO_COLOR": "1", "PYTHONUNBUFFERED": "1"}
+# The command's own deadline is enforced inside the VM by `timeout`, which signals the command's whole process group (its
+# children too). The connection is given a little longer, so the command ends first and its output so far is returned.
+GRACE_SEC = 15
+PID_DIR = "/tmp/.agentforge-commands"
+# Connecting to an existing VM is retried after a transient failure (the provider briefly unreachable, a 5xx).
+OPEN_ATTEMPTS = 3
+OPEN_RETRY_SEC = 1.0
 
 
 class SandboxUnavailable(RuntimeError):
@@ -98,20 +111,34 @@ class Workspace:
     def __init__(self, sandbox: Any, config: SandboxConfig, *, clock=time.monotonic) -> None:
         self.sandbox, self.config, self._clock = sandbox, config, clock
         self._alive_at = clock()
+        self.recreated = False
 
     @property
     def sandbox_id(self) -> str:
         return self.sandbox.sandbox_id
 
-    async def keep_alive(self) -> None:
-        """Pushes the idle timer out, at most once a minute."""
-        if self._clock() - self._alive_at < KEEP_ALIVE_EVERY_SEC:
+    async def keep_alive(self, needed_sec: float = 0) -> None:
+        """Pushes the idle timer out, at most once a minute, and always far enough for a command of `needed_sec` to finish
+        (a long build must not outlive the VM that runs it)."""
+        lifetime = max(self.config.ttl_sec, int(needed_sec) + 300)
+        if self._clock() - self._alive_at < KEEP_ALIVE_EVERY_SEC and lifetime <= self.config.ttl_sec:
             return
         self._alive_at = self._clock()
         try:
-            await self.sandbox.set_timeout(self.config.ttl_sec, request_timeout=self.config.request_timeout_sec)
+            await self.sandbox.set_timeout(lifetime, request_timeout=self.config.request_timeout_sec)
         except Exception:
             log.debug("could not extend the sandbox lifetime", exc_info=True)
+
+    async def _stop(self, marker: str) -> None:
+        """Ends a command the run gave up on (Stop, or the connection's deadline): its whole process group, then its pid file.
+        Best effort and bounded; a VM that does not answer keeps the command until its in-VM deadline ends it."""
+        script = (f"p=$(cat {marker} 2>/dev/null) && [ -n \"$p\" ] && {{ kill -TERM -- -$p 2>/dev/null; sleep 2; "
+                  f"kill -KILL -- -$p 2>/dev/null; }}; rm -f {marker}; true")
+        try:
+            await asyncio.wait_for(self.sandbox.commands.run(f"bash -c {shlex.quote(script)}", cwd="/", envs=COMMAND_ENV,
+                timeout=20, request_timeout=self.config.request_timeout_sec), timeout=25)
+        except BaseException:
+            log.debug("could not stop a sandbox command", exc_info=True)
 
     async def run(self, command: str, *, timeout_sec: float = 120, cwd: str = WORKSPACE) -> CommandOutcome:
         """Runs `command` with bash. A nonzero exit is a normal outcome; only a broken sandbox raises."""
@@ -119,18 +146,35 @@ class Workspace:
         out, err = _Collector(), _Collector()
         exit_code: int | None = None
         timed_out = False
+        limit = max(1, int(timeout_sec))
+        marker = f"{PID_DIR}/{uuid.uuid4().hex}"
+        # `timeout` becomes the leader of a new process group, so on expiry its TERM (then KILL 5s later) reaches every child.
+        # Its pid is recorded first, so a Stop can end the same group from outside.
+        wrapped = (f"mkdir -p {PID_DIR} && echo $$ > {marker} && exec timeout -k 5 {limit} bash -c {shlex.quote(command)}")
+        await self.keep_alive(limit + GRACE_SEC)
+        started = time.monotonic()
         try:
-            result = await self.sandbox.commands.run(f"bash -c {shlex.quote(command)}", cwd=cwd, envs={}, timeout=timeout_sec,
-                request_timeout=self.config.request_timeout_sec, on_stdout=out.add, on_stderr=err.add)
-            exit_code = result.exit_code
-        except CommandExitException as exc:
-            exit_code = exc.exit_code
+            try:
+                result = await self.sandbox.commands.run(f"bash -c {shlex.quote(wrapped)}", cwd=cwd, envs=COMMAND_ENV,
+                    timeout=limit + GRACE_SEC, request_timeout=self.config.request_timeout_sec,
+                    on_stdout=out.add, on_stderr=err.add)
+                exit_code = result.exit_code
+            except CommandExitException as exc:
+                exit_code = exc.exit_code
+            # 124: `timeout` ended the command; 137 at the deadline: its follow-up KILL did (137 earlier is the command's own).
+            timed_out = exit_code == 124 or (exit_code == 137 and time.monotonic() - started >= limit)
+            if timed_out:
+                exit_code = None
         except (TimeoutException, TimeoutError):
             timed_out = True
+            await asyncio.shield(self._stop(marker))
         except asyncio.CancelledError:
+            await asyncio.shield(self._stop(marker))
             raise
         except Exception as exc:
             raise SandboxUnavailable("SANDBOX_COMMAND_FAILED") from exc
+        if timed_out:
+            err.add(f"\n[The command was stopped after {limit} seconds. Run long jobs in the background or pass a larger timeout_sec.]")
         stdout, stderr = out.text(), err.text()
         text = stdout + (("\n" if stdout and not stdout.endswith("\n") else "") + stderr if stderr else "")
         text, truncated = bound_output(redact_output(text, secrets=(self.config.api_key,)))
@@ -141,7 +185,7 @@ class Workspace:
         from e2b import CommandExitException
         out = _Collector()
         try:
-            result = await self.sandbox.commands.run(f"bash -c {shlex.quote(command)}", cwd=WORKSPACE, envs={}, timeout=timeout_sec,
+            result = await self.sandbox.commands.run(f"bash -c {shlex.quote(command)}", cwd=WORKSPACE, envs=COMMAND_ENV, timeout=timeout_sec,
                 request_timeout=self.config.request_timeout_sec, on_stdout=out.add)
             return result.exit_code, out.text()
         except CommandExitException as exc:
@@ -182,14 +226,19 @@ class SandboxProvider:
         sdk = self._sdk()
         options = {"api_key": self.config.api_key, "request_timeout": self.config.request_timeout_sec}
         if existing_id:
-            try:
-                sandbox = await sdk.connect(existing_id, timeout=self.config.ttl_sec, **options)
-                return Workspace(sandbox, self.config), False
-            except Exception as exc:
-                from e2b import NotFoundException
-                if not isinstance(exc, NotFoundException):
-                    raise SandboxUnavailable("SANDBOX_CONNECT_FAILED") from exc
-                log.info("sandbox %s is gone; creating a new one", existing_id)
+            for attempt in range(OPEN_ATTEMPTS):
+                try:
+                    sandbox = await sdk.connect(existing_id, timeout=self.config.ttl_sec, **options)
+                    return Workspace(sandbox, self.config), False
+                except Exception as exc:
+                    from e2b import NotFoundException
+                    if isinstance(exc, NotFoundException):
+                        log.info("sandbox %s is gone; creating a new one", existing_id)
+                        break
+                    if attempt + 1 >= OPEN_ATTEMPTS:
+                        raise SandboxUnavailable("SANDBOX_CONNECT_FAILED") from exc
+                    await asyncio.sleep(OPEN_RETRY_SEC * (attempt + 1))
+        # Never retried: a failed create may still have allocated (and be billing for) a VM nobody would know about.
         try:
             sandbox = await sdk.create(template=self.config.template, timeout=self.config.ttl_sec, metadata=metadata,
                 envs={}, secure=True, allow_internet_access=True,
@@ -197,6 +246,8 @@ class SandboxProvider:
         except Exception as exc:
             raise SandboxUnavailable("SANDBOX_CREATE_FAILED") from exc
         workspace = Workspace(sandbox, self.config)
+        # The conversation had a sandbox and it is gone: whatever earlier turns left in it is gone too, and the agent is told.
+        workspace.recreated = bool(existing_id)
         await workspace.run(f"mkdir -p {WORKSPACE}", cwd="/")
         return workspace, True
 

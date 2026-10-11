@@ -8,9 +8,41 @@ import { useScrollController } from "@/features/sessions/use-conversation-scroll
 import { pendingFor, turnRowKey, type PendingTurn, type Receipt } from "@/features/sessions/turn-flow";
 import { Button } from "@/components/ui/button";
 import { conversationOrder } from "@/lib/conversation-order";
+import { createEntranceLedger } from "@/lib/entrance-ledger";
 import { hasEarlier } from "@/lib/message-records";
 import type { ActivityEntry } from "@/lib/activity/types";
 import type { ConversationMessage, ConversationSession } from "@/lib/workspace-api";
+
+const FINISHING_DELAY_MS = 1500;
+const threadClass = "mx-auto flex w-full max-w-3xl flex-col gap-6 px-5 pb-6 pt-4 sm:px-8";
+const turnClass = "flex flex-col gap-6";
+
+/**
+ * A conversation's first message while the conversation itself is being created: your message and "Thinking", laid out exactly
+ * as the thread that replaces it will lay them out (same rows, keys and classes), so the hand-over moves nothing and replays
+ * no entrance.
+ */
+export function DraftThread({ pending }: { pending: PendingTurn }) {
+  const [ledger] = useState(createEntranceLedger);
+  const rowKey = turnRowKey(pending.key);
+  return <div data-conversation-thread aria-busy className={threadClass}>
+    <div data-conversation-turn className={turnClass}>
+      <UserRow key={rowKey} ledger={ledger} rowKey={rowKey} content={pending.goal} attachments={pending.attachments} pending />
+      <ThinkingIndicator turnKey={pending.key} />
+    </div>
+  </div>;
+}
+
+/** True once the same `key` (a wait, say) has held for `ms`; false whenever it is null. */
+function useDelayed(key: string | null, ms: number): boolean {
+  const [elapsed, setElapsed] = useState<string | null>(null);
+  useEffect(() => {
+    if (key === null) return;
+    const timer = window.setTimeout(() => setElapsed(key), ms);
+    return () => window.clearTimeout(timer);
+  }, [key, ms]);
+  return key !== null && elapsed === key;
+}
 
 /**
  * The messages of one open conversation. Records, refreshes, history paging, the accepted-turn receipt and the hand-off from a
@@ -64,32 +96,47 @@ export function ConversationThread({ session, refresh, pending, receipt, onRecei
   const row = (entry: ConversationMessage) => entry.role === "user"
     ? <UserRow key={rowKeyFor(state, entry)} ledger={store.ledger} rowKey={rowKeyFor(state, entry)} content={entry.content} createdAt={entry.created_at} attachments={entry.attachments} cancelled={entry.turn_state === "cancelled" && !entry.task_id} />
     : <AssistantRow key={entry.id} entry={entry} ledger={store.ledger} ran={entry.task_id ? state.terminal.get(entry.task_id) : undefined} onRetry={retryOf(entry)} />;
-  // The saved answer of the run being followed stays behind its live view; if it is already in, it sits below the activity meanwhile.
+  // The saved answer of the run being followed stays behind its live view until it is in. From then on it takes the live view's
+  // place, in its own final position: the live view stays mounted (hidden) only to finish reading the run's last events, so the
+  // answer never appears under a "Thinking" line and then moves up twice as the run settles and hands over.
   const ofLiveRun = (entry: ConversationMessage) => entry.role === "assistant" && !!live && entry.task_id === live;
-  const savedWhileLive = phase.savedReady ? latest.filter(ofLiveRun) : [];
-  const showLoading = !state.loaded && !state.error && !state.records.length;
+  const handingOver = !!live && phase.savedReady;
+  // A conversation opened by its first message already shows that message; a loading skeleton would only flash under it.
+  const showLoading = !state.loaded && !state.error && !state.records.length && !here;
   const busy = showLoading || !!here || !!live;
   // One list for the turn's rows, so your pending message and the message the server saves for it are the same element.
-  const turnRows = latest.filter((entry) => !ofLiveRun(entry)).map(row);
+  const turnRows = latest.filter((entry) => handingOver || !ofLiveRun(entry)).map(row);
   if (waiting && here) turnRows.push(<UserRow key={turnRowKey(here.key)} ledger={store.ledger} rowKey={turnRowKey(here.key)} content={here.goal} attachments={here.attachments} pending />);
   const failedWait = state.savedWait?.failed ? state.savedWait : null;
+  // Only a wait that lasts gets a line: a quick hand-off to the saved answer adds and removes nothing.
+  const finishing = useDelayed(state.savedWait && !failedWait && live ? state.savedWait.taskId : null, FINISHING_DELAY_MS);
+  // Every turn (a message of yours and what answered it) is one container keyed by that message's row, all in one list. When
+  // you send, the previous turn is the same element as before, only no longer the latest: its rows are never remounted, so
+  // its answer is not parsed, highlighted or measured again.
+  const earlierTurns: { key: string; rows: ConversationMessage[] }[] = [];
+  for (const entry of earlier) {
+    if (entry.role === "user" || !earlierTurns.length) earlierTurns.push({ key: entry.role === "user" ? rowKeyFor(state, entry) : `lead:${entry.id}`, rows: [] });
+    earlierTurns[earlierTurns.length - 1].rows.push(entry);
+  }
+  const latestKey = waiting && here ? turnRowKey(here.key) : latest[0] ? rowKeyFor(state, latest[0]) : "latest";
 
-  return <div data-conversation-thread aria-busy={busy} className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-5 pb-6 pt-4 sm:px-8">
+  return <div data-conversation-thread aria-busy={busy} className={threadClass}>
     {/* One short sentence at a time ("Message sent", "Reply ready"): never the streamed text. */}
     <div role="status" aria-live="polite" aria-atomic="true" data-conversation-announcer className="sr-only">{state.announcement}</div>
     {showLoading ? <div role="status" className="flex animate-pulse flex-col gap-6 motion-reduce:animate-none"><span className="sr-only">Loading conversation…</span><div className="ml-auto h-10 w-2/5 rounded-3xl bg-muted" /><div className="space-y-2.5"><div className="h-3.5 w-11/12 rounded bg-muted" /><div className="h-3.5 w-3/4 rounded bg-muted" /><div className="h-3.5 w-1/2 rounded bg-muted" /></div></div> : null}
     {hasEarlier(state.records, state.startReached) ? <div className="text-center"><Button variant="ghost" size="sm" className="pointer-coarse:min-h-11" disabled={state.olderBusy} onClick={() => void store.loadEarlier()}>{state.olderBusy ? "Loading earlier messages…" : "Load earlier messages"}</Button></div> : null}
-    {earlier.map(row)}
-    <div data-conversation-turn className="flex flex-col gap-6" style={anchored ? { minHeight: "var(--conversation-room, 0px)" } : undefined}>
+    {/* The rows sit in the same child slot as in the latest turn below (a list followed by other slots), so a turn that stops
+        being the latest keeps them. */}
+    {[...earlierTurns.map((turn) => <div key={turn.key} className={turnClass}>{turn.rows.map(row)}{null}</div>),
+    <div key={latestKey} data-conversation-turn className={turnClass} style={anchored ? { minHeight: "var(--conversation-room, 0px)" } : undefined}>
       {turnRows}
-      {waiting && !live ? <ThinkingIndicator /> : null}
-      {live ? <div data-scroll-anchor={`task:${live}`} data-live-turn={live} className="min-w-0"><TaskTurn key={live} taskId={live} savedReady={phase.savedReady} onTerminal={finished} onGrow={scroll.requestPass} onStreamed={store.replyStreamed} /></div> : null}
-      {savedWhileLive.map(row)}
-      {state.savedWait && !failedWait && live ? <p data-saved-wait className="text-[13px] text-muted-foreground motion-safe:animate-in motion-safe:fade-in [animation-delay:1500ms] [animation-fill-mode:both]">Finishing up…</p> : null}
+      {waiting && !live && here ? <ThinkingIndicator turnKey={here.key} /> : null}
+      {live ? <div hidden={handingOver} data-scroll-anchor={handingOver ? undefined : `task:${live}`} data-live-turn={live} className="min-w-0"><TaskTurn key={live} taskId={live} savedReady={phase.savedReady} onTerminal={finished} onGrow={scroll.requestPass} onShift={scroll.shift} onStreamed={store.replyStreamed} /></div> : null}
+      {finishing ? <p data-saved-wait className="text-[13px] text-muted-foreground motion-safe:animate-in motion-safe:fade-in">Finishing up…</p> : null}
       {failedWait ? <div role="alert" className="flex flex-wrap items-center gap-3 text-sm text-destructive"><span>The reply finished, but it could not be loaded{failedWait.error ? `: ${failedWait.error}` : "."}</span><Button variant="outline" size="sm" className="pointer-coarse:min-h-11" onClick={() => store.retrySaved()}>Try again</Button></div> : null}
       {state.moreAfter !== null ? <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground"><span>Some recent messages are not loaded yet.</span><Button variant="outline" size="sm" className="pointer-coarse:min-h-11" disabled={state.newerBusy} onClick={() => void store.loadNewer()}>{state.newerBusy ? "Loading…" : "Load more"}</Button></div> : null}
       {state.error ? <div role="alert" className="flex flex-wrap items-center gap-3 text-sm text-destructive"><span>{state.error}</span><Button variant="outline" size="sm" className="pointer-coarse:min-h-11" onClick={() => void store.refresh()}>Try again</Button></div> : null}
       <div data-conversation-end aria-hidden="true" className="-mt-6 h-0" />
-    </div>
+    </div>]}
   </div>;
 }

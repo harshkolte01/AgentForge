@@ -21,10 +21,13 @@ from sqlalchemy.dialects.postgresql import insert
 from agentforge.database.models import Project, Task, User
 from agentforge.database.sessions import ToolApproval
 
+from .errors import ToolError
+
 log = logging.getLogger(__name__)
 
 POLL_SECONDS = 0.75
-SUMMARY_CHARS = 600
+# A wait can last hours; the poll slows down to this while nobody answers (an answer still lands within a couple of seconds).
+MAX_POLL_SECONDS = 2.5
 MODES = ("ask", "auto")
 
 
@@ -69,7 +72,7 @@ class ToolApprovals:
         """The card's row, created once per call (a replayed call finds its earlier row and its answer)."""
         with self.sessions() as db, db.begin():
             statement = insert(ToolApproval).values(task_id=ctx.task_id, user_id=ctx.user_id, operation_key=operation_key,
-                tool=tool, summary=summary[:SUMMARY_CHARS], detail_json=detail).on_conflict_do_nothing(
+                tool=tool, summary=summary, detail_json=detail).on_conflict_do_nothing(
                 index_elements=[ToolApproval.task_id, ToolApproval.operation_key]).returning(ToolApproval.id)
             created = db.scalar(statement)
             row = db.scalar(select(ToolApproval).where(ToolApproval.task_id == ctx.task_id, ToolApproval.operation_key == operation_key))
@@ -87,18 +90,32 @@ class ToolApprovals:
                 row.state, row.decided_at = state, datetime.now(timezone.utc)
             return row.state if row is not None else "CANCELLED"
 
+    async def asks(self, ctx) -> bool:
+        """Whether a call would stop for an answer right now ("Ask me")."""
+        return await asyncio.to_thread(get_mode, self.sessions, ctx.user_id) != "auto"
+
     async def allows(self, ctx, *, operation_key: str, tool: str, summary: str, detail: dict,
-                     check: Callable[[], Awaitable[None]]) -> bool:
-        """True when the call may run. `check` raises when the run must stop (cancelled, access revoked), which ends the wait."""
+                     check: Callable[[], Awaitable[None]], truncated: bool = False) -> bool:
+        """True when the call may run. `check` raises when the run must stop (cancelled, access revoked), which ends the wait.
+
+        `summary` is what the card shows, exactly as the call will run it; `truncated` says it had to be cut to fit. A
+        command is never approved from part of its text: one too long to show is refused before anyone is asked.
+        """
         if await asyncio.to_thread(get_mode, self.sessions, ctx.user_id) == "auto":
             return True
+        if truncated and tool == "bash":
+            raise ToolError("COMMAND_TOO_LONG", "This command is too long to show in full for approval. Write the script to a file "
+                            "with write (the person sees its content), then run that file with a short bash command.")
         approval_id, state, created = await asyncio.to_thread(self._open, ctx, operation_key, tool, summary, detail)
-        payload = {"approval_id": str(approval_id), "tool": tool, "detail": summary[:SUMMARY_CHARS], "state": "PENDING"}
+        payload = {"approval_id": str(approval_id), "tool": tool, "detail": summary, "state": "PENDING",
+                   **({"truncated": True} if truncated else {})}
         if created:
             self.emit("approval.required", payload)
+        pause = self.poll_seconds
         try:
             while state == "PENDING":
-                await asyncio.sleep(self.poll_seconds)
+                await asyncio.sleep(pause)
+                pause = min(MAX_POLL_SECONDS, pause * 1.25)
                 await check()
                 state = await asyncio.to_thread(self._state, approval_id)
                 if state == "PENDING" and await asyncio.to_thread(get_mode, self.sessions, ctx.user_id) == "auto":
@@ -107,5 +124,6 @@ class ToolApprovals:
             await asyncio.to_thread(self._settle, approval_id, "CANCELLED")
             raise
         if created or state != "PENDING":
-            self.emit("approval.decided", {**payload, "state": state})
+            # The card already carries the text; the answer only needs to say which card and how it was answered.
+            self.emit("approval.decided", {"approval_id": str(approval_id), "tool": tool, "state": state})
         return state == "APPROVED"

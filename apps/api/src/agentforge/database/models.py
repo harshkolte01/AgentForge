@@ -136,6 +136,8 @@ Index(
     Task.status,
     Task.created_at.desc(),
 )
+# GET /tasks: one owner's tasks, newest first.
+Index("tasks_owner_created_idx", Task.created_by, Task.created_at.desc())
 
 
 class BudgetReservation(_UUIDTimestampMixin, Base):
@@ -235,7 +237,7 @@ class BudgetTransaction(_UUIDTimestampMixin, Base):
 
 
 # Register split phase modules in the shared Alembic metadata.
-from .phase3 import TaskEvent, TaskJob, TaskStep, TaskStream  # noqa: E402,F401
+from .phase3 import TaskEvent, TaskJob, TaskStep, TaskStream, WorkerHeartbeat  # noqa: E402,F401
 from .research_models import ResearchArtifact, ResearchEvidence, ResearchSource  # noqa: E402,F401
 from .coding import CodingSession, CodingSnapshot, CodingOperation, CodingEvidence, CodingArtifact  # noqa: E402,F401
 from .identity import AuthSession, OAuthTransaction, GitHubCredential, GitHubInstallation, GitHubRepositoryGrant, GitHubWebhookDelivery, Approval, ExternalOperation  # noqa: E402,F401

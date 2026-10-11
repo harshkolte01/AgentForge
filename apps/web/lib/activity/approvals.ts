@@ -8,8 +8,14 @@ import type { TaskEvent } from "@/lib/task-api";
 export type PendingApproval = {
   id: string;
   tool: string;
-  /** The command, path or title exactly as the call will use it (credentials already removed by the server). */
+  /**
+   * Exactly what will run, as the call will use it and unredacted (a rewritten command is not the command that runs): the
+   * whole command; the path and full content of a write; the path with old and new text of an edit; a pull request's title,
+   * description and changed files.
+   */
   detail: string;
+  /** The server had to cut `detail` short: what is shown is not all of it. False when absent (older servers never cut it). */
+  truncated: boolean;
   sequence: number;
 };
 
@@ -23,12 +29,21 @@ export function pendingApprovals(events: readonly TaskEvent[]): PendingApproval[
       waiting.set(id, {
         id, sequence: event.sequence, tool: typeof event.payload.tool === "string" ? event.payload.tool : "",
         detail: typeof event.payload.detail === "string" ? event.payload.detail : "",
+        truncated: event.payload.truncated === true,
       });
     } else if (event.event_type === "approval.decided") {
       waiting.delete(id);
     }
   }
   return [...waiting.values()].sort((a, b) => a.sequence - b.sequence);
+}
+
+/** The size of a detail, said when it is too long to read at a glance: "42 lines · 3,120 characters". Null when it is short. */
+export function detailSize(detail: string, { lines: maxLines = 8, characters: maxCharacters = 600 } = {}): string | null {
+  const lines = detail ? detail.split("\n").length : 0;
+  if (lines <= maxLines && detail.length <= maxCharacters) return null;
+  const count = (value: number, one: string, many: string) => `${value.toLocaleString("en-US")} ${value === 1 ? one : many}`;
+  return `${count(lines, "line", "lines")} · ${count(detail.length, "character", "characters")}`;
 }
 
 /** What the card says it is asking, by tool. */

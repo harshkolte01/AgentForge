@@ -120,7 +120,7 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(settings=settings)),
             url=SimpleNamespace(hostname="workspace.example", scheme="https"), headers={},
             cookies={OAUTH_COOKIE_NAME: "browser-binding", PUBLIC_COOKIE_NAME: "old-session"})
-        identity = SimpleNamespace(consume=lambda state, binding: "verifier" if (state, binding) == ("state", "browser-binding") else None,
+        identity = SimpleNamespace(consume=lambda state, binding: ("verifier", None) if (state, binding) == ("state", "browser-binding") else None,
             signup=AsyncMock(return_value=uuid4()))
         store = SimpleNamespace(revoke=lambda token: None, issue=lambda user: "new-session")
         with patch("agentforge.auth.routes.GitHubIdentityService", return_value=identity), patch("agentforge.auth.routes.sessions", return_value=None), patch("agentforge.auth.routes.durable_sessions", return_value=store):
@@ -147,7 +147,8 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         identity = SimpleNamespace(start=lambda *values: captured.append(values))
         with patch("agentforge.auth.routes.GitHubIdentityService", return_value=identity), patch("agentforge.auth.routes.sessions", return_value=None):
             response = github_start(request)
-        state, binding, verifier = captured[0]
+        state, binding, verifier, next_path = captured[0]
+        self.assertIsNone(next_path)
         query = parse_qs(urlsplit(response.headers["location"]).query)
         import base64
         expected = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")

@@ -61,7 +61,8 @@ def compose_runtime(settings, sessions, telemetry, store) -> Runtime:
             ttl_sec=settings.e2b_sandbox_ttl_sec, request_timeout_sec=settings.e2b_request_timeout_sec))
         from agentforge.integrations.github_app import AuthorizedGitHubClient
         can_open_pull_requests = settings.enable_github_writes and isinstance(github, AuthorizedGitHubClient)
-        register_sandbox_shell(base_catalog, ConversationSandbox(sessions, provider, github),
+        from agentforge.integrations.attachment_storage import AttachmentStorage
+        register_sandbox_shell(base_catalog, ConversationSandbox(sessions, provider, github, attachment_storage=AttachmentStorage(settings.research_storage_path)),
             pull_requests=github if can_open_pull_requests else None)
     from agentforge.tools.conversation import register_conversation
     from agentforge.database.sessions import TurnExecution
@@ -79,7 +80,7 @@ def compose_runtime(settings, sessions, telemetry, store) -> Runtime:
         budgets=BudgetService(sessions), runs=AgentRunRepository(sessions),
         calls=ToolCallRepository(sessions), catalog=catalog,
         models=ModelRouter(ObservedModel(models.model, telemetry, store)), resources=resources,
-        lifecycle=store.progress, approvals=ToolApprovals(sessions, store.progress))
+        lifecycle=store.progress, approvals=ToolApprovals(sessions, store.progress), sessions=sessions)
     service.spawn_subagent = telemetry.decorate(service.spawn_subagent,
         kind="AGENT", name="spawn_subagent")
     return Runtime(service, models, repository_github)

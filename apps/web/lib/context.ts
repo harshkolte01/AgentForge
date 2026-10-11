@@ -42,7 +42,7 @@ export function formatTokens(count: number): string {
 }
 
 /** Same text estimate as the harness: three ASCII characters per token, two per Unicode code point. */
-export function estimateDraftTokens(goal: string, attachments: readonly { name?: string; content: string }[]): number {
+export function estimateDraftTokens(goal: string, attachments: readonly { name?: string; content: string; media_type?: string; page_count?: number; byte_size?: number }[]): number {
   const estimate = (text: string) => {
     let ascii = 0, other = 0;
     for (const character of text) {
@@ -51,7 +51,7 @@ export function estimateDraftTokens(goal: string, attachments: readonly { name?:
     }
     return Math.ceil(ascii / 3) + other * 2;
   };
-  return estimate(goal) + attachments.reduce((sum, item) => sum + estimate(item.name ?? "") + estimate(item.content), 0);
+  return estimate(goal) + attachments.reduce((sum, item) => sum + estimate(item.name ?? "") + estimate(item.content) + (item.media_type === "application/pdf" ? (item.page_count ?? 20) * 32768 : item.media_type?.startsWith("image/") ? 8192 : item.media_type === "text/plain" ? Math.ceil((item.byte_size ?? 0) / 2) : 0), 0);
 }
 
 export type ContextProjection = { used: number; percent: number; level: ContextLevel; empty: boolean };

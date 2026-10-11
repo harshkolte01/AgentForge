@@ -6,8 +6,10 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import sessionmaker
 
 from agentforge.database.engine import ping_database
+from agentforge.repositories.workers import worker_presence
 
 router = APIRouter(prefix="/api/v1/health", tags=["health"])
 
@@ -26,14 +28,14 @@ class CheckResult(BaseModel):
 
 class ReadyChecks(BaseModel):
     database: CheckResult
-    checkpointer: CheckResult
     worker: CheckResult
 
 
 class ReadyResponse(BaseModel):
     status: ReadyStatus
     checks: ReadyChecks = Field(
-        description="Database connectivity only. This probe does not establish worker/checkpointer readiness."
+        description="Readiness is database connectivity only. The worker check reports a recent worker heartbeat but "
+        "never makes the API unready."
     )
 
 
@@ -49,20 +51,24 @@ def live() -> LiveResponse:
     responses={503: {"model": ReadyResponse}},
 )
 def ready(request: Request) -> JSONResponse:
-    """Ping PostgreSQL; worker/checkpointer liveness is not observed by this process."""
+    """Ping PostgreSQL; report (without gating on) whether a worker has said it is alive."""
     try:
         ping_database(request.app.state.engine)
         database = CheckResult(status="ok")
     except (SQLAlchemyError, OSError):
         # Do not include the exception text; SQLAlchemy messages can contain the URL.
         database = CheckResult(status="error", detail="database_unreachable")
+    worker = CheckResult(status="not_observed", detail="no_recent_worker_heartbeat")
+    if database.status == "ok":
+        presence = worker_presence(sessionmaker(bind=request.app.state.engine))
+        if presence["status"] == "online":
+            worker = CheckResult(status="ok", detail="worker_heartbeat_recent")
 
     payload = ReadyResponse(
         status="ready" if database.status == "ok" else "degraded",
         checks=ReadyChecks(
             database=database,
-            checkpointer=CheckResult(status="not_observed", detail="not_observed_by_api"),
-            worker=CheckResult(status="not_observed", detail="not_observed_by_api"),
+            worker=worker,
         ),
     )
     return JSONResponse(

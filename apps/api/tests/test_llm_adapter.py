@@ -119,9 +119,13 @@ class RetryTests(IsolatedAsyncioTestCase):
             await model.complete(MESSAGES, [TOOL])
         self.assertEqual(len(completions.requests), 1)
 
-    async def test_failures_that_may_have_been_billed_or_are_permanent_are_not_retried(self):
+    async def test_a_timeout_is_retried_since_failing_the_run_costs_more_than_one_more_request(self):
+        model, completions, _ = adapter([openai.APITimeoutError(request=REQUEST), completion()])
+        await model.complete(MESSAGES, [TOOL])
+        self.assertEqual(len(completions.requests), 2)
+
+    async def test_permanent_failures_are_not_retried(self):
         cases = [
-            (openai.APITimeoutError(request=REQUEST), "MODEL_PROVIDER_ERROR"),
             (status_error(openai.AuthenticationError, 401), "AUTH_ERROR"),
             (status_error(openai.RateLimitError, 429, body={"code": "insufficient_quota"}), "MODEL_QUOTA_EXCEEDED"),
             (RuntimeError("anything else"), "MODEL_PROVIDER_ERROR"),
@@ -198,20 +202,31 @@ class StreamingTests(IsolatedAsyncioTestCase):
         self.assertEqual((reply, narration), (["Hel", "lo"], []))
         self.assertEqual(response.message["content"], "Hello")
 
-    async def test_a_rate_limit_before_any_output_is_retried_but_a_midstream_failure_is_not(self):
-        early, later = status_error(openai.RateLimitError, 429), status_error(openai.RateLimitError, 429)
+    async def test_a_rate_limit_before_any_output_is_retried(self):
         good = FakeStream([chunk('{"a":1}'), chunk(finish="stop")])
-        model, completions, _ = adapter([early, good])
-        response = await model.complete(MESSAGES, [], on_text=lambda _: None)
+        model, completions, _ = adapter([status_error(openai.RateLimitError, 429), good])
+        retried = []
+        response = await model.complete(MESSAGES, [], on_text=lambda _: None, on_retry=lambda: retried.append(True))
         self.assertEqual(response.message["content"], '{"a":1}')
         self.assertEqual(len(completions.requests), 2)
-        broken = FakeStream([chunk("{"), chunk("}")], fail_at=1, error=later)
+        self.assertEqual(retried, [])  # nothing had been shown, so there is nothing to take back
+
+    async def test_a_stream_that_breaks_midway_is_requested_again_after_the_caller_clears_it(self):
+        broken = FakeStream([chunk("Hel"), chunk("lo")], fail_at=1, error=openai.APIConnectionError(request=REQUEST))
+        model, completions, _ = adapter([broken, FakeStream([chunk("Hello"), chunk(finish="stop")])])
+        shown, retried = [], []
+        response = await model.complete(MESSAGES, [], on_text=shown.append, on_retry=lambda: retried.append(len(shown)))
+        self.assertEqual(response.message["content"], "Hello")
+        self.assertEqual(len(completions.requests), 2)
+        self.assertEqual(retried, [1])  # told after the first attempt had shown "Hel"
+        self.assertTrue(broken.closed)
+
+    async def test_a_permanent_failure_midway_is_not_repeated(self):
+        broken = FakeStream([chunk("{"), chunk("}")], fail_at=1, error=status_error(openai.AuthenticationError, 401))
         model, completions, _ = adapter([broken, FakeStream([chunk(finish="stop")])])
         with self.assertRaises(ModelProviderError) as caught:
             await model.complete(MESSAGES, [], on_text=lambda _: None)
-        self.assertEqual(len(completions.requests), 1)  # output had begun, so it is not repeated
-        self.assertFalse(caught.exception.retriable)
-        self.assertTrue(broken.closed)
+        self.assertEqual((caught.exception.code, len(completions.requests)), ("AUTH_ERROR", 1))
 
 
 class ClassifyDetailTests(TestCase):
@@ -249,10 +264,13 @@ class ClassifyDetailTests(TestCase):
         self.assertNotIn("sk-proj", error.detail)
         self.assertIn("Incorrect API key provided", error.detail)
 
-    def test_retriability_depends_on_whether_output_had_started(self):
-        self.assertTrue(self.classify(status_error(openai.RateLimitError, 429)).retriable)
-        self.assertFalse(self.classify(status_error(openai.RateLimitError, 429), before_output=False).retriable)
-        self.assertFalse(self.classify(status_error(openai.AuthenticationError, 401)).retriable)
+    def test_transient_failures_are_retriable_and_permanent_ones_are_not(self):
+        for transient in (status_error(openai.RateLimitError, 429), status_error(openai.InternalServerError, 500),
+                          openai.APITimeoutError(request=REQUEST), openai.APIConnectionError(request=REQUEST)):
+            self.assertTrue(self.classify(transient).retriable, transient)
+        for permanent in (status_error(openai.AuthenticationError, 401),
+                          status_error(openai.RateLimitError, 429, body={"code": "insufficient_quota"}), RuntimeError("x")):
+            self.assertFalse(self.classify(permanent).retriable, permanent)
 
     def test_our_own_errors_pass_through_unchanged(self):
         own = ModelProviderError("model returned no completion", detail="empty")

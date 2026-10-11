@@ -9,16 +9,18 @@ import { ResizableSidebar } from "@/features/sessions/resizable-sidebar";
 import { Button } from "@/components/ui/button";
 import { SessionHistory } from "@/features/sessions/session-history";
 import { ConversationComposer } from "@/features/sessions/conversation-composer";
-import { ConversationThread } from "@/features/sessions/conversation-thread";
+import { ConversationThread, DraftThread } from "@/features/sessions/conversation-thread";
 import { ConversationScrollContext, useConversationScroll } from "@/features/sessions/use-conversation-scroll";
 import { ConversationQueue } from "@/features/sessions/conversation-queue";
-import { mergeSessions } from "@/lib/conversation-order";
+import { BrandMark } from "@/components/brand-mark";
+import { FirstRun } from "@/features/sessions/first-run";
+import { mergeSessions, upsertSession } from "@/lib/conversation-order";
 import { hasUnseenOutcome } from "@/lib/conversation-status";
 import { usePageVisible } from "@/lib/use-page-visible";
 import { accountId, deliverIntent, pendingTurns, saveIntent } from "@/lib/conversation-outbox";
 import { navigationAfterSend, receiptEffects, sessionAfterReceipt, type PendingTurn, type Receipt } from "@/features/sessions/turn-flow";
 import { api, ApiError, message, terminalStatuses } from "@/lib/task-api";
-import { routes, uuidPattern } from "@/lib/routes";
+import { rememberChat, routes, uuidPattern } from "@/lib/routes";
 import { useDocumentTitle } from "@/lib/use-document-title";
 import type { ConversationSession, RepositorySelection, TurnInput, WorkspaceConfiguration } from "@/lib/workspace-api";
 
@@ -48,11 +50,14 @@ export function ConversationWorkspace() {
   const [refresh, setRefresh] = useState(0);
   const [threadRefresh, setThreadRefresh] = useState(0);
   const pendingSession = useRef<ConversationSession | null>(null);
+  // The composer that sent a conversation's first message stays the same element when that conversation opens (no remount, no
+  // lost focus): its key is kept for the conversation created from it.
+  const [adopted, setAdopted] = useState<{ key: string; composerKey: string; sessionId?: string } | null>(null);
   const navigationTrigger = useRef<HTMLButtonElement>(null);
   const navigation = useRef<HTMLElement>(null);
   const [retryPending, setRetryPending] = useState(0);
   const routeRef = useRef(routeId);
-  useEffect(() => { routeRef.current = routeId; }, [routeId]);
+  useEffect(() => { routeRef.current = routeId; rememberChat(routeId ? routes.conversation(routeId) : routes.newConversation); }, [routeId]);
   useEffect(() => {
     const controller = new AbortController();
     void (async () => {
@@ -127,12 +132,9 @@ export function ConversationWorkspace() {
   function newChat() { if (busy) return false; setDraftRepository(null); setDraftSequence((value) => value + 1); pendingSession.current = null; setSidebar(false); setError(""); return true; }
   function select() { setSidebar(false); pendingSession.current = null; setError(""); }
   // Stable (it only uses state setters): the thread's store keeps the first one it is given.
+  // A read that changes nothing (every poll of an idle conversation) keeps the same list, so nothing re-renders.
   const updateSession = useCallback((session: ConversationSession) => {
-    setSessions((current) => {
-      const previous = current.find((item) => item.id === session.id);
-      if (previous && (previous.revision ?? 0) > (session.revision ?? 0)) return current;
-      return [session, ...current.filter((item) => item.id !== session.id)].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-    });
+    setSessions((current) => upsertSession(current, session));
     // Any successful read of a conversation ends its "could not refresh" notice.
     setStaleSession((current) => (current === session.id ? null : current));
   }, []);
@@ -177,13 +179,18 @@ export function ConversationWorkspace() {
     const key = input.idempotency_key;
     const routeAtSend = routeId;
     setBusy(true);
-    // The bubble is keyed by this turn's idempotency key for life, so the server's copy of it replaces it in place.
-    if (selected) setPending({ key, sessionId: selected.id, goal: input.goal, attachments: input.attachments.map(({ name }) => ({ name })) });
+    // The bubble is keyed by this turn's idempotency key for life, so the server's copy of it replaces it in place. A first
+    // message shows at once too, in a draft of the thread, while its conversation is being created.
+    setPending({ key, sessionId: selected?.id ?? null, goal: input.goal, attachments: input.attachments.map(({ name }) => ({ name })) });
+    if (!selected) setAdopted({ key, composerKey: `new-${draftSequence}` });
     try {
       const account = await accountId();
       const intent = await saveIntent(account, selected?.id ?? pendingSession.current?.id ?? null, input);
       const { result, session: created } = await deliverIntent(intent);
       if (created) updateSession(created);
+      // The draft now belongs to its conversation: the thread that opens for it picks up the same bubble.
+      setPending((current) => (current?.key === key && current.sessionId === null ? { ...current, sessionId: result.session_id } : current));
+      setAdopted((current) => (current?.key === key ? { ...current, sessionId: result.session_id } : current));
       // Reconcile from the accepted receipt itself: the message and the run to follow are known even if reading the conversation fails.
       const effects = receiptEffects(result, (status) => terminalStatuses.has(status));
       setSessions((current) => current.map((item) => (item.id === result.session_id ? sessionAfterReceipt(item, effects) : item)));
@@ -192,33 +199,52 @@ export function ConversationWorkspace() {
       pendingSession.current = null; setThreadRefresh((value) => value + 1);
       if (navigationAfterSend({ routeAtSend, routeNow: routeRef.current, resultSessionId: result.session_id }) === "navigate") router.push(routes.conversation(result.session_id));
       refreshAfterSend(result.session_id);
-    } catch (error) { setPending((current) => (current?.key === key ? null : current)); throw error; }
+    } catch (error) {
+      setPending((current) => (current?.key === key ? null : current));
+      setAdopted((current) => (current?.key === key ? null : current));
+      throw error;
+    }
     finally { setBusy(false); }
   }
   // "Try again" on a failed reply sends the same message once more, through the normal send path (a fresh turn, so it is not a replay).
   const retry = (goal: string) => {
     void send({ routing: "auto", idempotency_key: crypto.randomUUID(), goal, repository: selected ? selected.repository : null, allowed_web_hosts: [], attachments: [] }).catch(() => {});
   };
-  const composer = <ConversationComposer queue={selected && !!selected.queued_count ? <ConversationQueue key={selected.id} session={selected} onChange={updateSession} /> : null} menuSide={selected ? "top" : "bottom"} key={selected?.id ?? `new-${draftSequence}`} sessionId={selected?.id ?? null} contextRevision={selected ? `${selected.revision ?? selected.last_sequence}:${selected.active_task_id ?? ""}` : "new"} onNewConversation={() => { if (newChat()) router.push(routes.newConversation); }} repository={selected ? selected.repository : draftRepository} repositoryLocked={!!selected?.queued_count} onRepositoryChange={changeRepository} config={config} disabled={loading || busy} running={!!selected?.active_task_id} runId={selected?.active_task_id ?? null} onStop={stop} archived={selected?.archived ?? false} onSend={send} />;
+  // A first message being sent: shown at once in a draft of its thread, until the conversation it creates opens.
+  const draft = !selected && pending && (routeId === null || pending.sessionId === routeId) ? pending : null;
+  // The composer sits under the thread once there is one (or a draft of it); before that it is centred in the empty chat.
+  const docked = !!selected || !!draft;
+  const composerKey = selected ? (adopted?.sessionId === selected.id ? adopted.composerKey : selected.id) : `new-${draftSequence}`;
+  const composer = <ConversationComposer queue={selected && !!selected.queued_count ? <ConversationQueue key={selected.id} session={selected} onChange={updateSession} /> : null} menuSide={docked ? "top" : "bottom"} key={composerKey} sessionId={selected?.id ?? null} contextRevision={selected ? `${selected.revision ?? selected.last_sequence}:${selected.active_task_id ?? ""}` : "new"} onNewConversation={() => { if (newChat()) router.push(routes.newConversation); }} repository={selected ? selected.repository : draftRepository} repositoryLocked={!!selected?.queued_count} onRepositoryChange={changeRepository} config={config} disabled={loading || busy} running={!!selected?.active_task_id} runId={selected?.active_task_id ?? null} onStop={stop} archived={selected?.archived ?? false} onSend={send} docked={docked} below={docked ? undefined : (fill) => <FirstRun config={config} onExample={fill} />} />;
   return <ConversationScrollContext value={scrollController}><div data-conversation-root className="relative top-[var(--visible-top,0px)] flex h-[var(--visible-height,100dvh)] min-h-0 overflow-hidden bg-background selection:bg-foreground/15">
     {sidebar ? <button className="fixed inset-0 z-30 bg-foreground/20 lg:hidden" aria-label="Close navigation" onClick={() => setSidebar(false)} /> : null}
     <ResizableSidebar collapsed={collapsed} ref={navigation} id="workspace-navigation" className={`fixed inset-y-0 left-0 z-40 flex shrink-0 flex-col border-r bg-sidebar px-3 pb-3 pt-3 transition-transform motion-reduce:transition-none lg:translate-x-0 ${sidebar ? "translate-x-0" : "-translate-x-full max-lg:invisible"} ${collapsed ? "lg:hidden" : ""}`} aria-label="Workspace navigation" role={sidebar ? "dialog" : undefined} aria-modal={sidebar || undefined}>
-      <div className="mb-5 flex min-h-9 items-center justify-between px-1"><Link href={routes.newConversation} onClick={(event) => { if (!newChat()) event.preventDefault(); }} className="inline-flex items-center gap-2 rounded text-[13px] font-semibold focus-visible:outline-2"><span className="flex size-6 items-center justify-center rounded-md bg-primary text-[11px] text-primary-foreground" aria-hidden="true">A</span>AgentForge</Link><Button variant="ghost" size="icon-sm" className="size-11 sm:size-8" aria-label="Collapse sidebar" onClick={() => { setSidebar(false); setCollapsed(true); }}><PanelLeftClose className="size-3.5" /></Button></div>
+      <div className="mb-5 flex min-h-9 items-center justify-between px-1"><Link href={routes.newConversation} onClick={(event) => { if (!newChat()) event.preventDefault(); }} className="inline-flex items-center gap-2 rounded text-[13px] font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring/60"><BrandMark />AgentForge</Link><Button variant="ghost" size="icon-sm" className="size-11 sm:size-8" aria-label="Collapse sidebar" onClick={() => { setSidebar(false); setCollapsed(true); }}><PanelLeftClose className="size-3.5" /></Button></div>
       <Button variant="ghost" className="mb-3 min-h-11 justify-start gap-2 px-2 text-[13px] sm:min-h-9" onClick={() => { if (newChat()) router.push(routes.newConversation); }} disabled={busy}><SquarePen className="size-4" />New conversation</Button>
       <SessionHistory sessions={sessions} selectedId={selected?.id ?? null} loading={loading} disabled={busy} onSelect={select} onChange={updateSession} />
       <div className="border-t pt-2"><SidebarAccountMenu /></div>
     </ResizableSidebar>
     <div inert={sidebar} className="flex min-w-0 flex-1 flex-col">
       <header className="flex min-h-14 shrink-0 items-center gap-2 px-4 sm:px-6"><Button ref={navigationTrigger} variant="ghost" size="icon" aria-label="Open navigation" aria-expanded={sidebar} aria-controls="workspace-navigation" className={`size-11 sm:size-8 ${collapsed ? "" : "lg:hidden"}`} onClick={() => { setCollapsed(false); setSidebar(!window.matchMedia("(min-width: 1024px)").matches); }}><Menu className="size-4" /></Button>
-        <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{missing ? "Conversation not found" : failure ? "Unavailable" : selected?.title ?? (resolving ? "Loading…" : "New conversation")}</p>
+        <h1 className="min-w-0 flex-1 truncate text-xs font-normal text-muted-foreground">{missing ? "Conversation not found" : failure ? "Unavailable" : selected?.title ?? (resolving ? "Loading…" : "New conversation")}</h1>
         {selected?.archived ? <span className="text-xs text-muted-foreground">Archived</span> : null}</header>
       {error ? <div role="alert" className="mx-5 mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border px-3 py-2 text-xs text-destructive"><p>{error}</p><Button variant="outline" size="sm" onClick={() => { setLookupFailure(null); setRefresh((value) => value + 1); setRetryPending((value) => value + 1); }}>Retry</Button></div> : null}
       <main data-conversation-scroll className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overscroll-contain [overflow-anchor:none]">
-        {failure && !failure.missing ? <div role="alert" className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center gap-3 px-5 pb-10 text-center sm:px-8"><h1 className="text-2xl font-medium tracking-tight">Couldn&apos;t load this conversation</h1><p className="text-sm leading-6 text-muted-foreground">Check your connection and try again.</p><div><Button onClick={() => { setLookupFailure(null); setRefresh((value) => value + 1); }}>Try again</Button></div></div>
-        : missing ? <div role="alert" className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center gap-3 px-5 pb-10 text-center sm:px-8"><h1 className="text-2xl font-medium tracking-tight">Conversation not found</h1><p className="text-sm leading-6 text-muted-foreground">It may have been deleted, or the link belongs to a different account.</p><div><Link href={routes.newConversation} onClick={(event) => { if (!newChat()) event.preventDefault(); }} className="inline-flex min-h-11 items-center rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/85 focus-visible:outline-2 focus-visible:outline-offset-2 sm:min-h-9">Start a new conversation</Link></div></div>
+        {failure && !failure.missing ? <div role="alert" className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center gap-3 px-5 pb-10 text-center sm:px-8"><h2 className="text-2xl font-medium tracking-tight">Couldn&apos;t load this conversation</h2><p className="text-sm leading-6 text-muted-foreground">Check your connection and try again.</p><div><Button onClick={() => { setLookupFailure(null); setRefresh((value) => value + 1); }}>Try again</Button></div></div>
+        : missing ? <div role="alert" className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center gap-3 px-5 pb-10 text-center sm:px-8"><h2 className="text-2xl font-medium tracking-tight">Conversation not found</h2><p className="text-sm leading-6 text-muted-foreground">It may have been deleted, or the link belongs to a different account.</p><div><Link href={routes.newConversation} onClick={(event) => { if (!newChat()) event.preventDefault(); }} className="inline-flex min-h-11 items-center rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground outline-none hover:bg-primary/85 focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:min-h-9">Start a new conversation</Link></div></div>
+        : draft ? <DraftThread pending={draft} />
         : resolving ? <div role="status" className="mx-auto flex w-full max-w-3xl animate-pulse flex-col gap-6 px-5 pb-6 pt-4 motion-reduce:animate-none sm:px-8"><span className="sr-only">Loading conversation…</span><div className="ml-auto h-10 w-2/5 rounded-3xl bg-muted" /><div className="space-y-2.5"><div className="h-3.5 w-11/12 rounded bg-muted" /><div className="h-3.5 w-3/4 rounded bg-muted" /></div></div>
-        : selected ? <ConversationThread key={selected.id} session={selected} refresh={threadRefresh} pending={pending} receipt={receipt} onReceipt={receiptTaken} onChange={updateSession} onRetry={retry} /> : <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center px-5 pb-10 sm:px-8"><h1 className="mb-6 text-center text-2xl font-medium tracking-tight">What are we working on?</h1>{composer}</div>}
-        {selected ? <div data-conversation-composer className="sticky bottom-0 mt-auto bg-background px-5 pb-4 pt-1 before:pointer-events-none before:absolute before:inset-x-0 before:-top-6 before:h-6 before:bg-gradient-to-t before:from-background before:to-transparent sm:px-8"><div className="relative mx-auto max-w-[44rem]"><ScrollToBottom />{staleSession === selected.id ? <div role="status" data-refresh-notice className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-background px-3 py-1.5 text-xs text-muted-foreground"><span>Message sent. The conversation could not be refreshed.</span><Button variant="ghost" size="sm" className="pointer-coarse:min-h-11" onClick={() => { setStaleSession(null); refreshAfterSend(selected.id); setThreadRefresh((value) => value + 1); }}>Retry</Button></div> : null}{composer}</div></div> : null}
+        : selected ? <ConversationThread key={selected.id} session={selected} refresh={threadRefresh} pending={pending} receipt={receipt} onReceipt={receiptTaken} onChange={updateSession} onRetry={retry} /> : null}
+        {/* One element whether centred in the empty chat or docked under the thread, so sending a first message never remounts the
+            composer (its text, focus and in-flight send stay with it). */}
+        {docked || (!failure && !missing && !resolving) ? <div data-conversation-composer={docked ? "" : undefined} className={docked ? "sticky bottom-0 mt-auto bg-background px-5 pb-4 pt-1 before:pointer-events-none before:absolute before:inset-x-0 before:-top-6 before:h-6 before:bg-gradient-to-t before:from-background before:to-transparent sm:px-8" : "mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center px-5 pb-10 sm:px-8"}>
+          {docked ? null : <h2 className="mb-6 text-center text-2xl font-medium tracking-tight">What are we working on?</h2>}
+          <div className={docked ? "relative mx-auto max-w-[44rem]" : undefined}>
+            {docked ? <ScrollToBottom /> : null}
+            {selected && staleSession === selected.id ? <div role="status" data-refresh-notice className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-background px-3 py-1.5 text-xs text-muted-foreground"><span>Message sent. The conversation could not be refreshed.</span><Button variant="ghost" size="sm" className="pointer-coarse:min-h-11" onClick={() => { setStaleSession(null); refreshAfterSend(selected.id); setThreadRefresh((value) => value + 1); }}>Retry</Button></div> : null}
+            {composer}
+          </div>
+        </div> : null}
       </main>
     </div>
   </div></ConversationScrollContext>;

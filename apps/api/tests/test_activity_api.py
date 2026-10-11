@@ -347,7 +347,7 @@ class MessagesBatchTests(TestCase):
         known = {task_id: MessageActivity(action_count=60, available=True) for task_id in assistant_tasks}
         repository = SessionRepository.__new__(SessionRepository)
         repository.session_factory = Handle
-        with patch.object(SessionRepository, "owned", return_value=NS(id=session_id)), \
+        with patch.object(SessionRepository, "owned", return_value=NS(id=session_id, active_task_id=None)), \
              patch("agentforge.repositories.sessions.settle_conversation"), \
              patch("agentforge.repositories.sessions.tool_steps", side_effect=lambda s, ids: calls["steps"].append(set(ids)) or {}), \
              patch("agentforge.repositories.sessions.activity_for_tasks", side_effect=lambda s, ids: calls["activity"].append(set(ids)) or known), \

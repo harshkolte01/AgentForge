@@ -1,9 +1,10 @@
 "use client";
-import { Children, createContext, isValidElement, memo, useContext, useEffect, useMemo, useRef, type ReactElement, type ReactNode } from "react";
+import { Children, createContext, isValidElement, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { CodeBlock } from "@/features/sessions/code-block";
 import { splitAssistantContent } from "@/features/sessions/assistant-content";
+import { splitMarkdownBlocks } from "@/lib/markdown-blocks";
 import { stabilizeMarkdown } from "@/lib/markdown-stabilize";
 
 function safeLink(value: string) {
@@ -48,23 +49,71 @@ const components: Components = {
   th: ({ children }) => <th className="border-b px-3.5 py-2 font-medium">{children}</th>,
   td: ({ children }) => <td className="border-b px-3.5 py-2 align-top [tr:last-child_&]:border-b-0">{children}</td>,
   img: ({ alt }) => alt ? <span>{alt}</span> : null,
-  a: ({ href, children }) => href ? <a href={href} className="rounded font-medium underline decoration-foreground/30 underline-offset-4 transition-colors hover:decoration-foreground focus-visible:outline-2" {...(href.startsWith("http") ? { target: "_blank", rel: "noopener noreferrer" } : {})}>{children}</a> : <span>{children}</span>,
+  a: ({ href, children }) => href ? <a href={href} className="rounded font-medium underline decoration-foreground/30 underline-offset-4 transition-colors outline-none hover:decoration-foreground focus-visible:ring-2 focus-visible:ring-ring/60" {...(href.startsWith("http") ? { target: "_blank", rel: "noopener noreferrer" } : {})}>{children}</a> : <span>{children}</span>,
 };
 
 const plugins = [remarkGfm];
+
+/** About this many frames to catch up with whatever has arrived, so the reveal never falls behind the model. */
+const CATCH_UP_FRAMES = 10;
+const reducedMotion = () => typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+
+/**
+ * Streamed text arrives in bursts (a few lines every ~150 ms); shown as it lands, the reply and the view that follows it jump by
+ * several lines at a time. While `streaming`, this reveals what has arrived over the next few frames instead, a little per
+ * frame, at a speed proportional to the backlog. Finished text, replaced text and reduced motion are shown as they are.
+ */
+function useRevealed(content: string, streaming: boolean): string {
+  const [shown, setShown] = useState(content);
+  const target = useRef(content);
+  useLayoutEffect(() => { target.current = content; }, [content]);
+  const pacing = streaming && !reducedMotion();
+  useEffect(() => {
+    if (!pacing) return;
+    let frame = 0;
+    let odd = false;
+    const step = () => {
+      frame = requestAnimationFrame(step);
+      // Every other frame (about 30 times a second) is smooth to the eye and halves the Markdown work.
+      odd = !odd;
+      if (odd) return;
+      setShown((current) => {
+        const goal = target.current;
+        if (!goal.startsWith(current)) return goal; // replaced, not extended: never animate unrelated text
+        if (current.length >= goal.length) return current;
+        let next = current.length + Math.max(3, Math.ceil((goal.length - current.length) / CATCH_UP_FRAMES));
+        if (next < goal.length && /[\uDC00-\uDFFF]/.test(goal[next])) next += 1; // never split a surrogate pair
+        return goal.slice(0, next);
+      });
+    };
+    frame = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(frame);
+  }, [pacing]);
+  if (!pacing) return content;
+  // Shrunk or replaced since the last frame: show the new text at once rather than a stale prefix.
+  return content.startsWith(shown) ? shown : content;
+}
+
+/** One top-level block, parsed only when its own text changes: while streaming, only the block still being written re-parses. */
+const MarkdownBlock = memo(function MarkdownBlock({ text }: { text: string }) {
+  return <Markdown skipHtml urlTransform={safeLink} remarkPlugins={plugins} components={components}>{text}</Markdown>;
+});
 
 /**
  * A reply, rendered as inert Markdown (raw HTML is skipped, links are restricted). While `streaming` it is the live text so far:
  * incomplete fences, tables, links and emphasis are stabilized so the growing prefix always looks like the finished text, and
  * `onProgress` fires as it grows. Legacy leading reasoning tags are never shown.
  */
-export const AssistantMessage = memo(function AssistantMessage({ content, streaming = false, onProgress }: { content: string; streaming?: boolean; onProgress?: () => void }) {
+export const AssistantMessage = memo(function AssistantMessage({ content: arrived, streaming = false, onProgress }: { content: string; streaming?: boolean; onProgress?: () => void }) {
+  const content = useRevealed(arrived, streaming);
   const progress = useRef(onProgress);
   useEffect(() => { progress.current = onProgress; }, [onProgress]);
   useEffect(() => { if (streaming) progress.current?.(); }, [content, streaming]);
   const { answer } = splitAssistantContent(content, streaming);
   const text = useMemo(() => stabilizeMarkdown(answer, { streaming }), [answer, streaming]);
+  // Blocks render as siblings (no wrappers), so spacing and the first child's margin are exactly those of one whole document.
+  const blocks = useMemo(() => splitMarkdownBlocks(text), [text]);
   return <div className="min-w-0 space-y-4 break-words text-[15px] leading-7 [&>*:first-child]:mt-0" data-streaming={streaming ? "true" : undefined}>
-    {text ? <StreamingContext value={streaming}><Markdown skipHtml urlTransform={safeLink} remarkPlugins={plugins} components={components}>{text}</Markdown></StreamingContext> : null}
+    {blocks.length ? <StreamingContext value={streaming}>{blocks.map((block, index) => <MarkdownBlock key={index} text={block} />)}</StreamingContext> : null}
   </div>;
 });

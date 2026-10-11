@@ -1,1 +1,1 @@
-"""Lease-based worker and explicit checkpoint setup entry points."""
+"""Lease-based worker entry point."""

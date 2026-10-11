@@ -44,7 +44,6 @@ services:
     restart: "no"
     environment:
       DATABASE_URL: ${MIGRATION_DATABASE_URL:?set the admin migration URL}
-      LANGGRAPH_CHECKPOINT_DB_URL: ${MIGRATION_CHECKPOINT_DB_URL:?set the admin checkpoint setup URL}
     command: [alembic, upgrade, head]
     depends_on:
       db: {condition: service_healthy}

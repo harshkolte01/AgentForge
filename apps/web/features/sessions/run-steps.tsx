@@ -100,10 +100,16 @@ const NoteBlock = memo(function NoteBlock({ text }: { text: string }) {
   return <div className="min-w-0" data-activity-entry="note"><AssistantMessage content={text} /></div>;
 });
 
-/** A line about the connection or the run itself (stopping, thinking): the same row shape as a step. */
-function StatusRow({ icon = "running", current, label, children }: { icon?: StatusIcon; current: boolean; label: string; children?: ReactNode }) {
-  return <li className="message-in flex min-w-0 items-center gap-2.5" data-activity-entry="status">
-    <Glyph icon={icon} tone="neutral" current={current} />
+/**
+ * A line about the connection or the run itself (stopping, thinking): the same row shape as a step. It plays the entrance only
+ * when it is genuinely new: "Thinking" moves from the just-sent indicator into the run's own view as a fresh element, and
+ * replaying the fade there would flicker.
+ */
+function StatusRow({ icon = "running", current, label, children, animate = false, fade = false }: { icon?: StatusIcon; current: boolean; label: string; children?: ReactNode; animate?: boolean; fade?: boolean }) {
+  // Work in progress ("Thinking", "Stopping") is the shimmering words alone; only a warning keeps a glyph to mark it apart.
+  // `fade`: a line that comes back during a run fades in slowly, so one that the run's end removes a moment later never flashes.
+  return <li className={`${animate ? "message-in " : fade ? "status-fade " : ""}flex min-w-0 items-center gap-2.5`} data-activity-entry="status">
+    {icon === "running" ? null : <Glyph icon={icon} tone="neutral" current={current} />}
     <span className="min-w-0 truncate">{current && icon === "running" ? <span className="thinking-shimmer">{label}</span> : label}</span>
     {children}
   </li>;
@@ -136,6 +142,8 @@ type TimelineProps = {
   durationMs?: number | null;
   /** Calls the agent stopped before, waiting for an Approve / Decline. */
   approvals?: readonly PendingApproval[];
+  /** The "Thinking" line plays its entrance (only the indicator shown the moment a message is sent). */
+  statusEnters?: boolean;
 };
 
 function renderSection(section: Section, taskId: string, current: string | null, animate: boolean, extra: ReactNode) {
@@ -158,7 +166,7 @@ function renderSection(section: Section, taskId: string, current: string | null,
  * The log itself is `aria-live="off"`: streaming text and growing rows would be read out word by word. A separate polite status
  * says only what changed in the run (`announcement`).
  */
-export function Timeline({ taskId = "", entries, live = false, quiet = false, fallback = "Thinking", tail, notice = null, onRetry, stopping = false, animate = true, announcement, fold = false, durationMs, approvals = [] }: TimelineProps) {
+export function Timeline({ taskId = "", entries, live = false, quiet = false, fallback = "Thinking", tail, notice = null, onRetry, stopping = false, animate = true, announcement, fold = false, durationMs, approvals = [], statusEnters = false }: TimelineProps) {
   const sections = useMemo(() => sectionsOf(entries), [entries]);
   const callId = useMemo(() => currentCallId(entries), [entries]);
   const nothingYet = !entries.some((entry) => entry.kind !== "phase");
@@ -169,7 +177,7 @@ export function Timeline({ taskId = "", entries, live = false, quiet = false, fa
   const noticeLeads = !!notice && !tail && !running && notice.kind !== "halted" && notice.kind !== "failed";
   const current = stopping ? "stopping" : callId;
   const last = sections[sections.length - 1];
-  const stoppingRow = stopping ? <StatusRow key="stopping" current label="Stopping" /> : null;
+  const stoppingRow = stopping ? <StatusRow key="stopping" current label="Stopping" animate /> : null;
   return <>
     <div className="flex min-w-0 flex-col gap-3" role="log" aria-live="off" aria-label="Agent activity" data-activity-log data-live={live ? "true" : undefined}>
       {fold ? <ActivityDisclosure taskId={taskId} entries={entries} durationMs={durationMs} className="" />
@@ -178,11 +186,11 @@ export function Timeline({ taskId = "", entries, live = false, quiet = false, fa
       {approvals.map((approval) => <ApprovalCard key={approval.id} approval={approval} />)}
       {tail}
       {notice ? <ul className="text-[15px] leading-6 text-muted-foreground" aria-label="Connection" data-activity-notice={notice.kind}>
-        <StatusRow icon={noticeLeads ? "running" : notice.kind === "reconnecting" || notice.kind === "catching_up" ? "unknown" : "warning"} current={noticeLeads} label={notice.text}>
+        <StatusRow icon={noticeLeads ? "running" : notice.kind === "reconnecting" || notice.kind === "catching_up" ? "unknown" : "warning"} current={noticeLeads} label={notice.text} animate>
           {notice.kind === "failed" && onRetry ? <button type="button" onClick={onRetry} className={`ml-1 shrink-0 rounded px-1 font-medium text-foreground underline underline-offset-4 [@media(pointer:coarse)]:min-h-11 ${toggleClass}`}>Retry</button> : null}
         </StatusRow>
       </ul> : null}
-      {status ? <ul className="text-[15px] leading-6 text-muted-foreground" aria-label="Status"><StatusRow current label={fallback} /></ul> : null}
+      {status ? <ul className="text-[15px] leading-6 text-muted-foreground" aria-label="Status"><StatusRow current label={fallback} animate={statusEnters} fade={!statusEnters && !nothingYet} /></ul> : null}
     </div>
     {announcement !== undefined ? <span role="status" aria-live="polite" className="sr-only" data-activity-status>{announcement}</span> : null}
   </>;

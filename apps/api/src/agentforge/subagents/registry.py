@@ -10,6 +10,7 @@ from collections.abc import Callable
 import hashlib
 from importlib.resources import files
 import json
+import time
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from sqlalchemy import select
@@ -23,8 +24,11 @@ from agentforge.subagents.scope import ScopeDenied, TaskContext
 
 
 BUILTIN_KEYS = frozenset({"agent"})
-AGENT_VERSION = 1
+# Stored built-in snapshots are immutable: a changed prompt is a new version file, and older tasks keep resolving theirs.
+AGENT_VERSION = 2
 AGENT_KEY = "builtin/agent"
+BUILTIN_CACHE_SEC = 60
+_builtin_cache: dict[tuple[str, int], tuple[float, "ResolvedDefinition"]] = {}   # (key, version) -> (valid until, result)
 
 
 def canonical_snapshot(definition: AgentDefinition) -> tuple[dict, str]:
@@ -106,21 +110,19 @@ class AgentRegistry:
         if type(version) is not int or version < 1:
             raise ScopeDenied("explicit definition version is required")
         parts = key.split("/")
+        if len(parts) == 2 and parts[0] == "builtin":
+            # Re-resolved before every model step and tool call. A built-in is an immutable package file, so once its
+            # row is seeded and verified the result is kept per process for a minute, and then re-verified by a plain
+            # read; the seeding write (which locks the one row every run shares) happens only when that read fails.
+            cached = _builtin_cache.get((key, version))
+            if cached is not None and cached[0] > time.monotonic():
+                return cached[1]
+            resolved = self._resolve_builtin(key, parts[1], version)
+            _builtin_cache[(key, version)] = (time.monotonic() + BUILTIN_CACHE_SEC, resolved)
+            return resolved
         with self.session_factory() as session, session.begin():
             repository = DefinitionRepository(session)
-            if len(parts) == 2 and parts[0] == "builtin":
-                name = parts[1]
-                definition = load_builtin(name, version)
-                snapshot, digest = canonical_snapshot(definition)
-                definition_id = uuid5(NAMESPACE_URL, f"https://agentforge.local/definitions/builtin/{name}")
-                row = repository.ensure_builtin(
-                    definition_id=definition_id, agent_key=name, version=version,
-                    definition_json=snapshot, sha256=digest,
-                )
-                parent = session.get(DefinitionRow, row.definition_id)
-                if parent is None or parent.disabled_at is not None:
-                    raise ScopeDenied("built-in definition is disabled")
-            elif len(parts) == 3 and parts[0] == "project":
+            if len(parts) == 3 and parts[0] == "project":
                 try:
                     project_id = UUID(parts[1])
                 except ValueError as exc:
@@ -145,6 +147,21 @@ class AgentRegistry:
             else:
                 raise ScopeDenied("namespace-qualified definition key is required")
             return ResolvedDefinition(row.definition_id, row.id, key, definition, digest)
+
+    def _resolve_builtin(self, key: str, name: str, version: int) -> ResolvedDefinition:
+        definition = load_builtin(name, version)
+        snapshot, digest = canonical_snapshot(definition)
+        definition_id = uuid5(NAMESPACE_URL, f"https://agentforge.local/definitions/builtin/{name}")
+        identity = dict(definition_id=definition_id, agent_key=name, version=version, definition_json=snapshot, sha256=digest)
+        with self.session_factory() as session:
+            row = DefinitionRepository(session).seeded_builtin(**identity)
+        if row is None:
+            with self.session_factory() as session, session.begin():
+                row = DefinitionRepository(session).ensure_builtin(**identity)
+                parent = session.get(DefinitionRow, row.definition_id)
+                if parent is None or parent.disabled_at is not None:
+                    raise ScopeDenied("built-in definition is disabled")
+        return ResolvedDefinition(row.definition_id, row.id, key, definition, digest)
 
     async def save_project_version(
         self, definition: AgentDefinition, ctx: TaskContext, *, grant_ceiling: Permissions,

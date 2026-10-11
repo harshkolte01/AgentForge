@@ -1,10 +1,13 @@
 """Owner-scoped GitHub App discovery and signed, durable revocation webhooks."""
+import asyncio
 import hashlib
 import json
+import logging
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
+from starlette.concurrency import run_in_threadpool
 from agentforge.api.dependencies import sessions
 from agentforge.auth.session import current_user
 from agentforge.auth.github_service import github_configured, GitHubIdentityService
@@ -16,6 +19,7 @@ from agentforge.integrations.github_client import GitHubError, validate_repo_id
 from agentforge.security.webhook_verification import verify_github_signature
 
 router = APIRouter(prefix="/api/v1/github", tags=["github"])
+logger = logging.getLogger(__name__)
 
 def fail(error):
     code = str(error)
@@ -26,14 +30,34 @@ def identity(request):
         raise HTTPException(503, "github_auth_not_configured")
     return GitHubIdentityService(sessions(request), request.app.state.settings)
 
-@router.get("/status")
-def status(request: Request, user: User = Depends(current_user)):
-    settings = request.app.state.settings
+def stored_credential(request, user_id):
     with sessions(request)() as database:
-        credential = database.scalar(select(GitHubCredential).where(GitHubCredential.user_id == user.id)) if github_configured(settings) else None
-        connected = bool(credential and not credential.revoked_at and not credential.refresh_started_at
-            and credential.refresh_expires_at and credential.refresh_expires_at > now())
-    return {"configured": github_configured(settings), "connected": connected,
+        return database.scalar(select(GitHubCredential).where(GitHubCredential.user_id == user_id))
+
+@router.get("/status")
+async def status(request: Request, user: User = Depends(current_user), live: bool = True):
+    """`live=false` answers from the stored credential alone (no GitHub request): for quick checks such as the
+    empty chat's setup list. The live check also counts installations and notices a token GitHub no longer accepts."""
+    settings = request.app.state.settings
+    configured = github_configured(settings)
+    credential = await run_in_threadpool(stored_credential, request, user.id) if configured else None
+    # A refresh in progress is still a connection; a revoked or expired refresh token needs a new sign-in.
+    connected = bool(credential and not credential.revoked_at
+        and credential.refresh_expires_at and credential.refresh_expires_at > now())
+    installations = None
+    if connected and live:
+        try:
+            token = await identity(request).access_token(user.id)
+            installations = len(await asyncio.wait_for(GitHubAppClient(settings, token=token).installations(), 10))
+        except GitHubError as error:
+            connected = str(error) != "github_reauthorization_required"
+        except asyncio.TimeoutError:
+            pass
+        except Exception as error:
+            # Status is informational: a failure of the live part leaves the stored answer standing.
+            logger.warning("GitHub status check failed: %s", type(error).__name__)
+    return {"configured": configured, "connected": connected,
+        "reauthorization_required": bool(credential) and not connected, "installations": installations,
         "enabled_writes": settings.enable_github_writes,
         "install_url": f"https://github.com/apps/{settings.github_app_slug}/installations/new" if settings.github_app_slug else None}
 
@@ -52,7 +76,7 @@ async def repositories(request: Request, user: User = Depends(current_user)):
     try:
         service = identity(request)
         pairs = await GitHubAppClient(request.app.state.settings, token=await service.access_token(user.id)).repositories()
-        service.record_grants(user.id, pairs)
+        await run_in_threadpool(service.record_grants, user.id, pairs)
         return {"repositories": [{"id": repo["id"], "full_name": repo["full_name"], "private": bool(repo.get("private")),
             "default_branch": repo.get("default_branch"), "installation_id": install["id"],
             "can_write": bool(request.app.state.settings.enable_github_writes and repo.get("permissions", {}).get("push")
@@ -118,25 +142,27 @@ async def webhook(request: Request):
         raise HTTPException(422, "github_webhook_identity_invalid")
     # Persist receipt and process only authorization-reducing actions in this
     # transaction. Granting authority always requires fresh authenticated API.
-    with sessions(request)() as database, database.begin():
-        accepted = database.execute(insert(GitHubWebhookDelivery).values(id=delivery, event=event,
-            body_sha256=hashlib.sha256(body).hexdigest(), payload_json=payload).on_conflict_do_nothing().returning(GitHubWebhookDelivery.id)).scalar()
-        if accepted is None:
-            raise HTTPException(409, "github_webhook_delivery_replayed")
-        if event == "installation" and payload.get("action") in {"deleted", "suspend", "new_permissions_accepted"}:
-            database.execute(update(GitHubInstallation).where(GitHubInstallation.id == install_id).values(revoked_at=now()))
-            database.execute(update(GitHubRepositoryGrant).where(GitHubRepositoryGrant.installation_id == install_id).values(revoked_at=now()))
-        if event == "installation_repositories" and payload.get("action") == "removed":
-            removed = [repo["id"] for repo in removed_repositories]
-            database.execute(update(GitHubRepositoryGrant).where(GitHubRepositoryGrant.installation_id == install_id,
-                GitHubRepositoryGrant.repository_id.in_(removed)).values(revoked_at=now()))
-        if event == "github_app_authorization" and payload.get("action") == "revoked":
-            identifier = sender["id"]
-            if type(identifier) is not int:
-                raise HTTPException(422, "github_webhook_identity_invalid")
-            user_id = database.scalar(select(User.id).where(User.github_user_id == identifier))
-            if user_id:
-                database.execute(update(GitHubCredential).where(GitHubCredential.user_id == user_id).values(revoked_at=now()))
-                database.execute(update(AuthSession).where(AuthSession.user_id == user_id).values(revoked_at=now()))
-        database.execute(update(GitHubWebhookDelivery).where(GitHubWebhookDelivery.id == delivery).values(processed_at=now(), payload_json={}))
+    def record():
+        with sessions(request)() as database, database.begin():
+            accepted = database.execute(insert(GitHubWebhookDelivery).values(id=delivery, event=event,
+                body_sha256=hashlib.sha256(body).hexdigest(), payload_json=payload).on_conflict_do_nothing().returning(GitHubWebhookDelivery.id)).scalar()
+            if accepted is None:
+                raise HTTPException(409, "github_webhook_delivery_replayed")
+            if event == "installation" and payload.get("action") in {"deleted", "suspend", "new_permissions_accepted"}:
+                database.execute(update(GitHubInstallation).where(GitHubInstallation.id == install_id).values(revoked_at=now()))
+                database.execute(update(GitHubRepositoryGrant).where(GitHubRepositoryGrant.installation_id == install_id).values(revoked_at=now()))
+            if event == "installation_repositories" and payload.get("action") == "removed":
+                removed = [repo["id"] for repo in removed_repositories]
+                database.execute(update(GitHubRepositoryGrant).where(GitHubRepositoryGrant.installation_id == install_id,
+                    GitHubRepositoryGrant.repository_id.in_(removed)).values(revoked_at=now()))
+            if event == "github_app_authorization" and payload.get("action") == "revoked":
+                identifier = sender["id"]
+                if type(identifier) is not int:
+                    raise HTTPException(422, "github_webhook_identity_invalid")
+                user_id = database.scalar(select(User.id).where(User.github_user_id == identifier))
+                if user_id:
+                    database.execute(update(GitHubCredential).where(GitHubCredential.user_id == user_id).values(revoked_at=now()))
+                    database.execute(update(AuthSession).where(AuthSession.user_id == user_id).values(revoked_at=now()))
+            database.execute(update(GitHubWebhookDelivery).where(GitHubWebhookDelivery.id == delivery).values(processed_at=now(), payload_json={}))
+    await run_in_threadpool(record)
     return {"accepted": True}

@@ -427,3 +427,22 @@ test("observing the conversation's active task tracks it for the live view", asy
   assert.equal(store.getState().tracked, "t9");
   assert.equal(store.phase("t9").show, true);
 });
+
+test("a refresh that finds nothing new publishes no new snapshot", async () => {
+  const server = fake();
+  const { store } = build(server);
+  await store.refresh();
+  await flush();
+  const before = store.getState();
+  let notified = 0;
+  const stop = store.subscribe(() => { notified++; });
+  await store.refresh({ light: true });
+  await store.refresh();
+  assert.equal(notified, 0);
+  assert.equal(store.getState(), before);
+  server.add(message(11));
+  await store.refresh({ light: true });
+  assert.ok(notified > 0);
+  assert.notEqual(store.getState(), before);
+  stop();
+});

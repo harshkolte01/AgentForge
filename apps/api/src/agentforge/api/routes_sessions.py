@@ -73,6 +73,11 @@ async def turn(session_id: UUID, body: AutoTurnCreate | SessionTurnCreate, reque
         if replay is not None:
             return replay
         owned = await run_in_threadpool(repo.get, session_id, user.id)
+        from agentforge.integrations.attachment_storage import validate_uploads, InvalidAttachment
+        try:
+            await run_in_threadpool(validate_uploads, body.attachments, user.id, request.app.state.settings)
+        except InvalidAttachment as failure:
+            raise HTTPException(422, str(failure)) from None
         if isinstance(body, AutoTurnCreate):
             return await run_in_threadpool(repo.enqueue, session_id, user.id, body)
         task_body = TaskCreate.model_validate({**body.model_dump(exclude={"project_id", "idempotency_key"}), "project_id": owned.project_id})

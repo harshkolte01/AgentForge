@@ -28,10 +28,12 @@ const userBubbleClass = "max-w-[85%] whitespace-pre-wrap break-words rounded-3xl
  * marked as played, so a remount (the row moved to another list) or a re-render never plays it a second time.
  */
 function useEntrance(ledger: EntranceLedger, rowKey: string, taskId: string | null, forced: boolean): string {
-  const [animate] = useState(() => forced || ledger.shouldAnimate(rowKey, taskId));
-  useEffect(() => { ledger.played(rowKey); }, [ledger, rowKey]);
+  // A just-sent bubble enters once per page, even when the view holding it changes (a new conversation's draft becomes its thread).
+  const [animate] = useState(() => (forced && !sentBubbles.has(rowKey)) || (!forced && ledger.shouldAnimate(rowKey, taskId)));
+  useEffect(() => { ledger.played(rowKey); if (forced) sentBubbles.add(rowKey); }, [ledger, rowKey, forced]);
   return animate ? "message-in" : "";
 }
+const sentBubbles = new Set<string>();
 
 export function AttachmentChips({ attachments }: { attachments: readonly { name: string }[] | undefined }) {
   if (!attachments?.length) return null;

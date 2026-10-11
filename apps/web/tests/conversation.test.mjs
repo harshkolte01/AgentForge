@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { conversationOrder } from "../lib/conversation-order.ts";
+import { conversationOrder, sameSession, upsertSession } from "../lib/conversation-order.ts";
 
 test("queued intake never displaces an active turn or pairs a reply by adjacency", () => {
   const messages = [
@@ -20,4 +20,22 @@ test("blocked messages stay queued and cancelled requests remain visible", () =>
     { id: "legacy", sequence: 3, role: "assistant" },
   ];
   assert.deepEqual(conversationOrder(messages).map((m) => m.id), ["cancelled", "legacy"]);
+});
+
+test("a read that changes nothing keeps the same session list, so the workspace does not re-render", () => {
+  const base = { id: "a", project_id: "p", title: "One", mode: "general", repository: null, archived: false, active_task_id: null, continuation_task_id: null, last_sequence: 4, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-02T00:00:00Z", revision: 3, status: "idle" };
+  const other = { ...base, id: "b", updated_at: "2026-01-01T00:00:00Z" };
+  const list = [base, other];
+  assert.equal(sameSession(base, { ...base }), true);
+  assert.equal(upsertSession(list, { ...base }), list);
+  assert.equal(upsertSession(list, { ...base, revision: 2, title: "Older" }), list, "an older read never undoes a newer one");
+  const renamed = upsertSession(list, { ...base, revision: 4, title: "Renamed" });
+  assert.notEqual(renamed, list);
+  assert.equal(renamed[0].title, "Renamed");
+  assert.equal(sameSession(base, { ...base, status: "running" }), false);
+  assert.equal(sameSession(base, { ...base, repository: { repo_id: "o/r", ref: "HEAD" } }), false);
+  const moved = upsertSession(list, { ...other, revision: 4, updated_at: "2026-01-03T00:00:00Z" });
+  assert.deepEqual(moved.map((item) => item.id), ["b", "a"]);
+  const added = upsertSession(list, { ...base, id: "c", updated_at: "2026-01-04T00:00:00Z" });
+  assert.deepEqual(added.map((item) => item.id), ["c", "a", "b"]);
 });

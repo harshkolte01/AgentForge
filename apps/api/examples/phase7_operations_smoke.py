@@ -58,7 +58,6 @@ try:
     with engine.begin() as connection:
         result = inspect(connection)
         assert result["worker_process"] == "not_observed"
-        assert result["checkpoint_tables"] == "missing"
         assert result["application_revision"] is not None
         try:
             connection.execute(text("DELETE FROM task_jobs"))
@@ -78,7 +77,7 @@ try:
         removed = {operation[1].name for operation in differences if operation[0] == "remove_table"}
         assert removed == {"unknown_extra"}, "framework filter hid unknown schema drift"
     print("PASS separately owned checkpoint table excluded; unknown extra table still detected in disposable DB")
-    print("PASS aggregate measured/unknown ledger costs; no content/identifiers; missing-checkpoint/idle-worker honesty; read-only transaction enforcement")
+    print("PASS aggregate measured/unknown ledger costs; no content/identifiers; idle-worker honesty; read-only transaction enforcement")
 except Exception as error:
     print("FAIL operations fixture class=" + type(error).__name__)
     print("SQLSTATE " + str(getattr(getattr(error, "orig", None), "sqlstate", None)))

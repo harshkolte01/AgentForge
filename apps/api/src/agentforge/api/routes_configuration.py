@@ -1,9 +1,11 @@
-"""Configuration presence, not live provider or worker qualification."""
+"""Configuration presence and worker heartbeat, not live provider qualification."""
 
 from fastapi import APIRouter, Depends, Request
 
+from agentforge.api.dependencies import sessions
 from agentforge.auth.session import current_user
 from agentforge.database.models import User
+from agentforge.repositories.workers import worker_presence
 
 router = APIRouter(prefix="/api/v1/configuration", tags=["configuration"])
 
@@ -49,5 +51,10 @@ def configuration(request: Request, user: User = Depends(current_user)) -> dict:
             "coding_configured": not coding_missing, "coding_missing_settings": coding_missing,
             "coding_repository_access": "github_app_user_installation" if getattr(settings, "auth_mode", None) == "github_app" else "public_only", "coding_sandbox_provider": "e2b",
             "tracing_configured": bool(settings.neatlogs_api_key),
-            "worker_status": "not_observed", "checkpointer_status": "not_observed",
-            "qualification": "Configuration presence only; providers and worker have not been checked."}
+            "web_research_configured": bool(settings.tavily_api_key),
+            "github_writes_enabled": bool(getattr(settings, "enable_github_writes", False)),
+            "auth_mode": getattr(settings, "auth_mode", None),
+            # Whether anything will pick up a queued message: a worker said it was alive in the last 30 seconds.
+            # The session is opened inside worker_presence, so an unreachable database reads as offline.
+            "worker": worker_presence(lambda: sessions(request)()),
+            "qualification": "Configuration presence and worker heartbeat only; providers have not been checked."}

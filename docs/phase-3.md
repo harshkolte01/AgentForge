@@ -144,12 +144,14 @@ After reviewing all unapplied revisions and choosing the intended local database
 cd apps/api
 uv sync --locked
 uv run alembic upgrade head
-uv run python -m agentforge.workers.checkpoints setup
 uv run python -m agentforge.auth.bootstrap
 ```
 
+(The LangGraph Postgres checkpointer and its `agentforge.workers.checkpoints setup`
+command have since been removed; the runtime keeps its state in application tables.)
+
 The last command explicitly creates a local user/project and prints private
-configuration for `apps/api/.env`: `AUTH_MODE=local_single_user`, `LOCAL_USER_ID`
+configuration for the root `.env`: `AUTH_MODE=local_single_user`, `LOCAL_USER_ID`
 and a random `LOCAL_BOOTSTRAP_TOKEN`. Keep that token private and out of frontend
 environment variables. Local auth defaults disabled and is forbidden in production.
 It requires loopback peer/Host plus permitted Origin for mutations and uses an

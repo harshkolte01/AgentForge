@@ -12,7 +12,7 @@ import { createScrollController, isScrollbarPointerDown, keyScrollDirection, typ
 const idleSnapshot: ScrollSnapshot = { following: true, jumpVisible: false, pausedBy: null };
 const inertController: ScrollController = {
   getSnapshot: () => idleSnapshot, subscribe: () => () => {}, input() {}, scrollbarDown() {}, pointerUp() {}, selection() {}, toggle() {}, holdPlace() {},
-  scrolled() {}, layoutChanged() {}, requestPass() {}, beginTurn() {}, landOnLatest() {}, jump() {}, cancel() {},
+  scrolled() {}, layoutChanged() {}, requestPass() {}, shift() {}, beginTurn() {}, landOnLatest() {}, jump() {}, cancel() {},
 };
 
 export const ConversationScrollContext = createContext<ScrollController>(inertController);

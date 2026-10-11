@@ -18,8 +18,8 @@ test("a healthy connection says nothing, and so does the normal first load", () 
   assert.equal(syncNotice(sync({ phase: "complete" })), null);
 });
 
-test("catching up shows while missing events are fetched, but not while only waiting for the saved answer", () => {
-  assert.deepEqual(syncNotice(sync({ phase: "catching_up", loading: true })), { kind: "catching_up", text: "Catching up…" });
+test("reading new events while following a run is routine and shows no line (so \"Thinking\" never flips to \"Catching up…\")", () => {
+  assert.equal(syncNotice(sync({ phase: "catching_up", loading: true })), null);
   assert.equal(syncNotice(sync({ phase: "catching_up", loading: false, awaitingAnswer: true })), null);
   assert.equal(syncNotice(sync({ phase: "catching_up", loading: true, awaitingAnswer: true })), null);
 });
