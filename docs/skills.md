@@ -81,5 +81,5 @@ mid-run is seen as it is now. Skills add to every request, which the composer's 
 
 ## Operating it
 
-`SKILLS_ENABLED` and `SKILL_MAX_PER_USER` in [.env.example](../.env.example). Run `alembic upgrade head` before starting the new
+`SKILLS_ENABLED` and `SKILL_MAX_PER_USER` in the [configuration reference](configuration.md#plugins-and-skills). Run `alembic upgrade head` before starting the new
 API and worker. `examples/skills_smoke.py` is the disposable end-to-end check and runs with the other release checks.

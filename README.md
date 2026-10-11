@@ -70,9 +70,10 @@ Open `http://localhost:3000` (the landing page), choose **Get started** or **Sig
 `LOCAL_BOOTSTRAP_TOKEN` from `.env`. The public pages (`/`, `/sign-in`, `/sign-up`) and the workspace
 (`/chat`, `/settings`) are described in [conversation behavior](docs/conversation-ux.md#urls). For a
 deployment, set `SITE_URL` (the public origin) at build time so the social card, sitemap and robots use it.
-Configuration lives in an ignored root `.env`; [.env.example](.env.example) lists
-every setting and [Settings](apps/api/src/agentforge/settings.py) is the contract.
-The API refuses to start on invalid settings and names the fields, never their
+Configuration lives in an ignored root `.env`, kept to what you must set;
+[.env.example](.env.example) is the template, [docs/configuration.md](docs/configuration.md)
+lists every other setting with its default, and [Settings](apps/api/src/agentforge/settings.py)
+is the contract. The API refuses to start on invalid settings and names the fields, never their
 values. Never overwrite an existing `.env` with the template. For GitHub sign-in
 and private repositories, create a GitHub App as in [docs/github-app.md](docs/github-app.md).
 Set `E2B_API_KEY` for the coding sandbox and `TAVILY_API_KEY` for web search.

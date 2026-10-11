@@ -106,7 +106,7 @@ refreshed, not on every run.
 
 ## Operating it
 
-Settings are in [.env.example](../.env.example): `PLUGINS_ENABLED`, `PLUGIN_ENCRYPTION_KEY`, `PLUGIN_CALL_TIMEOUT_SEC`,
+Settings are in the [configuration reference](configuration.md#plugins-and-skills): `PLUGINS_ENABLED`, `PLUGIN_ENCRYPTION_KEY`, `PLUGIN_CALL_TIMEOUT_SEC`,
 `PLUGIN_MAX_CONNECTIONS`, `PLUGIN_ALLOW_PRIVATE_NETWORK`, `PLUGIN_OAUTH_ENABLED`, `PLUGIN_OAUTH_REGISTRATION`. Signing in needs
 the encryption key and an `API_PUBLIC_BASE_URL` the person's browser can reach (the return address is built from it; a
 registration made for another address is made again). Run migrations (`alembic upgrade head`, which includes

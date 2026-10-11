@@ -60,7 +60,7 @@ fi
 cat <<EOF
 
 Next steps
-  1. Edit .env: DATABASE_URL and the LLM_* block (see the comments in .env.example).
+  1. Edit .env: DATABASE_URL and the LLM_* block (every other setting: docs/configuration.md).
   2. Create the database tables:    (cd apps/api && uv run alembic upgrade head)   or rerun with --migrate
   3. Create your local sign-in:     (cd apps/api && uv run python -m agentforge.auth.bootstrap --write-env)
   4. Check everything:              (cd apps/api && uv run python -m agentforge.doctor)
