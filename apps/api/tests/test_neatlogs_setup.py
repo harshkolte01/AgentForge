@@ -68,6 +68,13 @@ class MetadataMaskTests(unittest.TestCase):
             "attributes": {"exception.type": "ToolError", "exception.escaped": "False"}}])
         self.assertEqual(kept["links"], [])
 
+    def test_a_failures_code_is_shown_as_its_exception_type(self):
+        span = snapshot(**{"agentforge.error.code": "RATE_LIMIT"})
+        span["events"] = [{"name": "exception", "timestamp": 5, "attributes": {"exception.type": "agentforge.llm.models.ModelProviderError",
+            "exception.message": "private"}}]
+        self.assertEqual(metadata_only(span)["events"][0]["attributes"], {"exception.type": "RATE_LIMIT"})
+        self.assertEqual(content_mask()(span)["events"][0]["attributes"], {"exception.type": "RATE_LIMIT", "exception.message": "private"})
+
     def test_only_known_resource_attributes_are_sent(self):
         self.assertEqual(metadata_only(snapshot())["resource"], {"attributes": {"service.name": "svc"}})
 

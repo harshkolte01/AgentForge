@@ -33,11 +33,11 @@ agentforge_task                      WORKFLOW   session = conversation, end user
 | Inputs and responses | content mode only (below); otherwise sizes and counts only |
 | State changes | `agentforge.task.status` on the root; LangGraph node spans; `prepare_context`; `agentforge.agent.depth` / `.parent_run_id` |
 | Retries | `agentforge.llm.retries` and `.retry_reasons` (rate limit, 5xx, timeout, broken stream); a tool that is retried by the model is a second `TOOL` span |
-| Failures | span status `ERROR` + `agentforge.error.code` / `.type` on the failing span; exception *type* event (never text); the root is `ERROR` when the task failed |
+| Failures | span status `ERROR` + `agentforge.error.code` / `.type` on the failing span; an exception event whose type is the failure's code (`FETCH_COMPRESSED_CONTENT_REJECTED`, `RATE_LIMIT` …), never its text; shown by Neatlogs as the span's error type; the root is `ERROR` when the task failed |
 | Failure recovery | root `agentforge.task.tool_failures` > 0 with `agentforge.task.status` = `COMPLETED`: the run hit failures and finished. The failing span is followed by the spans the agent chose next |
 | Agent messages | the `AGENT` span per run and its parent link (`agentforge.agent.parent_run_id`); text only in content mode |
 | Latency | span duration (`neatlogs.metrics.duration_ms`); the approval wait is its own span, separate from tool time |
-| Tokens and cost | per `LLM` span; the dashboard sums them per trace. Unknown cost is `agentforge.llm.cost_known = false`, never `0` |
+| Tokens and cost | tokens per `LLM` span, summed per trace by Neatlogs. Neatlogs prices cost itself from its own model table (see Limits); AgentForge's ledger is the authoritative cost. An unknown cost is `agentforge.llm.cost_known = false`, never `0` |
 | Guardrails | `tool_approval` / `tool_policy`: `neatlogs.guardrail.passed`, `.name`, `.reason` |
 
 Run ids tie a trace to the database: `spawn_id` on an `AGENT`/`TOOL` span is the `agent_runs.id`, `task_id` is `tasks.id`, and
@@ -126,8 +126,23 @@ A **failure-recovery** example: run a task that makes the agent hit a real failu
 does not exist, or decline an "Ask me" approval). In the trace the failing `TOOL`/`tool_policy`/`tool_approval` span is `ERROR`
 or blocked, the next span is what the agent did instead, and the root ends `COMPLETED` with `tool_failures` > 0.
 
+## Verified against a hosted project
+
+Run on 12 October 2026 with a real project key (worker, API and web started locally, real model and search calls): the SDK
+doctor probe passed; two conversations' tasks arrived as one trace each, grouped under the conversation's session, with the
+tree above, per-call model, provider and token counts, tool spans, and `ERROR` spans for real tool failures carrying their
+code as the error type. In one run the agent hit two `FETCH_COMPRESSED_CONTENT_REJECTED` failures and still finished with an
+answer, which is the failure-recovery trace to cite. Read a trace back with
+`GET <endpoint>/api/traces/v3/<trace id>` and the `x-api-key` header (what the SDK doctor does).
+
 ## Limits
 
+- **Cost shows as "unpriced" for a model Neatlogs does not know.** Neatlogs computes cost server side from its model table and
+  does not take the cost we send (`neatlogs.llm.cost_usd`; the hosted read-back reported `pricing_status: unpriced`,
+  `unknown_model` for the configured model). Tokens, model and provider are shown correctly. Use the ledger for money:
+  `python -m agentforge.operations.business_metrics`.
+- The `agentforge.*` labels are sent but the hosted read-back API does not list them; check the dashboard's span detail to see
+  whether it shows them. Status, error type, session, end user, tool name, model and tokens are shown by the read-back.
 - The dashboard's trace-link format is not documented by Neatlogs, so the application records the **trace id** (worker log
   and the root span) rather than building URLs.
 - Provider retries are counted for the OpenAI-compatible adapter (`on_attempt_failed`); a model adapter that does not offer

@@ -147,7 +147,7 @@ class WireTests(unittest.TestCase):
         self.assertEqual(span.attributes["agentforge.error.code"], "FILE_NOT_FOUND")
         self.assertEqual(span.attributes["agentforge.error.type"], "ToolError")
         self.assertEqual(len(span.events), 1)
-        self.assertTrue(span.events[0].attributes["exception.type"].endswith("ToolError"))
+        self.assertEqual(span.events[0].attributes["exception.type"], "FILE_NOT_FOUND")   # the failure's code, not a class path
         self.assertEqual(set(span.events[0].attributes), {"exception.type", "exception.escaped"})
         self.assertEqual(span.status_message, "")
         # The next steps of the run still happened and the run itself finished.
@@ -159,6 +159,7 @@ class WireTests(unittest.TestCase):
         self.assertEqual(span.status, 2)
         self.assertEqual(span.attributes["agentforge.error.code"], "TOOL_FAILED")
         self.assertEqual(span.attributes["status"], "error")
+        self.assertEqual([event.attributes["exception.type"] for event in span.events], ["TOOL_FAILED"])
 
     def test_a_failed_agent_run_ends_failed_even_though_it_returned_a_result(self):
         self.traced(agent_result=SubagentResult(status="FAIL", error_code="BUDGET_EXCEEDED", summary="x"))

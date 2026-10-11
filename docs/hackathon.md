@@ -17,7 +17,7 @@ does not submit the entry.
 |---|---|---|
 | Substantial task completes with evidence | Actual task receipt, source/test evidence and artifact download | Offline fixtures available; live end-to-end pending |
 | Failure recovery works | Disclosed failing attempt and subsequent legitimate action | Actual generated fixture exits available; live trace pending |
-| Neatlogs improved the agent | Before/after hosted trace links, comparable latency/tokens/cost and change | Integration implemented and wire-verified offline (`docs/neatlogs.md`); hosted before/after traces pending |
+| Neatlogs improved the agent | Before/after hosted trace links, comparable latency/tokens/cost and change | Integration implemented; hosted traces confirmed arriving (12 Oct, `docs/neatlogs.md`); before/after comparison runs still to do |
 | Entire used during implementation | Allowed checkpoint + commit or actual versioned entire-graph output | Pending; no conversation/transcript export authorized |
 | Business plan uses cfo.ai | Export/screenshots covering pricing, costs, revenue and runway | Assumption template below; cfo.ai export pending |
 | Built in public | Actual dated #neatHack posts | Pending |

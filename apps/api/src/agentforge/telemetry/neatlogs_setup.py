@@ -80,15 +80,26 @@ def _structure(span: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in span.items() if key in _STRUCTURE and isinstance(value, _SCALAR)}
 
 
-def _exception_events(span: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _error_code(span: Mapping[str, Any]) -> str | None:
+    attributes = span.get("attributes")
+    code = attributes.get("agentforge.error.code") if isinstance(attributes, Mapping) else None
+    return code if isinstance(code, str) and code else None
+
+
+def _exception_events(span: Mapping[str, Any], keep: frozenset = frozenset(_EXCEPTION_EVENT), clean=lambda value: value) -> list[dict[str, Any]]:
+    """Exception events reduced to `keep`. The failure's own code (a tool's FILE_NOT_FOUND, a provider's RATE_LIMIT) is shown as
+    the exception type, so a dashboard names the failure instead of a Python class path."""
     events = span.get("events", [])
+    code = _error_code(span)
     kept = []
     for event in events if isinstance(events, list) else []:
         if isinstance(event, Mapping) and event.get("name") == "exception":
             attributes = event.get("attributes", {})
-            kept.append({"name": "exception", "timestamp": event.get("timestamp"),
-                "attributes": {key: value for key, value in attributes.items()
-                    if key in _EXCEPTION_EVENT and isinstance(value, _SCALAR)} if isinstance(attributes, Mapping) else {}})
+            attributes = {key: clean(value) for key, value in attributes.items()
+                if key in keep and isinstance(value, _SCALAR)} if isinstance(attributes, Mapping) else {}
+            if code:
+                attributes["exception.type"] = code
+            kept.append({"name": "exception", "timestamp": event.get("timestamp"), "attributes": attributes})
     return kept
 
 
@@ -152,15 +163,8 @@ def content_mask(secrets: tuple[str, ...] = ()):
             if isinstance(value, _SCALAR)} if isinstance(attributes, Mapping) else {}
         sanitized["status"] = _status(span)
         sanitized["resource"] = _resource(span)
-        events = []
-        for event in span.get("events", []) if isinstance(span.get("events"), list) else []:
-            if isinstance(event, Mapping) and event.get("name") == "exception":
-                attributes = event.get("attributes", {})
-                events.append({"name": "exception", "timestamp": event.get("timestamp"),
-                    "attributes": {key: clean(value) for key, value in attributes.items()
-                        if key in _EXCEPTION_EVENT | {"exception.message"} and isinstance(value, _SCALAR)}
-                        if isinstance(attributes, Mapping) else {}})
-        sanitized["events"], sanitized["links"] = events, []
+        sanitized["events"] = _exception_events(span, frozenset(_EXCEPTION_EVENT | {"exception.message"}), clean)
+        sanitized["links"] = []
         return sanitized
     return mask
 
@@ -221,6 +225,9 @@ def mark_error(span, error: BaseException | None = None, *, code: str | None = N
         span.set_status(Status(StatusCode.ERROR))
         if error is not None:
             span.record_exception(error)
+        elif isinstance(code, str) and code:
+            # A tool that returned an error result raised nothing; the event is what gives the backend an error type.
+            span.add_event("exception", {"exception.type": code[:64], "exception.escaped": False})
     except Exception:  # noqa: BLE001
         logger.debug("span error not recorded", exc_info=True)
 
