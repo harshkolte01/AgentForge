@@ -118,7 +118,9 @@ function stabilizeTail(text: string, afterLastFence: number): string {
 
   // A trailing newline means the line before it is the one being written.
   const last = lines[lines.length - 1] === "" ? lines.length - 2 : lines.length - 1;
-  if (last >= 0 && loneMarker.test(lines[last])) lines = lines.slice(0, last);
+  // A number alone on the first line of a block is most likely an ordered-list marker whose "." has not arrived yet ("2" of
+  // "2. Next"): shown, it would flash as a paragraph and vanish a frame later.
+  if (last >= 0 && (loneMarker.test(lines[last]) || (last === 0 && /^ {0,3}\d{1,9}[ \t]*$/.test(lines[last])))) lines = lines.slice(0, last);
   lines = holdBackHalfTable(lines);
   const block = lines.join("\n");
   return head + repairInline(block);

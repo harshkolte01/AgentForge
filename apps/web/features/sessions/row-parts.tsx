@@ -3,6 +3,12 @@ import type { StatusIcon, Tone } from "@/lib/activity/types";
 
 /** The parts every row of the activity timeline is made of, shared by the timeline and the subagent cards. */
 
+/**
+ * Calls already shown while the model was writing them (by `callId`). When such a call starts, its real row takes the draft's
+ * place: it has already entered, so it must not fade and rise in a second time.
+ */
+export const draftedCalls = new Set<string>();
+
 /** The glyph in front of a row. Always paired with the row's words, so colour and shape are never the only signal. */
 export function Glyph({ icon, tone, current }: { icon: StatusIcon; tone: Tone; current: boolean }) {
   return <span className="flex size-4 shrink-0 items-center justify-center" aria-hidden="true" data-icon={icon}>

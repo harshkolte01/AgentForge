@@ -6,7 +6,6 @@
  */
 import type { Anchor, ScrollHost, ScrollMetrics } from "@/lib/scroll-controller";
 
-export const scrollerMarker = "[data-conversation-scroll]";
 const endMarker = "[data-conversation-end]";
 const composerMarker = "[data-conversation-composer]";
 const turnMarker = "[data-conversation-turn]";

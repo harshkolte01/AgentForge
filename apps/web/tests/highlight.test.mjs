@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { HIGHLIGHT_MAX_CHARS, canonicalLanguage, highlightEligibility, highlightLanguages } from "../features/sessions/highlight-policy.ts";
-import { highlightCode, parseHighlighted, tokenClass } from "../features/sessions/highlight.ts";
+import { highlightCode, parseHighlighted, peekHighlighted, tokenClass } from "../features/sessions/highlight.ts";
 
 const flat = (nodes) => nodes.map((node) => typeof node === "string" ? node : flat(node.children)).join("");
 
@@ -76,4 +76,10 @@ test("token classes: coloured scopes get utilities (with a dark variant), others
   assert.equal(tokenClass("hljs-punctuation"), "");
   assert.equal(tokenClass("language_"), "");
   assert.equal(tokenClass(""), "");
+});
+
+test("a block highlighted once is known synchronously, so a remounted block shows its colours on its first frame", async () => {
+  assert.equal(peekHighlighted("const peeked = 2;", "typescript"), null, "unknown until highlighted");
+  const nodes = await highlightCode("const peeked = 2;", "typescript");
+  assert.equal(peekHighlighted("const peeked = 2;", "typescript"), nodes);
 });

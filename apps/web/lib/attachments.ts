@@ -1,3 +1,4 @@
+import { friendlyError } from "@/lib/task-api";
 import type { Attachment } from "@/lib/workspace-api";
 
 export const MAX_ATTACHMENTS = 4;
@@ -28,13 +29,30 @@ export function validAttachment(value: unknown): value is Attachment {
     (item.media_type === "application/pdf" ? Number.isInteger(item.page_count) && item.page_count! >= 1 && item.page_count! <= 20 : item.page_count === undefined);
 }
 
+/** A known code's sentence, a sentence the server wrote itself, or a generic one: never a raw code like `session_required`. */
+function uploadError(detail: unknown, name: string): string {
+  if (typeof detail === "string") {
+    const known = friendlyError(detail);
+    if (known) return known;
+    if (/\s/.test(detail.trim())) return detail;
+  }
+  return `Couldn’t attach ${name}. Try again.`;
+}
+
 export async function uploadAttachment(file: File, signal: AbortSignal): Promise<Attachment> {
-  const response = await fetch(`/api/v1/attachments?name=${encodeURIComponent(file.name)}`, {
-    method: "POST", body: file, headers: { "Content-Type": "application/octet-stream" }, credentials: "same-origin", signal,
-  });
+  let response: Response;
+  try {
+    response = await fetch(`/api/v1/attachments?name=${encodeURIComponent(file.name)}`, {
+      method: "POST", body: file, headers: { "Content-Type": "application/octet-stream" }, credentials: "same-origin", signal,
+    });
+  } catch (error) {
+    if (signal.aborted) throw error;
+    // No answer at all: a sentence, as `api()` gives, instead of the browser's "Failed to fetch".
+    throw new Error(`Couldn’t attach ${file.name}: AgentForge could not be reached. Check your connection, then try again.`);
+  }
   if (response.status === 401) window.dispatchEvent(new Event("agentforge-session-expired"));
   const value = await response.json().catch(() => null);
-  if (!response.ok) throw new Error(typeof value?.detail === "string" ? value.detail : `Couldn’t attach ${file.name}. Try again.`);
+  if (!response.ok) throw new Error(uploadError(value?.detail, file.name));
   if (!validAttachment(value)) throw new Error(`Couldn’t read ${file.name}. Try attaching it again.`);
   return value;
 }

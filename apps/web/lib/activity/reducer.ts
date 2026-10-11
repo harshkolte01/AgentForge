@@ -452,7 +452,6 @@ export const selectCommittedEpoch = (state: ActivityState): number => state.comm
 export const selectContiguous = (state: ActivityState): number => state.contiguous;
 /** The largest event sequence observed. */
 export const selectHighest = (state: ActivityState): number => state.highest;
-export const selectTerminal = (state: ActivityState) => state.terminal;
 
 /** Holes in what has been observed: below `highest`, plus `(highest, watermark]` when the server's watermark is known. */
 export function selectMissingRanges(state: ActivityState, watermark = 0): SequenceRange[] {

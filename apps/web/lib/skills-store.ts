@@ -1,6 +1,6 @@
 /**
- * The person's skills, read once per page session and shared by Settings → Skills and every composer's skill menu, so a skill added
- * or switched off in Settings shows in the chat at once. A change returns the changed skill, which replaces its old copy here.
+ * The person's skills, read once per page session and shared by the Plugins page's Skills tab and Settings → Skills, so moving
+ * between them never refetches it. A change returns the changed skill, which replaces its old copy here.
  */
 import type { Skill, SkillsOverview } from "@/lib/skills-api";
 

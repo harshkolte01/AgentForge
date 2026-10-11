@@ -38,3 +38,18 @@ test('normal-sized Markdown is accepted above the old 16KB limit',()=>{
  validateFiles([{name:'project.md',size:100000},{name:'notes.markdown',size:40000}],0);
  assert.throws(()=>validateFiles([{name:'too-large.md',size:524289}],0),/512 KB/);
 });
+
+test('upload failures read as sentences, never as raw error codes',async()=>{
+ const file=new File(['pdf'],'report.pdf');
+ const answer=(detail,status)=>{globalThis.fetch=async()=>new Response(JSON.stringify({detail}),{status});};
+ globalThis.window={dispatchEvent(){}};
+ answer('session_required',401);
+ await assert.rejects(uploadAttachment(file,new AbortController().signal),{message:'Your session has expired. Sign in again to continue.'});
+ answer('attachment_unsupported_media',415);
+ await assert.rejects(uploadAttachment(file,new AbortController().signal),{message:'Couldn’t attach report.pdf. Try again.'});
+ answer({code:'nested'},400);
+ await assert.rejects(uploadAttachment(file,new AbortController().signal),{message:'Couldn’t attach report.pdf. Try again.'});
+ answer('This PDF has more than 20 pages.',422);
+ await assert.rejects(uploadAttachment(file,new AbortController().signal),{message:'This PDF has more than 20 pages.'});
+ delete globalThis.window;
+});

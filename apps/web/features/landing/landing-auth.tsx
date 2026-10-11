@@ -28,13 +28,6 @@ export function PrimaryCta({ size = "lg", className = "", label = "Get started" 
   </Link>;
 }
 
-/** "Already have an account? Sign in", which makes no sense to someone who is signed in, so they are not shown it. */
-export function SignInHint({ className = "" }: { className?: string }) {
-  const signedIn = useContext(SignedInContext);
-  if (signedIn) return null;
-  return <p className={`text-sm text-muted-foreground ${className}`}>Already have an account? <Link href={routes.signIn} className="rounded font-medium text-foreground underline decoration-foreground/30 underline-offset-4 outline-none hover:decoration-foreground focus-visible:ring-2 focus-visible:ring-ring/60">Sign in</Link></p>;
-}
-
 /** Header actions: Sign in + Get started, or just the workspace link when signed in. */
 export function HeaderActions({ className = "", onNavigate }: { className?: string; onNavigate?: () => void }) {
   const signedIn = useContext(SignedInContext);

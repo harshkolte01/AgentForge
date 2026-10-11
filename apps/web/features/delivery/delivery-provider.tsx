@@ -1,8 +1,8 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import dynamic from "next/dynamic";
 import { DeliveryContext, type DeliveryContextValue, type PanelTab } from "@/features/delivery/delivery-context";
 import { DeliveryToaster } from "@/features/delivery/delivery-toaster";
-import { PublishDialog } from "@/features/delivery/publish-dialog";
 import { useDelivery } from "@/features/delivery/use-delivery";
 import { deferredMerge } from "@/lib/deferred-merge";
 import { markReady, mergePullRequest, resetDelivery, updateBranch, type MergeMethod } from "@/lib/delivery-api";
@@ -10,6 +10,9 @@ import { deliveryMessage, errorCode } from "@/lib/delivery-errors";
 import { agentPrompt, deriveHeadline, mergeSentence, unpublishedSummary, type ActionKind } from "@/lib/delivery-status";
 import { message } from "@/lib/task-api";
 import { useMediaQuery } from "@/lib/use-media-query";
+
+// Only rendered while publishing: its code loads the first time the dialog opens.
+const PublishDialog = dynamic(() => import("@/features/delivery/publish-dialog").then((mod) => mod.PublishDialog), { ssr: false });
 
 type Props = {
   sessionId: string | null;
@@ -21,22 +24,30 @@ type Props = {
   children: ReactNode;
 };
 
-/** Everything about one conversation's delivery; remounted per conversation so nothing leaks between them. */
-export function DeliveryProvider(props: Props) {
-  return <Provider key={props.sessionId ?? "none"} {...props} />;
-}
-
-function Provider({ sessionId, hasRepository, activeTaskId, onAskAgent, children }: Props) {
+/**
+ * Everything about one conversation's delivery. Its state starts over when the conversation changes, so nothing leaks between
+ * conversations, but the workspace it wraps (sidebar, scroller, thread, composer) is never remounted for it: remounting would
+ * reset the sidebar's scroll, the composer's focus and the thread's scroll position on every switch.
+ */
+export function DeliveryProvider({ sessionId, hasRepository, activeTaskId, onAskAgent, children }: Props) {
   const [panelOpen, setPanelOpen] = useState(false);
   const [tab, setTab] = useState<PanelTab>("changes");
   const [publishOpen, setPublishOpen] = useState(false);
+  const [confirming, setConfirming] = useState<"continue" | null>(null);
+  const [asking, setAsking] = useState(false);
+  // Another conversation: what was open or being asked belonged to the last one.
+  const [shownSession, setShownSession] = useState(sessionId);
+  if (shownSession !== sessionId) {
+    setShownSession(sessionId);
+    setPanelOpen(false); setTab("changes"); setPublishOpen(false); setConfirming(null); setAsking(false);
+  }
   const data = useDelivery({ sessionId, enabled: hasRepository, activeTaskId, wantChanges: panelOpen || publishOpen });
   const { view, changes } = data;
   const desktop = useMediaQuery("(min-width: 1024px)", true);
-  const [confirming, setConfirming] = useState<"continue" | null>(null);
-  const [asking, setAsking] = useState(false);
   const askRef = useRef(onAskAgent);
   useEffect(() => { askRef.current = onAskAgent; }, [onAskAgent]);
+  const currentSession = useRef(sessionId);
+  useEffect(() => { currentSession.current = sessionId; }, [sessionId]);
 
   const summary = useMemo(() => unpublishedSummary(view, changes, panelOpen), [view, changes, panelOpen]);
   const headline = useMemo(() => (view?.available ? deriveHeadline(view, summary) : null), [view, summary]);
@@ -61,14 +72,17 @@ function Provider({ sessionId, hasRepository, activeTaskId, onAskAgent, children
 
   const ask = useCallback(async (action: "fix_checks" | "resolve" | "address_feedback") => {
     if (!view) return;
+    const asked = sessionId;
+    // The person may have moved to another conversation meanwhile: its panel and failures are not this one's.
+    const here = () => currentSession.current === asked;
     setAsking(true);
     try {
       await askRef.current(agentPrompt(action, view));
       // On a phone the sheet covers the conversation: show the message that was just sent.
-      if (!desktop) setPanelOpen(false);
-    } catch (error) { reportFailure(action, message(error)); }
-    finally { setAsking(false); }
-  }, [view, desktop, reportFailure]);
+      if (!desktop && here()) setPanelOpen(false);
+    } catch (error) { if (here()) reportFailure(action, message(error)); }
+    finally { if (here()) setAsking(false); }
+  }, [sessionId, view, desktop, reportFailure]);
 
   const perform = useCallback((action: ActionKind) => {
     if (!sessionId || !view) return;

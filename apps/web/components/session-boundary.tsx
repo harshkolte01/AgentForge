@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { BrandMark } from "@/components/brand-mark";
 import { authErrorMessage } from "@/lib/auth-errors";
 import { authPath } from "@/lib/auth-redirect";
-import { forgetAccount } from "@/lib/conversation-outbox";
+import { forgetAccount, primeAccount } from "@/lib/conversation-outbox";
 import { routes } from "@/lib/routes";
 import { api, message, type SessionInfo } from "@/lib/task-api";
 
@@ -48,6 +48,8 @@ export function SessionBoundary({ children }: { children: ReactNode }) {
     const controller = new AbortController();
     void api<SessionInfo>("/auth/session", { signal: controller.signal }).then((value) => {
       if (controller.signal.aborted) return;
+      // The outbox needs the same account id; hand it over before the workspace mounts and asks for it.
+      if (value.authenticated && value.user?.id) primeAccount(value.user.id);
       setSession(value); setUnreachable(false);
       if (value.authenticated) {
         const failed = takeAuthError();

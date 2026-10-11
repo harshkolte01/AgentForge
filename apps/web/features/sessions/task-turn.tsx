@@ -58,9 +58,14 @@ function useAnnouncement(text: string, immediate: boolean): string {
  * tail renders nothing in that same commit, so there is no blank frame and no second copy. `onTerminal` fires once, only after
  * every event up to the task's end has been read, with the entries to keep in place.
  */
-export function TaskTurn({ taskId, savedReady, onTerminal, onGrow, onShift, onStreamed }: {
+export function TaskTurn({ taskId, savedReady, holdStatus = true, onTerminal, onGrow, onShift, onStreamed }: {
   taskId: string;
   savedReady: boolean;
+  /**
+   * A run that ended before any of its answer was shown keeps its "Thinking" line until the saved answer replaces it, so the turn
+   * never goes blank in between. False once the thread says something of its own about the wait ("Finishing up", a failure).
+   */
+  holdStatus?: boolean;
   onTerminal: (taskId: string, entries: ActivityEntry[], status: string, durationMs: number | null) => void;
   onGrow?: () => void;
   /** The steps above the answer just folded away by `px` (negative): the view should move with them. */
@@ -157,6 +162,8 @@ export function TaskTurn({ taskId, savedReady, onTerminal, onGrow, onShift, onSt
   const liveToolText = liveTool?.text;
   useEffect(() => { if (liveToolId) growCallback.current?.(); }, [liveToolId, liveToolText]);
 
-  return <Timeline taskId={taskId} entries={entries} live={!over} quiet={quiet} notice={notice} onRetry={retry} stopping={stopping} announcement={announcement} fold={fold} durationMs={durationMs} approvals={approvals} liveTool={liveTool}
+  // Over, with no answer on screen yet and the saved one not in: the status line stays (it only shows when no steps do).
+  const holding = over && !savedReady && !tailText && holdStatus;
+  return <Timeline taskId={taskId} entries={entries} live={!over || holding} quiet={quiet} notice={notice} onRetry={retry} stopping={stopping} announcement={announcement} fold={fold} durationMs={durationMs} approvals={approvals} liveTool={liveTool}
     tail={tailText ? <div ref={tail} className="min-w-0"><AssistantMessage content={tailText} streaming={!over} onProgress={onGrow} /></div> : null} />;
 }

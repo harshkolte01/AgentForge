@@ -6,8 +6,6 @@ import type { ReactNode } from "react";
  */
 export const sectionClass = "max-w-3xl space-y-8";
 export const focusClass = "outline-none focus-visible:ring-2 focus-visible:ring-ring/60";
-export const subsectionClass = "space-y-4 border-t pt-5";
-export const subheadingClass = "text-sm font-medium";
 /** One bordered surface holding rows, a list or a form. Rows inside it are separated by hairlines. */
 export const cardClass = "overflow-hidden rounded-xl border bg-card text-card-foreground shadow-xs";
 export const rowClass = "flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-4 py-3.5 sm:px-5";

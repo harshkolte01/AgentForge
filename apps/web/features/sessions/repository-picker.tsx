@@ -15,6 +15,18 @@ const SEARCH_THRESHOLD = 6;
 const linkClass = "rounded underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-ring/60";
 /** Why the list could not be read decides what to offer: reconnecting, connecting, or simply trying again. */
 const needsConnection = new Set(["github_authorization_failed", "github_app_user_token_required", "github_access_denied"]);
+/**
+ * Set when a warm-up learns GitHub cannot answer on this page (not set up here, or the person must connect or reconnect it first,
+ * which leaves the page): later composers skip warming instead of asking again on every new chat. Opening the menu still reads,
+ * and a read that works clears it.
+ */
+let warmBlocked = false;
+const cannotAnswer = (failure: unknown) => failure instanceof ApiError && !!failure.code &&
+  (failure.code === "github_auth_not_configured" || failure.code === "github_reauthorization_required" || needsConnection.has(failure.code));
+function warmUp() {
+  if (warmBlocked || repositoryCache.fresh()) return;
+  void repositoryCache.get().catch((failure: unknown) => { if (cannotAnswer(failure)) warmBlocked = true; });
+}
 
 export function RepositoryPicker({ repository, disabled, onChange, side = "top" }: { repository: RepositorySelection | null; disabled: boolean; onChange: (value: RepositorySelection | null) => Promise<void>; side?: "top" | "bottom" }) {
   const id = useId();
@@ -34,13 +46,12 @@ export function RepositoryPicker({ repository, disabled, onChange, side = "top" 
   const list = useRef<HTMLDivElement>(null);
   useEffect(() => {
     // Read the list while the page is idle, so the menu usually opens onto it. A failure is shown only when the menu is opened.
-    if (disabled || repositoryCache.fresh()) return;
-    const warm = () => { void repositoryCache.get().catch(() => {}); };
+    if (disabled || warmBlocked || repositoryCache.fresh()) return;
     if (typeof window.requestIdleCallback === "function") {
-      const handle = window.requestIdleCallback(warm, { timeout: 3000 });
+      const handle = window.requestIdleCallback(warmUp, { timeout: 3000 });
       return () => window.cancelIdleCallback(handle);
     }
-    const handle = window.setTimeout(warm, 1000);
+    const handle = window.setTimeout(warmUp, 1000);
     return () => window.clearTimeout(handle);
   }, [disabled]);
   useEffect(() => {
@@ -48,6 +59,7 @@ export function RepositoryPicker({ repository, disabled, onChange, side = "top" 
     // Shared and cached for a minute: opening the menu again, or another conversation's menu, reuses the same list.
     let cancelled = false;
     void repositoryCache.get().then((value) => {
+      warmBlocked = false;
       if (!cancelled) { setRepositories(value); setUnavailable(null); setLoading(false); }
     }, (failure: unknown) => { if (!cancelled) { setUnavailable({ code: failure instanceof ApiError ? failure.code : undefined }); setLoading(false); } });
     return () => { cancelled = true; };
@@ -69,7 +81,7 @@ export function RepositoryPicker({ repository, disabled, onChange, side = "top" 
   const visible = useMemo(() => repositories.filter((item) => !needle || item.full_name.toLowerCase().includes(needle)), [repositories, needle]);
   const showCurrentUnlisted = !!repository && !listed && (!needle || repository.repo_id.toLowerCase().includes(needle));
   /** Aiming at the button is a good sign the menu is next: start reading a list that is not fresh (shared with any read under way). */
-  function warm() { if (!blocked && !repositoryCache.fresh()) void repositoryCache.get().catch(() => {}); }
+  function warm() { if (!blocked) warmUp(); }
   function changeOpen(next: boolean) {
     if (next && (blocked || busy)) return;
     setOpen(next);

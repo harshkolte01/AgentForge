@@ -9,9 +9,9 @@ import { createScrollController, isScrollbarPointerDown, keyScrollDirection, typ
  * are about to load), the jump button reads and commands it. Rules live in `lib/scroll-controller.ts`; this file only translates
  * browser events into its inputs and keeps the observers and listeners tidy.
  *
- * The controller is bound to whichever scroller element is mounted, through a ref callback: the subtree holding the scroller can
- * be remounted without the workspace being (a conversation opening, a first message creating one), and a binding made once, to
- * the element found at mount, would be left on an element that is gone.
+ * The controller is bound to whichever scroller element is mounted, through a ref callback: the scroller is unmounted while the
+ * Plugins page is shown and mounted again after, and a binding made once, to the element found at mount, would be left on an
+ * element that is gone. Between conversations the scroller stays; the workspace starts the controller over for each one.
  */
 const idleSnapshot: ScrollSnapshot = { following: true, jumpVisible: false, pausedBy: null };
 const inertController: ScrollController = {

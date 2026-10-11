@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isScrollbarPointerDown, keyScrollDirection, liveEdgeTop, reservedRoom } from "../lib/scroll-controller.ts";
+import { createScrollController, isScrollbarPointerDown, keyScrollDirection, liveEdgeTop, reservedRoom } from "../lib/scroll-controller.ts";
 import { column, scrollHarness } from "./helpers/scroll-harness.mjs";
 
 /** A long conversation the reader has already landed at the bottom of. */
@@ -587,4 +587,47 @@ test("a fold above the reader shifts the view with it, keeping following and the
   assert.equal(p.snapshot().following, false);
   p.settle();
   assert.equal(p.snapshot().following, false, "our own scroll never counts as the reader's");
+});
+
+/**
+ * A host closer to the real page than the harness: the room is the latest turn's min-height (written a frame late, as
+ * lib/scroll.ts does), the composer is in flow under it, and the browser clamps scrollTop whenever the page gets shorter.
+ */
+function clampingPage() {
+  const s = { top: 0, viewport: 800, composer: 140, earlier: 3000, turnContent: 120, room: 0, time: 1e6, frames: [] };
+  const turnTop = () => 64 + s.earlier + 24;
+  const height = () => turnTop() + Math.max(s.turnContent, s.room) + 24 + s.composer;
+  const clamp = () => { s.top = Math.min(s.top, Math.max(0, height() - s.viewport)); };
+  const host = {
+    metrics: () => ({ top: s.top, height: height(), viewport: s.viewport, composer: s.composer, below: turnTop() + s.turnContent - (s.top + s.viewport - s.composer) }),
+    scrollTo(top) { s.top = Math.max(0, Math.min(top, height() - s.viewport)); },
+    captureAnchor: () => null, anchorShift: () => null,
+    turnTop: (gap) => turnTop() - gap,
+    setRoom(px) { s.frames.push(() => { s.room = px; clamp(); controller.layoutChanged(); }); },
+    reducedMotion: () => true,
+  };
+  const controller = createScrollController({ host, now: () => s.time, requestFrame: (callback) => { s.frames.push(callback); return s.frames.length; }, cancelFrame() {}, setTimeout: () => 0, clearTimeout() {} });
+  const frames = (count = 3) => { for (let i = 0; i < count; i++) s.frames.splice(0).forEach((callback) => callback()); };
+  const change = (patch) => { Object.assign(s, patch); clamp(); controller.layoutChanged(); frames(); };
+  return { s, controller, frames, change, gap: () => turnTop() - s.top };
+}
+
+test("a pinned turn stays at the top when the composer shrinks, the view grows or text above re-wraps", () => {
+  const page = clampingPage();
+  page.controller.landOnLatest({ turn: false });
+  page.frames(2);
+  page.controller.beginTurn();
+  page.frames(4);
+  page.s.time += 5000;
+  page.frames(1);
+  assert.equal(page.gap(), 20, "pinned with its gap");
+  page.change({ composer: page.s.composer - 48 }); // the sent message's lines leave the composer
+  assert.equal(page.gap(), 20, "a shorter composer does not slide the turn down");
+  page.change({ viewport: page.s.viewport + 300 }); // a phone keyboard closes
+  assert.equal(page.gap(), 20, "a taller view does not slide the turn down");
+  page.change({ earlier: page.s.earlier + 400 }); // earlier messages re-wrap (a panel opened beside them)
+  assert.equal(page.gap(), 20, "text above re-wrapping does not move the turn");
+  page.change({ turnContent: 2000 }); // the reply outgrows the room: the live edge is followed from here
+  assert.equal(page.controller.getSnapshot().following, true);
+  assert.ok(page.gap() < 0, "the view follows the reply past the top of the turn");
 });

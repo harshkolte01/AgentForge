@@ -51,7 +51,9 @@ export function useSubagentScroll(initiallyFollowing: boolean) {
       const selection = document.getSelection();
       if (selection && !selection.isCollapsed && (node.contains(selection.anchorNode) || node.contains(selection.focusNode))) pause();
     };
-    const observer = new ResizeObserver(schedule);
+    // A ResizeObserver callback already runs after layout and before paint: following there, not a frame later, keeps the log
+    // from showing its new lines once below the edge before it catches up. Setting scrollTop resizes nothing, so nothing loops.
+    const observer = new ResizeObserver(() => { if (frame) cancelAnimationFrame(frame); sync(); });
     observer.observe(body);
     observer.observe(node);
     node.addEventListener("scroll", onScroll, { passive: true });

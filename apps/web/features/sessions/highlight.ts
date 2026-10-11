@@ -66,6 +66,12 @@ const registered = new Set<HighlightLanguage>();
 const results = new Map<string, TokenNode[]>();
 const RESULT_LIMIT = 64;
 
+/** The highlighted tree for `code` when it is already known: a block that remounts (the saved answer taking over from the
+ * live one) shows its colours on its first frame instead of flashing plain while the cached answer goes through a promise. */
+export function peekHighlighted(code: string, language: HighlightLanguage): TokenNode[] | null {
+  return results.get(`${language}\u0000${code}`) ?? null;
+}
+
 /** Highlights `code` as `language`. Null when the library or grammar cannot be loaded, or the output is not understood. */
 export async function highlightCode(code: string, language: HighlightLanguage): Promise<TokenNode[] | null> {
   const key = `${language}\u0000${code}`;

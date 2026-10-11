@@ -4,8 +4,23 @@ const apiUrl = new URL(process.env.API_ORIGIN ?? "http://localhost:8000");
 if (!["http:", "https:"].includes(apiUrl.protocol) || apiUrl.username || apiUrl.password || apiUrl.pathname !== "/" || apiUrl.search || apiUrl.hash) {
   throw new Error("API_ORIGIN must be an HTTP(S) origin without credentials, path, query or fragment.");
 }
+// Files in `public/` keep their names when they change, so they are cached for a day and then revalidated in the background,
+// never marked immutable. (Hashed build output under `/_next/static` is already cached for good by Next.)
+const publicCache = [{ key: "Cache-Control", value: "public, max-age=86400, stale-while-revalidate=604800" }];
 const nextConfig: NextConfig = {
   devIndicators: false,
+  poweredByHeader: false,
+  // A self-contained server (`.next/standalone/server.js`) with only the files it needs, for the container image.
+  output: "standalone",
+  async headers() {
+    return [
+      { source: "/fonts/:path*", headers: publicCache },
+      { source: "/brand/:path*", headers: publicCache },
+      { source: "/images/:path*", headers: publicCache },
+      // Only the logo files: `/plugins` itself is a signed-in page.
+      { source: "/plugins/:logo([^/]+\\.(?:svg|png))", headers: publicCache },
+    ];
+  },
   async rewrites() {
     return [
       {

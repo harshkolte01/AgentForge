@@ -158,7 +158,6 @@ export function checksSummary(checks: PullRequest["checks"]): string {
   return parts.join(" · ");
 }
 
-export const methodLabels: Record<MergeMethod, string> = { squash: "Squash and merge", merge: "Create a merge commit", rebase: "Rebase and merge" };
 const methodVerbs: Record<MergeMethod, string> = { squash: "Squash and merge", merge: "Merge", rebase: "Rebase and merge" };
 /** The exact thing the Merge button will do, for its confirmation line. */
 export function mergeSentence(method: MergeMethod, number: number, base: string | null): string {

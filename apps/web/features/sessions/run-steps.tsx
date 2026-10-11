@@ -6,7 +6,7 @@ import { TriangleAlert } from "lucide-react";
 import { ApprovalCard } from "@/features/sessions/approval-card";
 import { AssistantMessage } from "@/features/sessions/assistant-message";
 import { loadHistoryEntries } from "@/features/sessions/history-activity";
-import { Glyph, chevron, toggleClass } from "@/features/sessions/row-parts";
+import { Glyph, chevron, draftedCalls, toggleClass } from "@/features/sessions/row-parts";
 import { ToolDetailPanel } from "@/features/sessions/tool-detail";
 import {
   activityLabel, approvalSource, chunkRows, currentCallId, placeLiveTool, sectionsOf, subagentsByRun, summarizeEntries, type Section, type TimelineNotice,
@@ -49,6 +49,8 @@ function LiveText({ text, label }: { text: string; label: string }) {
 /** A call the model is still writing: a row of its own (nothing runs yet, so it never says "running") with what it has so far. */
 const DraftRow = memo(function DraftRow({ call }: { call: LiveToolView }) {
   const shown = describeDraft(call.name, call.detail);
+  const showing = !!shown;
+  useEffect(() => { if (showing) draftedCalls.add(call.callId); }, [showing, call.callId]);
   if (!shown) return null;
   return <li className="message-in min-w-0" data-activity-entry="draft" data-tool={call.name}>
     <div className="flex items-center gap-2.5">
@@ -73,7 +75,9 @@ export const EntryRow = memo(function EntryRow({ taskId, entry, current, animate
   const panelId = useId();
   const expandable = entry.kind === "group" || (entry.kind === "call" && entry.detailable);
   const [open, toggle] = useDisclosure(disclosureKey(taskId, entry.id), false);
-  const base = `${animate ? "message-in " : ""}min-w-0`;
+  // A call shown while it was being written has entered already: its real row takes the draft's place without a second entrance.
+  const drafted = entry.kind === "call" && !!entry.callId && draftedCalls.has(entry.callId);
+  const base = `${animate && !drafted ? "message-in " : ""}min-w-0`;
   const meta = entry.kind === "milestone"
     ? { icon: "success" as StatusIcon, tone: "success" as Tone, label: entry.label, detail: undefined, outcome: "completed" }
     : { icon: entry.icon, tone: entry.tone, label: entry.label, detail: entry.kind === "call" ? entry.detail : undefined, outcome: entry.outcome };

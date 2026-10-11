@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { useParams, usePathname, useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Menu, PanelLeftClose, Plug, SquarePen } from "lucide-react";
 import { ScrollToBottom } from "@/features/sessions/scroll-to-bottom";
 import { SidebarAccountMenu } from "@/features/sessions/sidebar-account-menu";
@@ -120,6 +120,10 @@ export function ConversationWorkspace({ children }: { children?: ReactNode }) {
   const validRoute = routeId === null || uuidPattern.test(routeId);
   const selected = routeId && validRoute ? sessions.find((item) => item.id === routeId) ?? null : null;
   const known = !!selected;
+  // The scroller stays mounted from one conversation to the next: nothing about the last one's view (a place kept, a turn being
+  // brought to the top) applies to the next one, which lands itself. Before its own effects run, so its first landing is kept.
+  const shownId = selected?.id ?? null;
+  useLayoutEffect(() => { scrollController.cancel(); }, [shownId, scrollController]);
   const failure = routeId && lookupFailure?.id === routeId ? lookupFailure : null;
   const missing = !validRoute || !!failure?.missing;
   const resolving = !!routeId && validRoute && !known && !failure;
@@ -223,10 +227,12 @@ export function ConversationWorkspace({ children }: { children?: ReactNode }) {
   const askAgent = (goal: string) => send({ routing: "auto", idempotency_key: crypto.randomUUID(), goal, repository: selected ? selected.repository : null, allowed_web_hosts: [], attachments: [] });
   // A first message being sent: shown at once in a draft of its thread, until the conversation it creates opens.
   const draft = !selected && pending && (routeId === null || pending.sessionId === routeId) ? pending : null;
-  // The composer sits under the thread once there is one (or a draft of it); before that it is centred in the empty chat.
-  const docked = !!selected || !!draft;
-  const composerKey = selected ? (adopted?.sessionId === selected.id ? adopted.composerKey : selected.id) : `new-${draftSequence}`;
-  const composer = <ConversationComposer queue={selected && !!selected.queued_count ? <ConversationQueue key={selected.id} session={selected} onChange={updateSession} /> : null} menuSide={docked ? "top" : "bottom"} key={composerKey} sessionId={selected?.id ?? null} contextRevision={selected ? `${selected.revision ?? selected.last_sequence}:${selected.active_task_id ?? ""}` : "new"} onNewConversation={() => { if (newChat()) router.push(routes.newConversation); }} repository={selected ? selected.repository : draftRepository} repositoryLocked={!!selected?.queued_count} onRepositoryChange={changeRepository} config={config} disabled={loading || busy} running={!!selected?.active_task_id} runId={selected?.active_task_id ?? null} onStop={stop} archived={selected?.archived ?? false} onSend={send} docked={docked} below={docked ? undefined : <FirstRun config={config} />} />;
+  // The composer sits under the thread once there is one (or a draft of it); before that it is centred in the empty chat. A
+  // conversation still being looked up (a reload, a deep link) already has it docked, under the same key it keeps once the
+  // conversation is in (the id in the address), so it does not pop in a moment later; it stays disabled until then.
+  const docked = !!selected || !!draft || resolving;
+  const composerKey = selected ? (adopted?.sessionId === selected.id ? adopted.composerKey : selected.id) : resolving && routeId ? routeId : `new-${draftSequence}`;
+  const composer = <ConversationComposer queue={selected && !!selected.queued_count ? <ConversationQueue key={selected.id} session={selected} onChange={updateSession} /> : null} menuSide={docked ? "top" : "bottom"} key={composerKey} sessionId={selected?.id ?? (resolving ? routeId : null)} contextRevision={selected ? `${selected.revision ?? selected.last_sequence}:${selected.active_task_id ?? ""}` : "new"} onNewConversation={() => { if (newChat()) router.push(routes.newConversation); }} repository={selected ? selected.repository : draftRepository} repositoryLocked={!!selected?.queued_count} onRepositoryChange={changeRepository} config={config} disabled={loading || busy || resolving} running={!!selected?.active_task_id} runId={selected?.active_task_id ?? null} onStop={stop} archived={selected?.archived ?? false} onSend={send} docked={docked} below={docked ? undefined : <FirstRun config={config} />} />;
   return <ConversationScrollContext value={scrollController}><DeliveryProvider sessionId={selected?.id ?? null} hasRepository={!!selected?.repository} activeTaskId={selected?.active_task_id ?? null} onAskAgent={askAgent}><div data-conversation-root className="relative top-[var(--visible-top,0px)] flex h-[var(--visible-height,100dvh)] min-h-0 overflow-hidden bg-background selection:bg-foreground/15">
     {sidebar ? <button className="fixed inset-0 z-30 bg-foreground/20 lg:hidden" aria-label="Close navigation" onClick={() => setSidebar(false)} /> : null}
     <ResizableSidebar collapsed={collapsed} ref={navigation} id="workspace-navigation" className={`fixed inset-y-0 left-0 z-40 flex shrink-0 flex-col border-r bg-sidebar px-3 pb-3 pt-3 transition-transform motion-reduce:transition-none lg:translate-x-0 ${sidebar ? "translate-x-0" : "-translate-x-full max-lg:invisible"} ${collapsed ? "lg:hidden" : ""}`} aria-label="Workspace navigation" role={sidebar ? "dialog" : undefined} aria-modal={sidebar || undefined}>
@@ -251,7 +257,7 @@ export function ConversationWorkspace({ children }: { children?: ReactNode }) {
         {failure && !failure.missing ? <div role="alert" className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center gap-3 px-5 pb-10 text-center sm:px-8"><h2 className="text-2xl font-medium tracking-tight">Couldn&apos;t load this conversation</h2><p className="text-sm leading-6 text-muted-foreground">Check your connection and try again.</p><div><Button onClick={() => { setLookupFailure(null); setRefresh((value) => value + 1); }}>Try again</Button></div></div>
         : missing ? <div role="alert" className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center gap-3 px-5 pb-10 text-center sm:px-8"><h2 className="text-2xl font-medium tracking-tight">Conversation not found</h2><p className="text-sm leading-6 text-muted-foreground">It may have been deleted, or the link belongs to a different account.</p><div><Link href={routes.newConversation} onClick={(event) => { if (!newChat()) event.preventDefault(); }} className="inline-flex min-h-11 items-center rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground outline-none hover:bg-primary/85 focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:min-h-9">Start a new conversation</Link></div></div>
         : draft ? <DraftThread pending={draft} />
-        : resolving ? <div role="status" className="mx-auto flex w-full max-w-3xl animate-pulse flex-col gap-6 px-5 pb-6 pt-4 motion-reduce:animate-none sm:px-8"><span className="sr-only">Loading conversation…</span><div className="ml-auto h-10 w-2/5 rounded-3xl bg-muted" /><div className="space-y-2.5"><div className="h-3.5 w-11/12 rounded bg-muted" /><div className="h-3.5 w-3/4 rounded bg-muted" /></div></div>
+        : resolving ? <div role="status" className="mx-auto flex w-full max-w-3xl animate-pulse flex-col gap-6 px-5 pb-6 pt-4 motion-reduce:animate-none sm:px-8"><span className="sr-only">Loading conversation…</span><div className="ml-auto h-10 w-2/5 rounded-3xl bg-muted" /><div className="space-y-2.5"><div className="h-3.5 w-11/12 rounded bg-muted" /><div className="h-3.5 w-3/4 rounded bg-muted" /><div className="h-3.5 w-1/2 rounded bg-muted" /></div></div>
         : selected ? <ConversationThread key={selected.id} session={selected} refresh={threadRefresh} pending={pending} receipt={receipt} onReceipt={receiptTaken} onChange={updateSession} onRetry={retry} /> : null}
         {/* One element whether centred in the empty chat or docked under the thread, so sending a first message never remounts the
             composer (its text, focus and in-flight send stay with it). */}

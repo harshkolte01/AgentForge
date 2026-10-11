@@ -5,6 +5,7 @@ import { FinalCta } from "@/features/landing/final-cta";
 import { Hero } from "@/features/landing/hero";
 import { HowItWorks } from "@/features/landing/how-it-works";
 import { Possibilities } from "@/features/landing/possibilities";
+import { manrope } from "@/features/landing/fonts";
 import { LandingAuth } from "@/features/landing/landing-auth";
 import { SiteFooter } from "@/features/landing/site-footer";
 import { SiteHeader } from "@/features/landing/site-header";
@@ -18,7 +19,7 @@ export const metadata: Metadata = {
 /** The public landing page. Static: the signed-in app lives under `/chat` and `/settings`. */
 export default function Home() {
   return <LandingAuth>
-    <div data-landing data-public className="dark relative isolate min-h-svh overflow-x-clip bg-background text-foreground">
+    <div data-landing data-public className={`${manrope.variable} dark relative isolate min-h-svh overflow-x-clip bg-background text-foreground`}>
       <a href="#main" className="sr-only z-50 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground focus:not-sr-only focus:fixed focus:left-4 focus:top-4">Skip to content</a>
       <SiteHeader />
       <main id="main">

@@ -1,7 +1,7 @@
 /**
- * The person's plugins (the catalog and their connections), read once per page session and shared by Settings → Plugins and every
- * composer's plugin menu, so connecting a plugin in Settings shows in the chat at once and moving between conversations never
- * refetches it. A change returns the changed connection, which replaces its old copy here.
+ * The person's plugins (the catalog and their connections), read once per page session and shared by the Plugins page and
+ * Settings → Plugins, so moving between them never refetches it. A change returns the changed connection, which replaces its old
+ * copy here. (A new conversation's plugins are chosen by the server from the ones left on: the composer does not read this.)
  */
 import type { PluginConnection, PluginsOverview } from "@/lib/plugins-api";
 
@@ -11,7 +11,7 @@ export type PluginsStore = {
   subscribe(listener: () => void): () => void;
   /** Reads the overview unless it is known or being read. */
   load(): void;
-  /** Reads it again whatever is known (the menu opened, a window regained focus). The old copy stays on screen meanwhile. */
+  /** Reads it again whatever is known (Refresh, back from signing in to a plugin, a failed change). The old copy stays on screen meanwhile. */
   reload(): void;
   /** Puts a connection the server returned in place (added when new). */
   apply(connection: PluginConnection): void;

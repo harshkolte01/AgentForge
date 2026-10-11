@@ -190,6 +190,10 @@ export function createScrollController(deps: ScrollDeps): ScrollController {
   // (a focus change, a layout shift, the browser), and a turn left half-way would otherwise be dragged to the live edge instead.
   let turnPin: { behavior: "auto" | "smooth"; since: number } | null = null;
   let room = -1;
+  // The pinned turn reached the top and its content still fits in the room under it: it is kept there (a composer that
+  // shrinks, a view that grows, or text above that re-wraps would otherwise slide it down), until the reply outgrows the room
+  // or the reader moves the view.
+  let resting = false;
   let frame: unknown = null;
   let snapshot: ScrollSnapshot = { following: true, jumpVisible: false, pausedBy: null };
 
@@ -227,6 +231,7 @@ export function createScrollController(deps: ScrollDeps): ScrollController {
   }
   function pause(reason: PauseReason, metrics: ScrollMetrics) {
     turnPin = null;
+    resting = false;
     pinned = null;
     if (following) anchor = host.captureAnchor();
     following = false;
@@ -250,11 +255,11 @@ export function createScrollController(deps: ScrollDeps): ScrollController {
     if (!turnPin) return;
     const target = host.turnTop(options.turnGap);
     // No turn to pin, or it never got there: following the live edge is better than waiting for ever.
-    if (target === null || deps.now() - turnPin.since > options.turnPinMs) { turnPin = null; return; }
+    if (target === null || deps.now() - turnPin.since > options.turnPinMs) { turnPin = null; resting = false; return; }
     if (roomChanged) { requestPass(); return; }
     // The most the page can scroll is the end of its room: a short page cannot put the turn at the top, and is as close as it gets.
     const reachable = Math.min(Math.max(0, target), Math.max(0, metrics.height - metrics.viewport));
-    if (Math.abs(metrics.top - reachable) <= 1.5) { turnPin = null; return; }
+    if (Math.abs(metrics.top - reachable) <= 1.5) { turnPin = null; resting = true; return; }
     const { behavior } = turnPin;
     // Only the first attempt is animated; if it was cut short, the retry lands at once.
     turnPin = { behavior: "auto", since: turnPin.since };
@@ -272,7 +277,16 @@ export function createScrollController(deps: ScrollDeps): ScrollController {
       // scrolled to the top before the room under it exists, so look again then.
       if (deps.now() >= smoothUntil) settleTurnPin(metrics, roomChanged);
     } else if (following) {
-      if (metrics.below > 0 && deps.now() >= smoothUntil) move(liveEdgeTop(metrics, options.liveMargin), "auto");
+      if (resting && metrics.below > 0) resting = false; // the reply outgrew the room: follow it from here
+      if (resting) {
+        const target = host.turnTop(options.turnGap);
+        if (target === null) resting = false;
+        else if (roomChanged) requestPass(); // the new room is written next frame: put the turn back after that
+        else if (deps.now() >= smoothUntil) {
+          const reachable = Math.min(Math.max(0, target), Math.max(0, metrics.height - metrics.viewport));
+          if (Math.abs(metrics.top - reachable) > 1.5) move(target, "auto");
+        }
+      } else if (metrics.below > 0 && deps.now() >= smoothUntil) move(liveEdgeTop(metrics, options.liveMargin), "auto");
     } else {
       const place = pinned && deps.now() < pinned.until ? pinned.anchor : anchor;
       const shift = place === null ? null : host.anchorShift(place);
@@ -299,6 +313,7 @@ export function createScrollController(deps: ScrollDeps): ScrollController {
     subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     input(reason, deltaY) {
       if (deltaY === 0) return;
+      resting = false;
       const metrics = host.metrics();
       // Moving toward the live edge while already there changes nothing; moving up with nothing above is not a scroll.
       if (deltaY > 0 && atEdge(metrics)) { resumeAtEdge(metrics); return; }
@@ -342,6 +357,8 @@ export function createScrollController(deps: ScrollDeps): ScrollController {
       if (deps.now() < smoothUntil) watchSmooth(options.smoothQuietMs);
       if (reader) {
         pinned = null;
+        // The reader moved the view themselves (not the browser clamping a page that just got shorter).
+        if (!shrank && (movedUp || movedDown)) resting = false;
         // A scroll nobody here caused, away from the edge. A shrinking page clamps the position by itself; a bounce at the end returns to the edge.
         if (following && movedUp && !shrank && !atEdge(metrics)) { pause("scroll", metrics); return; }
         if (!following && movedDown) resumeAtEdge(metrics);
@@ -357,6 +374,7 @@ export function createScrollController(deps: ScrollDeps): ScrollController {
     requestPass,
     shift(px) {
       if (Math.abs(px) < 1) return;
+      resting = false; // the view now keeps the answer still, not the turn's top
       move(host.metrics().top + px, "auto");
       // The view is where the reader left it: remember that place, so the next pass does not "correct" it back.
       pinned = null;
@@ -364,11 +382,13 @@ export function createScrollController(deps: ScrollDeps): ScrollController {
       requestPass();
     },
     beginTurn() {
+      resting = false;
       resume(host.metrics());
       turnPin = { behavior: "smooth", since: deps.now() };
       requestPass();
     },
     landOnLatest({ turn }) {
+      resting = false;
       resume(host.metrics());
       // A turn that is already being brought to the top (a message sent as the conversation opened) is not undone by landing.
       if (turn) turnPin = { behavior: "auto", since: deps.now() };
@@ -377,6 +397,7 @@ export function createScrollController(deps: ScrollDeps): ScrollController {
     jump() {
       const metrics = host.metrics();
       turnPin = null;
+      resting = false;
       resume(metrics);
       if (metrics.below > 0) move(liveEdgeTop(metrics, options.liveMargin), "smooth");
     },
@@ -387,7 +408,7 @@ export function createScrollController(deps: ScrollDeps): ScrollController {
       frame = null; smoothTimer = null; quietTimer = null;
       // The scroller went away, and nothing about its view applies to the next one: that one has no room reserved yet, no place
       // to keep and no reader to defer to (the thread it holds lands itself).
-      turnPin = null; pinned = null; anchor = null;
+      turnPin = null; pinned = null; anchor = null; resting = false;
       room = -1; lastTop = 0; lastHeight = 0; programmaticUntil = 0; smoothUntil = 0;
       heldScrollbar = false; heldSelection = false;
       following = true; pausedBy = null;

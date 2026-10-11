@@ -1,28 +1,10 @@
 "use client";
-import { useEffect, useId, useState, useSyncExternalStore } from "react";
-import { Check, ChevronDown, ShieldCheck, Zap } from "lucide-react";
+import { useId, useState } from "react";
+import { Check, ChevronDown } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import type { ApprovalMode } from "@/lib/activity/approvals";
-import { createApprovalModeStore, type ApprovalModeState } from "@/lib/approval-mode-store";
-import { fetchApprovalMode, saveApprovalMode } from "@/lib/approvals-api";
+import { approvalModes, useApprovalMode } from "@/features/sessions/approval-mode";
 import { chipClass, optionClass } from "@/features/sessions/composer-styles";
-
-export const approvalModes: { id: ApprovalMode; label: string; hint: string; Icon: typeof ShieldCheck }[] = [
-  { id: "ask", label: "Ask me", hint: "Asks before it runs a command, changes a file or opens a pull request.", Icon: ShieldCheck },
-  { id: "auto", label: "Approve for me", hint: "Does everything without asking.", Icon: Zap },
-];
-
-/** One copy for the page: every composer and Settings share it, so switching conversations never reads it again. */
-const approvalModeStore = createApprovalModeStore({ fetch: () => fetchApprovalMode(), save: saveApprovalMode });
-const idle: ApprovalModeState = { mode: null, status: "idle" };
-if (typeof window !== "undefined") window.addEventListener("agentforge-session-expired", () => approvalModeStore.reset());
-
-/** The approval mode, read on first use. `choose` shows the new mode at once and rejects if it could not be saved. */
-export function useApprovalMode() {
-  const state = useSyncExternalStore(approvalModeStore.subscribe, approvalModeStore.getSnapshot, () => idle);
-  useEffect(() => { approvalModeStore.load(); }, []);
-  return { ...state, choose: approvalModeStore.choose, retry: approvalModeStore.load };
-}
 
 /**
  * One choice for every conversation: whether the agent stops to ask before anything that changes something. Reading and

@@ -230,3 +230,11 @@ test("a large answer stabilizes quickly", () => {
   assert.ok(each < 30, `${big.length} characters took ${each.toFixed(1)}ms per call`);
   assert.ok(stabilize(big).endsWith("**tail**"));
 });
+
+test("a list number whose dot has not arrived yet is held back, not shown as a paragraph for a frame", () => {
+  assert.equal(stabilizeMarkdown("Steps:\n\n1. a\n\n2"), "Steps:\n\n1. a\n\n");
+  assert.equal(stabilizeMarkdown("Steps:\n\n1. a\n\n10"), "Steps:\n\n1. a\n\n");
+  assert.equal(stabilizeMarkdown("Steps:\n\n1. a\n\n2."), "Steps:\n\n1. a\n\n");
+  assert.equal(stabilizeMarkdown("The answer is\n42"), "The answer is\n42", "a number inside a paragraph stays");
+  assert.equal(stabilizeMarkdown("Steps:\n\n2", { streaming: false }), "Steps:\n\n2", "finished text is untouched");
+});

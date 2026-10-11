@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AssistantRow, UserRow } from "@/features/sessions/message-row";
 import { TaskTurn, ThinkingIndicator } from "@/features/sessions/task-turn";
 import { phaseOf, rowKeyFor } from "@/features/sessions/conversation-store";
@@ -62,12 +62,16 @@ export function ConversationThread({ session, refresh, pending, receipt, onRecei
   // Once a turn has been anchored its room stays, so the reply finishing never makes the page jump.
   if ((here || live) && !anchored) setAnchored(true);
 
+  // Whether the latest turn is the conversation's only one (kept by a layout effect below, so these effects read this commit's).
+  const firstTurn = useRef(false);
   // The first read says where to land: the latest message, or the start of a turn that is still running.
   const landing = state.landing;
-  useEffect(() => { if (landing) scroll.landOnLatest({ turn: landing.turn }); }, [landing, scroll]);
-  // A message was just sent: bring it to the top of the view and let the reply build beneath it.
+  useEffect(() => { if (landing) scroll.landOnLatest({ turn: landing.turn && !firstTurn.current }); }, [landing, scroll]);
+  // A message was just sent: bring it to the top of the view and let the reply build beneath it. A conversation's first message
+  // is already at the top, with nothing above it to scroll past: pinning it would only slide it up by the page's own padding
+  // as the reply starts, so it stays where it is and the reply builds beneath it all the same.
   const pendingKey = here?.key;
-  useEffect(() => { if (pendingKey) scroll.beginTurn(); }, [pendingKey, scroll]);
+  useEffect(() => { if (pendingKey && !firstTurn.current) scroll.beginTurn(); }, [pendingKey, scroll]);
   // The accepted turn reconciles straight from its receipt, whether or not reading the conversation afterwards works.
   const applied = useRef<Receipt | null>(null);
   useEffect(() => {
@@ -119,6 +123,9 @@ export function ConversationThread({ session, refresh, pending, receipt, onRecei
     earlierTurns[earlierTurns.length - 1].rows.push(entry);
   }
   const latestKey = waiting && here ? turnRowKey(here.key) : latest[0] ? rowKeyFor(state, latest[0]) : "latest";
+  const onlyTurn = !earlierTurns.length && !hasEarlier(state.records, state.startReached);
+  // Read by the effect above: layout effects run first, so it sees this commit's answer.
+  useLayoutEffect(() => { firstTurn.current = onlyTurn; }, [onlyTurn]);
 
   return <div data-conversation-thread aria-busy={busy} className={threadClass}>
     {/* One short sentence at a time ("Message sent", "Reply ready"): never the streamed text. */}
@@ -131,7 +138,10 @@ export function ConversationThread({ session, refresh, pending, receipt, onRecei
     <div key={latestKey} data-conversation-turn className={turnClass} style={anchored ? { minHeight: "var(--conversation-room, 0px)" } : undefined}>
       {turnRows}
       {waiting && !live && here ? <ThinkingIndicator turnKey={here.key} /> : null}
-      {live ? <div hidden={handingOver} data-scroll-anchor={handingOver ? undefined : `task:${live}`} data-live-turn={live} className="min-w-0"><TaskTurn key={live} taskId={live} savedReady={phase.savedReady} onTerminal={finished} onGrow={scroll.requestPass} onShift={scroll.shift} onStreamed={store.replyStreamed} /></div> : null}
+      {live ? <div hidden={handingOver} data-scroll-anchor={handingOver ? undefined : `task:${live}`} data-live-turn={live} className="min-w-0"><TaskTurn key={live} taskId={live} savedReady={phase.savedReady} holdStatus={!finishing && !failedWait} onTerminal={finished} onGrow={scroll.requestPass} onShift={scroll.shift} onStreamed={store.replyStreamed} />
+        {/* The room the saved answer's action line (copy, time) takes, kept from the start: the saved answer then replaces the
+            live view at exactly the same height, so the view following the reply does not jump when the run hands over. */}
+        <div aria-hidden="true" data-live-actions-room className="mt-1 min-h-8" /></div> : null}
       {finishing ? <p data-saved-wait className="text-[13px] text-muted-foreground motion-safe:animate-in motion-safe:fade-in">Finishing up…</p> : null}
       {failedWait ? <div role="alert" className="flex flex-wrap items-center gap-3 text-sm text-destructive"><span>The reply finished, but it could not be loaded{failedWait.error ? `: ${failedWait.error}` : "."}</span><Button variant="outline" size="sm" className="pointer-coarse:min-h-11" onClick={() => store.retrySaved()}>Try again</Button></div> : null}
       {state.moreAfter !== null ? <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground"><span>Some recent messages are not loaded yet.</span><Button variant="outline" size="sm" className="pointer-coarse:min-h-11" disabled={state.newerBusy} onClick={() => void store.loadNewer()}>{state.newerBusy ? "Loading…" : "Load more"}</Button></div> : null}

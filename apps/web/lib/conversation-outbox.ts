@@ -1,6 +1,6 @@
 import { attachmentGoal } from "@/lib/attachments";
 /** Unresolved admission intents survive reload; no credentials are stored here. */
-import { api, type SessionInfo } from "@/lib/task-api";
+import { api, ApiError, type SessionInfo } from "@/lib/task-api";
 import type { ConversationSession, TurnInput, TurnResult } from "@/lib/workspace-api";
 
 export type PendingTurn = { id: string; account: string; sessionId: string | null; draftId?: string; input: TurnInput; createdAt: number };
@@ -82,6 +82,8 @@ export function accountId({ fresh = false }: { fresh?: boolean } = {}): Promise<
   return cachedAccount;
 }
 export function forgetAccount() { cachedAccount = null; }
+/** Seeds the cache from a session read made elsewhere (the app's session check), so opening the app reads it once, not twice. */
+export function primeAccount(id: string) { cachedAccount = Promise.resolve(id); }
 
 export async function pendingTurns(account: string): Promise<PendingTurn[]> {
   return (await records()).filter((item) => item.account === account).sort((a, b) => a.createdAt - b.createdAt);
@@ -100,20 +102,31 @@ export async function saveIntent(account: string, sessionId: string | null, inpu
   return record;
 }
 
+/** A 4xx the same request would get again; sign-in, permission, timeout and rate-limit answers can change, so they are kept. */
+const refused = (error: unknown) => error instanceof ApiError && error.status >= 400 && error.status < 500 && ![401, 403, 408, 429].includes(error.status);
+
 export async function deliverIntent(record: PendingTurn, signal?: AbortSignal): Promise<{ result: TurnResult; session: ConversationSession | null }> {
   // Recheck account before each delivery; replay never crosses a login boundary.
   if (await accountId({ fresh: true }) !== record.account) throw new Error("Sign in to the account that sent this message to retry it.");
   let session: ConversationSession | null = null;
-  if (!record.sessionId) {
-    session = await api<ConversationSession>("/sessions", { signal, method: "POST", body: JSON.stringify({
-      idempotency_key: record.input.idempotency_key, title: record.input.goal.slice(0, 80), repository: record.input.repository, plugins: record.input.plugins }) });
-    record = { ...record, sessionId: session.id };
-    await persist(record);
+  let result: TurnResult;
+  try {
+    if (!record.sessionId) {
+      session = await api<ConversationSession>("/sessions", { signal, method: "POST", body: JSON.stringify({
+        idempotency_key: record.input.idempotency_key, title: record.input.goal.slice(0, 80), repository: record.input.repository, plugins: record.input.plugins }) });
+      record = { ...record, sessionId: session.id };
+      await persist(record);
+    }
+    // The plugin choice belongs to the conversation (sent above when it was created), not to a turn.
+    const turn: Partial<TurnInput> = { ...record.input };
+    delete turn.plugins;
+    result = await api<TurnResult>(`/sessions/${record.sessionId}/turns`, { signal, method: "POST", body: JSON.stringify(turn) });
+  } catch (error) {
+    // A definite refusal can never be admitted by replaying it: forget the intent (its draft keeps the text) so it does not
+    // come back as a ghost send on a later visit. No answer, a server fault or a refusal that may pass later stays saved.
+    if (refused(error)) await discardPending(record.id).catch(() => {});
+    throw error;
   }
-  // The plugin choice belongs to the conversation (sent above when it was created), not to a turn.
-  const turn: Partial<TurnInput> = { ...record.input };
-  delete turn.plugins;
-  const result = await api<TurnResult>(`/sessions/${record.sessionId}/turns`, { signal, method: "POST", body: JSON.stringify(turn) });
   // The admission is authoritative. A later refresh failure cannot resend it as new work.
   const draftId = record.draftId ?? `${record.account}:${record.sessionId ?? "new"}`;
   const db = await openDatabase();

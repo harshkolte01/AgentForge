@@ -3,7 +3,7 @@ import { pluginLogos } from "@/lib/plugin-logos";
 
 /**
  * The Model Context Protocol mark (the protocol every plugin speaks), drawn in the current text colour. Used for servers a person
- * adds themselves, and as the small "MCP" badge.
+ * adds themselves.
  */
 export function McpMark({ className = "size-4" }: { className?: string }) {
   return <svg viewBox="0 0 24 24" fill="currentColor" fillRule="evenodd" aria-hidden="true" focusable="false" className={className}>
@@ -36,9 +36,4 @@ export function PluginLogo({ pluginKey, name, size = "md", className = "" }: { p
       : pluginKey === "custom" ? <McpMark className={look.mark} />
         : <span className={`font-semibold uppercase ${look.text}`}>{[...name][0] ?? "?"}</span>}
   </span>;
-}
-
-/** The small "MCP" tag: every plugin is a Model Context Protocol server. */
-export function McpBadge({ className = "" }: { className?: string }) {
-  return <span title="Model Context Protocol" className={`inline-flex items-center gap-1 rounded-md border bg-muted/40 px-1.5 py-0.5 text-[10px] font-medium uppercase leading-4 tracking-wide text-muted-foreground ${className}`}><McpMark className="size-3" />MCP</span>;
 }

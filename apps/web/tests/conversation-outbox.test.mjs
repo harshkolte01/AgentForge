@@ -1,7 +1,7 @@
 import { beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { IDBFactory } from "fake-indexeddb";
-import { accountId, deliverIntent, forgetAccount, pendingTurns, readDraft, saveIntent, writeDraft } from "../lib/conversation-outbox.ts";
+import { accountId, deliverIntent, forgetAccount, pendingTurns, primeAccount, readDraft, saveIntent, writeDraft } from "../lib/conversation-outbox.ts";
 
 const account = "fixture-account";
 const input = () => ({ routing: "auto", repository: null, idempotency_key: crypto.randomUUID(), goal: "Keep the earlier decision.",
@@ -113,4 +113,49 @@ test("a failed account read is not cached", async () => {
   await assert.rejects(accountId());
   globalThis.fetch = working;
   assert.equal(await accountId(), account);
+});
+
+test("a send the server refuses outright is forgotten, so it never replays as a ghost message", async () => {
+  const intent = await saveIntent(account, "existing", input());
+  const working = globalThis.fetch;
+  globalThis.fetch = async (url, options) => url.endsWith("/turns")
+    ? new Response(JSON.stringify({ detail: "turn_idempotency_conflict" }), { status: 409, headers: { "Content-Type": "application/json" } })
+    : working(url, options);
+  await assert.rejects(deliverIntent(intent), (error) => error.status === 409 && error.code === "turn_idempotency_conflict");
+  assert.deepEqual(await pendingTurns(account), []);
+});
+
+test("a refusal that may pass later, or no answer at all, keeps the send for replay", async () => {
+  const intent = await saveIntent(account, "existing", input());
+  const working = globalThis.fetch;
+  globalThis.fetch = async (url, options) => url.endsWith("/turns")
+    ? new Response(JSON.stringify({ detail: "concurrent_task_limit" }), { status: 429, headers: { "Content-Type": "application/json" } })
+    : working(url, options);
+  await assert.rejects(deliverIntent(intent), (error) => error.status === 429);
+  globalThis.fetch = async (url, options) => { if (url.endsWith("/turns")) throw new TypeError("Failed to fetch"); return working(url, options); };
+  await assert.rejects(deliverIntent(intent), (error) => error.status === 0 && error.code === undefined && /Could not reach AgentForge/.test(error.message));
+  assert.equal((await pendingTurns(account)).length, 1);
+});
+
+test("an aborted send rethrows the abort itself, not a connection message", async () => {
+  const intent = await saveIntent(account, "existing", input());
+  const working = globalThis.fetch;
+  const controller = new AbortController();
+  globalThis.fetch = async (url, options) => {
+    if (!url.endsWith("/turns")) return working(url, options);
+    controller.abort();
+    throw new DOMException("The operation was aborted.", "AbortError");
+  };
+  await assert.rejects(deliverIntent(intent, controller.signal), (error) => error.name === "AbortError");
+  assert.equal((await pendingTurns(account)).length, 1);
+});
+
+test("an account primed from the app's session check is used without another read", async () => {
+  forgetAccount();
+  primeAccount(account);
+  assert.equal(await accountId(), account);
+  assert.equal(calls.filter((url) => url === "/api/v1/auth/session").length, 0);
+  identity = "different-account";
+  assert.equal(await accountId({ fresh: true }), "different-account", "a fresh check still asks the server");
+  forgetAccount();
 });

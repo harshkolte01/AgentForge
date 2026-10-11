@@ -1,6 +1,6 @@
 "use client";
 import { memo, useEffect, useId, useState } from "react";
-import { Glyph, chevron, toggleClass } from "@/features/sessions/row-parts";
+import { Glyph, chevron, draftedCalls, toggleClass } from "@/features/sessions/row-parts";
 import { SubagentPanel } from "@/features/sessions/subagent-panel";
 import { fleetSummary, formatDuration, subagentNow, subagentSteps, subagentStatus } from "@/features/sessions/timeline-model";
 import { useDisclosure } from "@/features/sessions/use-disclosure";
@@ -46,7 +46,9 @@ export const SubagentCard = memo(function SubagentCard({ taskId, call, animate, 
     {openable ? chevron(open) : null}
   </>;
   const frame = "flex w-full min-w-0 items-start gap-2.5 rounded-2xl px-3.5 py-3 text-left [&>:first-child]:mt-0.5";
-  return <div className={`${animate ? "message-in " : ""}min-w-0 overflow-hidden rounded-2xl border bg-background shadow-[0_1px_2px_rgb(0_0_0/0.03)] dark:bg-card dark:shadow-none`}
+  // A delegation shown while the model was writing it has entered already (see `draftedCalls`).
+  const enters = animate && !(call.callId && draftedCalls.has(call.callId));
+  return <div className={`${enters ? "message-in " : ""}min-w-0 overflow-hidden rounded-2xl border bg-background shadow-[0_1px_2px_rgb(0_0_0/0.03)] dark:bg-card dark:shadow-none`}
     data-subagent-card data-outcome={call.outcome} data-waiting={waiting ? "true" : undefined}>
     {openable
       ? <button type="button" aria-expanded={open} aria-controls={panelId} data-scroll-anchor-toggle className={`${frame} [@media(pointer:coarse)]:min-h-11 ${toggleClass}`} onClick={toggle}>{heading}</button>

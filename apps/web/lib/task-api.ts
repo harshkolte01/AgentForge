@@ -172,6 +172,11 @@ const friendlyErrors: Record<string, string> = {
   tool_detail_unavailable: "There are no details to show for this action.",
 };
 
+/** The sentence for a known machine code (`session_required`…), if there is one. */
+export function friendlyError(code: string): string | undefined {
+  return Object.hasOwn(friendlyErrors, code) ? friendlyErrors[code] : undefined;
+}
+
 /** The one step that fixes an error, when there is one, shown as a link beside its message. */
 const errorActions: Record<string, { label: string; href: string }> = {
   github_reauthorization_required: { label: "Reconnect GitHub", href: "/api/v1/auth/github/start" },
@@ -181,12 +186,20 @@ export function errorAction(error: unknown): { label: string; href: string } | n
 }
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`/api/v1${path}`, {
-    ...init,
-    cache: "no-store",
-    credentials: "same-origin",
-    headers: { ...(init.body ? { "Content-Type": "application/json" } : {}), ...init.headers },
-  });
+  let response: Response;
+  try {
+    response = await fetch(`/api/v1${path}`, {
+      ...init,
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: { ...(init.body ? { "Content-Type": "application/json" } : {}), ...init.headers },
+    });
+  } catch (error) {
+    if (init.signal?.aborted) throw error;
+    // No answer at all (offline, DNS, the API down): a sentence instead of the browser's "Failed to fetch". No code, so callers
+    // that retry (`reuseKey`) still treat it as "may have been acted on".
+    throw new ApiError(0, "Could not reach AgentForge. Check your connection, then try again.");
+  }
   if (!response.ok) {
     const body = await response.json().catch(() => null) as { detail?: unknown } | null;
     // Most errors name a code; plugin errors also carry a sentence written for the person ({code, message}).

@@ -44,15 +44,19 @@ One scroll controller owns the thread (`apps/web/lib/scroll-controller.ts`, rule
 
 - **Sending a message** brings that message to the top of the view with a small gap, and the reply is written beneath it. The
   room under the latest turn is reserved so this works even when the thread is short. The view starts following the live edge
-  only once the reply outgrows that room.
+  only once the reply outgrows that room. Until then the turn rests at the top: a composer that shrinks after the send, a view
+  that grows (a phone keyboard closing) or text above that re-wraps does not slide it down. A conversation's first message is
+  already at the top, so it is not moved at all.
 - **The pin is a state, not a one-off scroll.** It is kept until the view is actually there, so a smooth scroll cut short by
   anything (a focus change, a layout shift) is finished instead of leaving the new message under the composer. Anything that
   moves focus in the thread after a send must use `focus({ preventScroll: true })`.
 - **The reader always wins.** Wheel, touch, keys, the scrollbar, selecting text and opening a step pause following and keep the
   reader's place; "Jump to latest" or scrolling back to the end resumes it.
 - **Opening a conversation** lands on its latest content, or on the start of the turn that is still running.
-- The controller is bound to the mounted scroller through a ref callback, because the subtree holding it is remounted when the
-  conversation changes (including a first message creating one).
+- The controller is bound to the mounted scroller through a ref callback. The scroller itself (with the sidebar and, for a first
+  message, the composer) stays mounted from one conversation to the next; the controller starts over for each conversation.
+- **The saved answer replaces the live one at the same height.** The live run keeps the room of the saved answer's action line
+  (copy, time) from the start, so the hand-over never moves the view.
 
 ## Conversation titles
 

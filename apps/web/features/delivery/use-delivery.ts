@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { discardFile, fetchChanges, fetchDelivery, refreshDelivery, type ChangesView, type DeliveryView } from "@/lib/delivery-api";
 import { deliveryMessage, errorCode, reuseKey } from "@/lib/delivery-errors";
 import { isOpen } from "@/lib/delivery-status";
@@ -48,8 +48,21 @@ export function useDelivery({ sessionId, enabled, activeTaskId, wantChanges }: {
   const changesAt = useRef(0);
   const keys = useRef(new Map<string, string>());
   const last = useRef<Last | null>(null);
-  const alive = useRef(true);
-  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  // Everything here belongs to one conversation. Moving to another starts over, and a write still in flight for the last one
+  // (it is never cancelled: the server may already have acted on it) is not applied to the new one when it answers.
+  const [shownSession, setShownSession] = useState(sessionId);
+  if (shownSession !== sessionId) {
+    setShownSession(sessionId);
+    setView(null); setReadFailed(null); setHidden(false); setRefreshing(false); setChanges(null); setChangesError(null);
+    setBusyAction(null); setFailure(null);
+  }
+  const owner = useRef({ live: true });
+  useLayoutEffect(() => {
+    const current = { live: true };
+    owner.current = current;
+    viewRef.current = null; epoch.current += 1; changesAt.current = 0; keys.current.clear(); last.current = null;
+    return () => { current.live = false; };
+  }, [sessionId]);
 
   const apply = useCallback((next: DeliveryView) => {
     epoch.current += 1;
@@ -81,8 +94,10 @@ export function useDelivery({ sessionId, enabled, activeTaskId, wantChanges }: {
       .finally(() => {
         if (controller.signal.aborted) return;
         setRefreshing(false);
+        // A hidden tab is not polled: coming back to it reads at once (the focus and visibility listener below).
+        if (document.hidden) return;
         const pr = viewRef.current?.pull_request ?? null;
-        const delay = failed ? POLL_AFTER_FAILURE_MS : viewRef.current?.pending_operation ? POLL_PENDING_MS : isOpen(pr) && !document.hidden ? POLL_OPEN_MS : POLL_IDLE_MS;
+        const delay = failed ? POLL_AFTER_FAILURE_MS : viewRef.current?.pending_operation ? POLL_PENDING_MS : isOpen(pr) ? POLL_OPEN_MS : POLL_IDLE_MS;
         timer = setTimeout(() => setViewTick((value) => value + 1), delay);
       });
     return () => { controller.abort(); clearTimeout(timer); };
@@ -125,24 +140,25 @@ export function useDelivery({ sessionId, enabled, activeTaskId, wantChanges }: {
    * only when the first attempt may have been acted on, so the server never does it twice and never replays a refusal.
    */
   const run = useCallback(async (name: string, signature: string, call: Call, options: { clearChanges?: boolean } = {}): Promise<Outcome> => {
+    const alive = owner.current;
     const key = keys.current.get(signature) ?? crypto.randomUUID();
     keys.current.set(signature, key);
     last.current = { name, signature, call, clearChanges: !!options.clearChanges };
-    if (alive.current) { setBusyAction(name); setFailure(null); }
+    setBusyAction(name); setFailure(null);
     try {
       const next = await call(key);
-      keys.current.delete(signature);
-      if (alive.current) { apply(next); if (options.clearChanges) setChanges(null); setChangesTick((value) => value + 1); }
+      if (alive.live) keys.current.delete(signature);
+      if (alive.live) { apply(next); if (options.clearChanges) setChanges(null); setChangesTick((value) => value + 1); }
       return { ok: true, view: next };
     } catch (error) {
-      if (!reuseKey(error)) keys.current.delete(signature);
-      if (alive.current) {
+      if (alive.live && !reuseKey(error)) keys.current.delete(signature);
+      if (alive.live) {
         setFailure({ action: name, message: deliveryMessage(error), code: errorCode(error), retryable: true });
         // Whatever happened, look again: a refused or half-finished write changes what the screen should say.
         setViewTick((value) => value + 1); setChangesTick((value) => value + 1);
       }
       return { ok: false, error };
-    } finally { if (alive.current) setBusyAction((current) => (current === name ? null : current)); }
+    } finally { if (alive.live) setBusyAction((current) => (current === name ? null : current)); }
   }, [apply]);
 
   const retryFailure = useCallback(() => {
@@ -155,15 +171,16 @@ export function useDelivery({ sessionId, enabled, activeTaskId, wantChanges }: {
 
   const discard = useCallback(async (path: string): Promise<boolean> => {
     if (!sessionId) return false;
+    const alive = owner.current;
     setBusyAction("discard"); setFailure(null);
     try {
       const next = await discardFile(sessionId, path);
-      if (alive.current) { changesAt.current = Date.now(); setChanges(next); setChangesError(null); }
+      if (alive.live) { changesAt.current = Date.now(); setChanges(next); setChangesError(null); }
       return true;
     } catch (error) {
-      if (alive.current) { setFailure({ action: "discard", message: deliveryMessage(error), code: errorCode(error), retryable: false }); setChangesTick((value) => value + 1); }
+      if (alive.live) { setFailure({ action: "discard", message: deliveryMessage(error), code: errorCode(error), retryable: false }); setChangesTick((value) => value + 1); }
       return false;
-    } finally { if (alive.current) setBusyAction((current) => (current === "discard" ? null : current)); }
+    } finally { if (alive.live) setBusyAction((current) => (current === "discard" ? null : current)); }
   }, [sessionId]);
 
   const loading = active && !view && !readFailed && !hidden;

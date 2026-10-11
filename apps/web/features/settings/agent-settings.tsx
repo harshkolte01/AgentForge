@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { approvalModes, useApprovalMode } from "@/features/sessions/approval-mode-picker";
+import { approvalModes, useApprovalMode } from "@/features/sessions/approval-mode";
 import { choiceClass, Fact, Facts, Group, iconTileClass, radioClass, sectionClass, SectionHeader, SkeletonRows } from "@/features/settings/settings-ui";
 import type { ApprovalMode } from "@/lib/activity/approvals";
 import { formatTokens, type ContextStatus } from "@/lib/context";

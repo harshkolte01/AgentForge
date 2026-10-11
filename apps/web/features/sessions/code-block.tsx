@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { CopyButton } from "@/features/sessions/copy-button";
-import { highlightCode, tokenClass, type TokenNode } from "@/features/sessions/highlight";
+import { highlightCode, peekHighlighted, tokenClass, type TokenNode } from "@/features/sessions/highlight";
 import { highlightEligibility } from "@/features/sessions/highlight-policy";
 
 function Tokens({ nodes }: { nodes: readonly TokenNode[] }) {
@@ -19,12 +19,12 @@ export function CodeBlock({ code, language, streaming = false }: { code: string;
   const key = grammar ? `${grammar}\u0000${code}` : null;
   const [result, setResult] = useState<{ key: string; nodes: TokenNode[] } | null>(null);
   useEffect(() => {
-    if (!grammar || key === null) return;
+    if (!grammar || key === null || peekHighlighted(code, grammar)) return;
     let cancelled = false;
     void highlightCode(code, grammar).then((nodes) => { if (!cancelled && nodes) setResult({ key, nodes }); });
     return () => { cancelled = true; };
   }, [code, grammar, key]);
-  const nodes = result && result.key === key ? result.nodes : null;
+  const nodes = (result && result.key === key ? result.nodes : null) ?? (grammar ? peekHighlighted(code, grammar) : null);
   return <div className="my-4 min-w-0 max-w-full overflow-hidden rounded-xl border bg-muted/40" data-code-block data-highlighted={nodes ? "true" : "false"}>
     <div className="flex min-h-9 items-center justify-between border-b bg-muted/60 pl-3.5 pr-1.5 text-xs text-muted-foreground">
       <span className="font-mono">{language ?? "text"}</span>

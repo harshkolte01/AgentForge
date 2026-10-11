@@ -73,13 +73,6 @@ export function projectContext(status: ContextStatus, draftTokens: number): Cont
   return { used, percent, level: levelFor(percent), empty };
 }
 
-export const levelText: Record<ContextLevel, string> = {
-  ok: "Plenty of room",
-  notice: "Filling up",
-  high: "Nearly full",
-  unknown: "Size not configured",
-};
-
 /** What the next turn's history extract includes; this is not a proof that a model has read it. */
 export function coverageText(status: ContextStatus): string {
   const { messages_total: total, messages_in_full: full, messages_condensed: condensed, messages_omitted: omitted } = status;

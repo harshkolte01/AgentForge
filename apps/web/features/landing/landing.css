@@ -1,11 +1,4 @@
-/* Fixed public identity; the workspace's saved appearance preference is untouched. */
-@font-face {
-  font-family: "Manrope";
-  src: url("/fonts/manrope.ttf") format("truetype");
-  font-style: normal;
-  font-weight: 200 800;
-  font-display: swap;
-}
+/* Fixed public identity; the workspace's saved appearance preference is untouched. Manrope is loaded by `features/landing/fonts.ts`. */
 [data-public] {
   --background: #0b0b0b;
   --foreground: #f1f0ee;
@@ -29,7 +22,7 @@
   --sidebar: #1a1917;
   --sidebar-accent: #292622;
   --destructive: #ffb4a8;
-  font-family: "Manrope", ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-manrope), ui-sans-serif, system-ui, sans-serif;
   color-scheme: dark;
   accent-color: var(--brand);
   caret-color: var(--foreground);
