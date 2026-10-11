@@ -87,7 +87,7 @@ who may use the deployment in `GITHUB_ALLOWED_LOGINS` and keep
 repository selection, expiry/revocation and approval-bound delivery have passed
 on a controlled live repository. Create the GitHub App as described in
 [docs/github-app.md](../../docs/github-app.md). Configure provider keys and verified model
-capabilities/prices, Neatlogs masking and the qualified E2B template before task
+capabilities/prices, Neatlogs tracing (metadata-only by default; see [docs/neatlogs.md](../../docs/neatlogs.md)) and the qualified E2B template before task
 intake. Monitor provider-side spend too; the ledger cannot observe calls outside
 AgentForge. The API refuses to start in production with a non-HTTPS URL or origin,
 or without `AUTH_MODE=github_app` and its GitHub settings; the error names the

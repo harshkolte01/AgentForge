@@ -45,12 +45,14 @@ def main():
     directory = ROOT / ".local" / "releases" / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid4().hex[:8])
     directory.mkdir(parents=True, mode=0o700)
     commands = [("api-unit", [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"], ROOT / "apps/api")]
-    for filename in ("subagent_smoke.py", "phase5_identity_smoke.py", "phase6_sessions_smoke.py", "conversation_delivery_smoke.py", "phase7_operations_smoke.py", "settings_agents_smoke.py", "phase8_streaming_smoke.py", "activity_api_smoke.py", "conversation_title_smoke.py", "conversation_status_smoke.py", "plugins_smoke.py", "plugin_oauth_smoke.py", "skills_smoke.py"):
+    for filename in ("subagent_smoke.py", "phase5_identity_smoke.py", "phase6_sessions_smoke.py", "conversation_delivery_smoke.py", "phase7_operations_smoke.py", "settings_agents_smoke.py", "phase8_streaming_smoke.py", "activity_api_smoke.py", "conversation_title_smoke.py", "conversation_status_smoke.py", "plugins_smoke.py", "plugin_oauth_smoke.py", "skills_smoke.py", "neatlogs_trace_smoke.py"):
         example = ROOT / "apps/api/examples" / filename
         if example.is_file():
             commands.append((example.stem, [sys.executable, str(example)], ROOT / "apps/api"))
         else:
             raise SystemExit("Required disposable fixture missing: " + filename)
+    # The installed SDK's own offline self-check (no network, no key): it must produce a valid local trace envelope.
+    commands.append(("neatlogs-doctor-local", [sys.executable, "-m", "neatlogs", "doctor", "--local", "--json"], ROOT / "apps/api"))
     if not args.skip_web:
         corepack = shutil.which("corepack")
         pnpm = [corepack, "pnpm"] if corepack else [shutil.which("pnpm") or "pnpm"]

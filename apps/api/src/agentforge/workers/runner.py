@@ -19,7 +19,7 @@ from agentforge.repositories.jobs import JobRepository, LeaseLost, TaskCancelled
 from pydantic import ValidationError
 from agentforge.settings import get_settings, validation_summary
 from agentforge.subagents.budget import BudgetService
-from agentforge.telemetry.neatlogs_setup import Telemetry
+from agentforge.telemetry.neatlogs_setup import Telemetry, annotate, current_trace_id, stage
 from agentforge.workers.asyncio_run import run_async
 from .leases import supervise, transient
 from .reconciliation import reconcile
@@ -42,6 +42,40 @@ async def task_authority(settings, runtime, store, jobs, lease):
             await jobs.authority(lease)
 
 
+def trace_identity(sessions, task) -> dict:
+    """What groups this task's trace with the rest of its conversation in Neatlogs: the conversation is the session and the
+    person (their internal id, nothing else) the end user. Best effort; a trace without them is still a trace."""
+    identity = {"end_user_id": str(task.created_by)}
+    try:
+        from sqlalchemy import select
+        from agentforge.database.sessions import TurnExecution
+        with sessions() as db:
+            session_id = db.scalar(select(TurnExecution.session_id).where(TurnExecution.task_id == task.id))
+        if session_id is not None:
+            identity["session_id"] = str(session_id)
+    except Exception:  # noqa: BLE001
+        logger.debug("trace session not resolved: task_id=%s", task.id, exc_info=True)
+    return identity
+
+
+def note_outcome(sessions, store) -> None:
+    """Ends the trace root with the task's own result, so runs can be filtered and compared by outcome. A task that failed marks
+    the root failed; one that finished after tool failures says how many it recovered from. Never raises."""
+    try:
+        final = store.task()
+        attributes = {"agentforge.task.status": final.status, "agentforge.task.error_code": final.error_code}
+        from sqlalchemy import func, select
+        from agentforge.database.models import ToolCall
+        with sessions() as db:
+            total, failed_calls = db.execute(select(func.count(), func.count().filter(ToolCall.status.in_(("FAILED", "BLOCKED", "UNKNOWN"))))
+                .where(ToolCall.task_id == final.id)).one()
+        attributes.update({"agentforge.task.tool_calls": total, "agentforge.task.tool_failures": failed_calls})
+        failed = final.status == "FAILED"
+        annotate(attributes, failed=(final.error_code or True) if failed else None)
+    except Exception:  # noqa: BLE001
+        logger.debug("trace outcome not recorded", exc_info=True)
+
+
 async def execute(settings, sessions, telemetry, jobs, lease):
     store = WorkflowStore(sessions, lease)
     runtime = None
@@ -61,22 +95,36 @@ async def execute(settings, sessions, telemetry, jobs, lease):
             async def authority():
                 # Cached workspace content never bypasses current source rights.
                 await task_authority(settings, runtime, store, jobs, lease)
+            traced = bool(getattr(telemetry, "enabled", False))
             config = {"configurable": {"thread_id": task.thread_id},
                 "callbacks": telemetry.callbacks(),
                 "metadata": {"task_id": str(task.id), "lease_generation": lease.generation}}
             async def invoke():
                 nonlocal runtime
+                if traced and (trace_id := current_trace_id()):
+                    # How an operator finds this task's trace in the Neatlogs dashboard.
+                    logger.info("Task traced; task_id=%s neatlogs_trace_id=%s", task.id, trace_id)
                 # Resolving the repository can take a while (GitHub), so it runs under the lease heartbeat too.
                 if not await pin_repository(store=store, settings=settings, sessions=sessions, jobs=jobs, lease=lease):
+                    if traced:
+                        note_outcome(sessions, store)
                     return  # the selected repository could not be reached; the task has ended with the reason
                 runtime = compose_runtime(settings, sessions, telemetry, store)
                 from agentforge.workers.conversation_context import prepare_turn_context
                 from agentforge.workers.conversation_title import name_conversation
                 # Optional and fenced: the sidebar shows the generated title as soon as it exists, and a failure keeps the first-message title.
                 await name_conversation(store, runtime, settings)
-                await prepare_turn_context(store, runtime, settings, authority)
+                with stage("prepare_context"):
+                    await prepare_turn_context(store, runtime, settings, authority)
                 await run_agent_turn(store=store, service=runtime.service, authority=authority, config=config)
-            invoke = telemetry.decorate(invoke, kind="WORKFLOW", name="agentforge_task")
+                if traced:
+                    note_outcome(sessions, store)
+            if traced:
+                identity = await asyncio.to_thread(trace_identity, sessions, task)
+                invoke = telemetry.decorate(invoke, kind="WORKFLOW", name="agentforge_task", **identity,
+                    attributes={"task_id": str(task.id), "lease_generation": lease.generation})
+            else:
+                invoke = telemetry.decorate(invoke, kind="WORKFLOW", name="agentforge_task")
             await supervise(invoke, jobs, lease, store, settings.worker_heartbeat_sec)
         jobs.complete(lease)
     except TaskCancelled:

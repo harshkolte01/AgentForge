@@ -138,7 +138,7 @@ trace, browser and recovery qualification remains outstanding.
 | 3.2 | Atomic sequenced metadata events and authorized cursor SSE | History/cursor denials passed; streaming unverified |
 | 3.3 | SKIP LOCKED queue, leases, heartbeat, fencing and conservative reconciliation | Sequential cancellation/reclaim/fencing passed; concurrency/recovery unverified |
 | 3.4 | Async PostgreSQL parent checkpoints and explicit setup CLI | Disposable DB setup/checkpoint persistence passed; restart unverified |
-| 3.5 | Invocation-bound Neatlogs callbacks, actual nested spans and global export mask | Implemented; no trace produced |
+| 3.5 | Invocation-bound Neatlogs callbacks, actual nested spans and global export mask | Implemented; wire-verified against a local OTLP receiver (tokens, cost, sessions, error status, privacy); no hosted trace produced. See [docs/neatlogs.md](docs/neatlogs.md) |
 | 3.6 | Tavily search, pinned public fetch and durable sources | Fixture search/fetch persistence passed; live/network safety unverified |
 | 3.7 | Deterministic citation/quote checks and private report artifact | Fixture quote/report download passed; goal coverage unresolved/PARTIAL |
 | 3.8 | Local authenticated task API, events, status and workspace UI | API smoke/lint/types/build passed; browser interactions unverified |

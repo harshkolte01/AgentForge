@@ -10,7 +10,7 @@ from agentforge.subagents.spawn_service import SpawnService
 from agentforge.tools.approvals import ToolApprovals
 from agentforge.tools.catalog import ToolCatalog, DESCRIPTIONS
 from agentforge.tools.research import register_research
-from agentforge.telemetry.runtime import ObservedModel, observed_tool
+from agentforge.telemetry.runtime import ObservedModel, observed_agent, observed_tool
 from sqlalchemy import select
 from agentforge.database.models import User
 
@@ -127,9 +127,10 @@ def compose_runtime(settings, sessions, telemetry, store) -> Runtime:
         budgets=BudgetService(sessions), runs=AgentRunRepository(sessions),
         calls=ToolCallRepository(sessions), catalog=catalog,
         models=ModelRouter(ObservedModel(models.model, telemetry, store)), resources=resources,
-        lifecycle=store.progress, approvals=ToolApprovals(sessions, store.progress), sessions=sessions, skills=skills)
+        lifecycle=store.progress, approvals=ToolApprovals(sessions, store.progress), sessions=sessions, skills=skills,
+        trace=telemetry.span if getattr(telemetry, "enabled", False) else None)
     from agentforge.tools.delegation import register_delegation
     register_delegation(catalog, service)
-    service.spawn_subagent = telemetry.decorate(service.spawn_subagent,
-        kind="AGENT", name="spawn_subagent")
+    if getattr(telemetry, "enabled", False):
+        service.spawn_subagent = observed_agent(service.spawn_subagent, telemetry)
     return Runtime(service, models, repository_github, plugins, after_turn)

@@ -51,6 +51,8 @@ def configuration(request: Request, user: User = Depends(current_user)) -> dict:
             "coding_configured": not coding_missing, "coding_missing_settings": coding_missing,
             "coding_repository_access": "github_app_user_installation" if getattr(settings, "auth_mode", None) == "github_app" else "public_only", "coding_sandbox_provider": "e2b",
             "tracing_configured": bool(settings.neatlogs_api_key),
+            # Whether traces carry prompts and tool data (off: structure, timing, usage and status only).
+            "tracing_content_capture": bool(settings.neatlogs_api_key) and bool(getattr(settings, "neatlogs_capture_content", False)),
             "web_research_configured": bool(settings.tavily_api_key),
             "github_writes_enabled": bool(getattr(settings, "enable_github_writes", False)),
             "plugins_enabled": bool(getattr(settings, "plugins_enabled", False)),

@@ -12,6 +12,7 @@ import json
 import re
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
 from decimal import Decimal
 from uuid import UUID
@@ -20,6 +21,7 @@ from pydantic import ValidationError
 
 from agentforge.repositories.runs import ToolCallRepository
 from agentforge.security.policies import PublicURL, authorize_tool
+from agentforge.telemetry.neatlogs_setup import set_attributes
 from agentforge.subagents.budget import BudgetExceeded, BudgetService
 from agentforge.subagents.resources import ResourceResolver
 from agentforge.subagents.scope import EffectiveScope, ScopeDenied, TaskContext
@@ -63,8 +65,12 @@ class ToolGateway:
                  budgets: BudgetService, resources: ResourceResolver,
                  reauthorize: Callable[[], Awaitable[None]], ctx: TaskContext,
                  scope: EffectiveScope, run_id: UUID, reservation_id: UUID,
-                 strict_tools: bool = False, lifecycle: LifecycleSink | None = None, approvals=None, live=None) -> None:
+                 strict_tools: bool = False, lifecycle: LifecycleSink | None = None, approvals=None, live=None,
+                 trace=None) -> None:
         self.catalog, self.calls, self.budgets, self.resources = catalog, calls, budgets, resources
+        # Opens a tracing span (`Telemetry.span`): approvals and refused calls show up in the trace as guardrail checks.
+        # None: nothing is traced here.
+        self.trace = trace
         # Asks the person before a tool that changes something runs (see tools/approvals.py); None: nothing asks.
         self.approvals = approvals
         # Receives tool.started / tool.finished (see tools/lifecycle.py); without one the gateway reports nothing.
@@ -151,6 +157,23 @@ class ToolGateway:
             issues = validation_issues(exc)
             raise ToolError("SCHEMA_INVALID", render_issues(issues), issues=issues) from None
 
+    # --- tracing ----------------------------------------------------------------------------
+    def _check(self, name: str):
+        """A guardrail span, or a no-op without tracing."""
+        return self.trace(name, kind="GUARDRAIL") if self.trace is not None else nullcontext(None)
+
+    def _record_refusal(self, tool: str, code: str) -> None:
+        """A call that was refused before it ran, as a failed guardrail check in the trace. Never raises."""
+        if self.trace is None or code == "DECLINED":   # a declined call already has its approval check
+            return
+        try:
+            with self._check("tool_policy") as check:
+                set_attributes(check, {"neatlogs.guardrail.name": "tool_policy", "neatlogs.guardrail.passed": False,
+                    "neatlogs.guardrail.reason": code, "tool.name": tool, "agentforge.error.code": code,
+                    "task_id": str(self.ctx.task_id), "spawn_id": str(self.run_id)})
+        except Exception:  # noqa: BLE001
+            pass
+
     # --- execution --------------------------------------------------------------------------
     async def execute(self, name: str, raw_args: str, provider_call_id: str) -> ToolOutcome:
         if name in CONCURRENT_EFFECTS:
@@ -228,8 +251,13 @@ class ToolGateway:
                 summary, truncated = approval_summary(name, args, extra, plugin)
                 # A subagent's card says whose it is: several can be waiting at once, with commands that look alike.
                 whose = {"agent_run_id": str(self.run_id)} if getattr(self.ctx, "parent_run_id", None) is not None else {}
-                if not await self.approvals.allows(self.ctx, operation_key=operation_key, tool=name, summary=summary,
-                        truncated=truncated, detail=arguments, check=self.reauthorize, **whose):
+                with self._check("tool_approval") as check:
+                    allowed = await self.approvals.allows(self.ctx, operation_key=operation_key, tool=name, summary=summary,
+                        truncated=truncated, detail=arguments, check=self.reauthorize, **whose)
+                    set_attributes(check, {"neatlogs.guardrail.name": "tool_approval", "neatlogs.guardrail.passed": bool(allowed),
+                        "neatlogs.guardrail.reason": "APPROVED" if allowed else "DECLINED", "tool.name": name,
+                        "task_id": str(self.ctx.task_id), "spawn_id": str(self.run_id)})
+                if not allowed:
                     raise ToolError("DECLINED", "The person declined this action, so nothing was run. Do not do it another way "
                                     "without asking: say what you were about to do and ask how they want to continue.")
                 # A call's duration is how long it ran, not how long it waited for the person.
@@ -323,6 +351,8 @@ class ToolGateway:
                              "duration_ms": duration_ms})
             # Reported only once the row is durable, including when the run is being cancelled (best effort).
             events.finish(outcome_from_row(status, code), error_code=code, duration_ms=duration_ms)
+            if not entered_adapter and not cancelled:
+                self._record_refusal(stored_name, code)
             if not isinstance(exc, Exception) or isinstance(exc, (BudgetExceeded, UnknownToolOutcome)):
                 raise
             if unknown:

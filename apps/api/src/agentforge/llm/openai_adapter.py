@@ -172,7 +172,8 @@ class OpenAIAdapter:
             return None
 
     async def _with_retries(self, call: Callable[[], Awaitable[ModelResponse]],
-                            on_retry: Callable[[], None] | None = None) -> ModelResponse:
+                            on_retry: Callable[[], None] | None = None,
+                            on_attempt_failed: Callable[[str], None] | None = None) -> ModelResponse:
         for attempt in range(self.max_retries + 1):
             try:
                 return await call()
@@ -187,6 +188,11 @@ class OpenAIAdapter:
                         on_retry()  # what the broken attempt showed is void
                     except Exception:
                         pass
+                if on_attempt_failed is not None:
+                    try:
+                        on_attempt_failed(error.code)  # a request failed and is about to be sent again (tracing counts these)
+                    except Exception:
+                        pass
                 wait = self._retry_after(exc)
                 if wait is None:
                     wait = BASE_RETRY_WAIT_SEC * (2 ** attempt) + random.uniform(0, 0.5)
@@ -199,17 +205,19 @@ class OpenAIAdapter:
                        tool_choice: dict[str, Any] | str | None = None,
                        on_narration: Callable[[str], None] | None = None,
                        on_retry: Callable[[], None] | None = None,
-                       on_tool: Callable[[int, str, str, str], None] | None = None) -> ModelResponse:
+                       on_tool: Callable[[int, str, str, str], None] | None = None,
+                       on_attempt_failed: Callable[[str], None] | None = None) -> ModelResponse:
         """One completion. With on_text, the person-facing reply is delivered as it arrives; with on_narration,
         so is the plain text the model writes next to its tool calls; with on_tool, so is each tool call as the model
         writes it: `(index, call id, tool name, next piece of its JSON arguments)`, in the order the provider sends them.
         The returned response (message, usage, finish reason) is identical to the non-streaming path. `on_retry` runs
-        before a broken stream is requested again, so the caller can clear what that attempt showed."""
+        before a broken stream is requested again, so the caller can clear what that attempt showed. `on_attempt_failed` is told
+        the error code of every failed request that is about to be retried (rate limit, 5xx, timeout, broken stream)."""
         self.maximum_request_cost(messages, tools)
         request = self._request(messages, tools, tool_choice)
         if on_text is not None or on_narration is not None or on_tool is not None:
-            return await self._with_retries(lambda: self._complete_streaming(request, bool(tools), on_text, on_narration, on_tool), on_retry)
-        return await self._with_retries(lambda: self._complete_once(request))
+            return await self._with_retries(lambda: self._complete_streaming(request, bool(tools), on_text, on_narration, on_tool), on_retry, on_attempt_failed)
+        return await self._with_retries(lambda: self._complete_once(request), None, on_attempt_failed)
 
     async def _complete_once(self, request: dict[str, Any]) -> ModelResponse:
         response = await self._client.chat.completions.create(**request)

@@ -76,6 +76,16 @@ class Settings(BaseSettings):
     conversation_titles_enabled: bool = True
     neatlogs_api_key: SecretStr | None = Field(default=None, repr=False)
     neatlogs_workflow_name: str = Field(default="agentforge-ai", min_length=1, max_length=100)
+    # Base URL only (no path), for a regional or self-hosted project, e.g. https://eu.ingest.neatlogs.com. Empty: the SDK default.
+    neatlogs_endpoint: HttpUrl | None = None
+    # Comma-separated labels added to every trace, to filter and compare runs ("baseline", "prompt-v3"). The environment and
+    # release are always added.
+    neatlogs_tags: str = Field(default="", max_length=500)
+    # Share of traces exported. 1 keeps every run, which is what evidence needs.
+    neatlogs_sample_rate: float = Field(default=1.0, ge=0, le=1)
+    # Off: traces carry structure, timing, tokens, cost and status only. On: prompts, answers and tool arguments/results are
+    # sent too (secrets masked, long values cut), so a private conversation reaches Neatlogs. Choose it deliberately.
+    neatlogs_capture_content: bool = False
     tavily_api_key: SecretStr | None = Field(default=None, repr=False)
     tavily_search_max_cost_usd: Decimal = Field(default=Decimal("0.02"), gt=0, allow_inf_nan=False)
     tavily_usd_per_credit: Decimal | None = Field(default=None, gt=0, allow_inf_nan=False)
@@ -134,6 +144,14 @@ class Settings(BaseSettings):
         """Accept comma-separated origins in .env or a list in Python."""
         if isinstance(value, str):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return value
+
+    @field_validator("neatlogs_endpoint")
+    @classmethod
+    def neatlogs_endpoint_is_a_base_url(cls, value: HttpUrl | None) -> HttpUrl | None:
+        """The SDK adds the route itself; a path here would send traces to a place that does not exist."""
+        if value is not None and (value.path not in (None, "", "/") or value.query or value.fragment):
+            raise ValueError("must be a base URL without a path, for example https://eu.ingest.neatlogs.com")
         return value
 
     @field_validator("github_allowed_logins", mode="before")

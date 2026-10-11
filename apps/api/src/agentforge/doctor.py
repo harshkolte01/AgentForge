@@ -97,13 +97,28 @@ def check_optional(settings):
     return results
 
 
+def check_tracing(settings):
+    """Neatlogs: whether runs are traced, and what a trace is allowed to carry. Offline; it never contacts Neatlogs."""
+    if not settings.neatlogs_api_key:
+        return [("WARN", "neatlogs", "NEATLOGS_API_KEY not set: runs are not traced (see docs/neatlogs.md)")]
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        sdk = version("neatlogs")
+    except PackageNotFoundError:
+        return [("FAIL", "neatlogs", "NEATLOGS_API_KEY is set but the `neatlogs` package is not installed; run `cd apps/api && uv sync`")]
+    where = f", endpoint {settings.neatlogs_endpoint.host}" if settings.neatlogs_endpoint else ""
+    content = "prompts and tool data are SENT (secrets masked)" if settings.neatlogs_capture_content else "metadata only, no prompts or answers"
+    return [("PASS", "neatlogs", f"tracing on (SDK {sdk}, workflow {settings.neatlogs_workflow_name}{where}); {content}")]
+
+
 def run() -> list[tuple[str, str, str]]:
     settings, results = check_settings()
     if settings is None:
         return results
     database, local_user = check_database(settings)
     results += database
-    for check in (lambda: check_auth(settings, local_user), lambda: check_model(settings), lambda: check_optional(settings)):
+    for check in (lambda: check_auth(settings, local_user), lambda: check_model(settings), lambda: check_optional(settings),
+                  lambda: check_tracing(settings)):
         try:
             results += check()
         except Exception as error:

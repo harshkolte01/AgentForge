@@ -67,8 +67,10 @@ class SpawnService:
                  resources: ResourceResolver | None = None,
                  runtime: ChildRuntime | None = None,
                  lifecycle: LifecycleSink | None = None, approvals=None, sessions=None,
-                 skills: tuple[tuple[str, str], ...] = ()) -> None:
+                 skills: tuple[tuple[str, str], ...] = (), trace=None) -> None:
         self.registry, self.authorizer, self.budgets = registry, authorizer, budgets
+        # Opens a tracing span (`Telemetry.span`) for the gateways' approval and refusal checks; None: not traced.
+        self.trace = trace
         # Reads the facts of each turn for the prompt's Environment block (subagents/environment.py); None: none shown.
         self.sessions = sessions
         # (name, description) of the skills named in the prompt; the tool that loads them is in the catalog (skills/runtime.py).
@@ -170,7 +172,7 @@ class SpawnService:
                 resources=self.resources, reauthorize=reauthorize, ctx=ctx, scope=scope,
                 run_id=run_id, reservation_id=reservation.id,
                 strict_tools=bool(getattr(model, "strict_tools", False)), lifecycle=child_lifecycle if ctx.parent_run_id else self.lifecycle,
-                approvals=self.approvals,
+                approvals=self.approvals, trace=self.trace,
                 # Only the run the person is watching shows a call being written and a command's output as it arrives.
                 live=stream if getattr(stream, "output", None) is not None else None)
             result = await self.runtime.run(

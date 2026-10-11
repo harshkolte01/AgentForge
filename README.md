@@ -31,6 +31,9 @@ asked for with `/name`) are described in [skills](docs/skills.md).
 Durable queued follow-ups, source-linked conversation summaries, original-input
 retrieval and deployment requirements are documented in
 [conversation reliability](docs/conversation-reliability.md).
+Every run can be traced to Neatlogs (model and tool calls, tokens, cost, retries, failures and
+approvals, grouped per conversation); by default no prompt or answer leaves the worker. See
+[Neatlogs tracing](docs/neatlogs.md).
 
 ```mermaid
 flowchart LR

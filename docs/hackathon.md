@@ -17,16 +17,27 @@ does not submit the entry.
 |---|---|---|
 | Substantial task completes with evidence | Actual task receipt, source/test evidence and artifact download | Offline fixtures available; live end-to-end pending |
 | Failure recovery works | Disclosed failing attempt and subsequent legitimate action | Actual generated fixture exits available; live trace pending |
-| Neatlogs improved the agent | Before/after hosted trace links, comparable latency/tokens/cost and change | Integration implemented; hosted proof pending |
+| Neatlogs improved the agent | Before/after hosted trace links, comparable latency/tokens/cost and change | Integration implemented and wire-verified offline (`docs/neatlogs.md`); hosted before/after traces pending |
 | Entire used during implementation | Allowed checkpoint + commit or actual versioned entire-graph output | Pending; no conversation/transcript export authorized |
 | Business plan uses cfo.ai | Export/screenshots covering pricing, costs, revenue and runway | Assumption template below; cfo.ai export pending |
 | Built in public | Actual dated #neatHack posts | Pending |
 | Submitted | Public quote of official post with team/name/project/repo/demo | Pending; follow confirmed cutoff |
 
 Keep raw traces, user repositories and credentials private. Review screenshots
-and exported graph/source snippets before public inclusion. The application masks
-trace content; still inspect actual exports before sharing. Do not substitute a
+and exported graph/source snippets before public inclusion. By default the
+application sends trace metadata only (structure, timing, tokens, cost, status);
+`NEATLOGS_CAPTURE_CONTENT=true` adds prompts and tool data with best-effort secret
+masking, which makes the inputs/responses visible in a demo trace. Still inspect
+actual exports before sharing. Do not substitute a
 mocked-provider receipt for hosted evidence.
+
+## Neatlogs evidence
+
+How the trace maps to each thing the official page asks to trace, how to run a before/after comparison with
+`NEATLOGS_TAGS`, how to produce a failure-recovery trace, and what has and has not been verified are in
+[neatlogs.md](neatlogs.md). Offline checks (`python -m neatlogs doctor --local`, `tests/test_neatlogs_wire.py`,
+`examples/neatlogs_trace_smoke.py`) prove what would be exported; only a run with a real project key produces the hosted
+trace links this pack needs. Record the worker's `neatlogs_trace_id=` log line for each run you want to cite.
 
 ## Entire graph without transcript export
 
