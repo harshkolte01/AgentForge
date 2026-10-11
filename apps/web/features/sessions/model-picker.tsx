@@ -1,8 +1,10 @@
 "use client";
 import { useId, useRef, useState, type KeyboardEvent } from "react";
-import { Check, ChevronDown, Cpu } from "lucide-react";
+import { Check, ChevronDown } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { chipClass, optionClass } from "@/features/sessions/composer-styles";
+
+import { ModelProviderIcon } from "@/features/sessions/model-provider-icon";
 
 export type ModelOption = { id: string; provider?: string | null };
 
@@ -27,8 +29,8 @@ export function ModelPicker({ models, value, loading, disabled, side = "top" }: 
   }
   const label = value ?? (loading ? "Model" : "No model");
   return <Popover open={open} onOpenChange={setOpen}>
-    <PopoverTrigger disabled={disabled || loading} aria-label={`Model: ${label}`} title={`Model: ${label}`} className={`${chipClass} max-w-40 justify-center max-sm:w-10 max-sm:px-0 sm:max-w-56`}>
-      <Cpu className="size-4" aria-hidden="true" />
+    <PopoverTrigger disabled={disabled || loading} aria-label={`Model: ${label}`} title={`Model: ${label}`} className={`${chipClass} max-w-40 justify-center max-sm:w-11 max-sm:px-0 sm:max-w-56`}>
+      <ModelProviderIcon provider={models.find((model) => model.id === value)?.provider} />
       <span className="hidden min-w-0 truncate sm:inline">{label}</span>
       <ChevronDown className="hidden size-3 opacity-60 sm:block" aria-hidden="true" />
     </PopoverTrigger>
@@ -39,7 +41,7 @@ export function ModelPicker({ models, value, loading, disabled, side = "top" }: 
           {models.length ? models.map((model) => {
             const selected = model.id === value;
             return <button key={model.id} type="button" role="option" aria-selected={selected} className={optionClass} onClick={() => setOpen(false)}>
-              <Cpu className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+              <ModelProviderIcon provider={model.provider} className="size-4 shrink-0 text-muted-foreground" />
               <span className="min-w-0 flex-1"><span className="block truncate text-[13px] font-medium leading-5">{model.id}</span>{model.provider ? <span className="block truncate text-xs leading-4 text-muted-foreground">{providerName(model.provider)}</span> : null}</span>
               <Check className={`size-4 shrink-0 ${selected ? "" : "invisible"}`} aria-hidden="true" />
             </button>;

@@ -1,64 +1,13 @@
-"""Live reply streaming: field extraction, adapter assembly, the best-effort writer and runtime wiring."""
-import asyncio
-import json
-import random
+"""Live reply streaming: adapter assembly and the best-effort writer (plain text, no JSON field extraction)."""
 from decimal import Decimal
 from types import SimpleNamespace as NS
 from unittest import IsolatedAsyncioTestCase, TestCase
-from unittest.mock import AsyncMock
 from uuid import uuid4
 
-from agentforge.contracts.agent_definition import Budget
-from agentforge.llm.models import ModelProviderError, ModelRates, ModelResponse, ModelUsage
+from agentforge.contracts.tasks import MAX_ANSWER_CHARS
+from agentforge.llm.models import ModelProviderError, ModelRates, ModelUsage
 from agentforge.llm.openai_adapter import OpenAIAdapter
-from agentforge.llm.streaming import JsonStringFieldStream
-from agentforge.orchestration.stream import FLUSH_SECONDS, MAX_CHARS, ReplyStream, clear_stream
-from agentforge.subagents.registry import load_builtin
-from agentforge.subagents.runtime import ChildRuntime
-
-REPLY = 'Hi "there"!\nSecond line \\ back é 😀 done'
-DOC = {"status": "PASS", "summary": "internal \"note\"", "evidence_ids": ["a", "response"], "intent": "conversation",
-       "response": REPLY, "nested": {"response": "NOT THIS"}, "use_repository": False}
-
-
-def read(text, field="response", size=None):
-    reader, out = JsonStringFieldStream(field), ""
-    if size is None:
-        return reader.feed(text)
-    for start in range(0, len(text), size):
-        out += reader.feed(text[start:start + size])
-    return out
-
-
-class FieldExtractionTests(TestCase):
-    def test_decodes_the_target_field_exactly_however_the_stream_is_chunked(self):
-        for encoded in (json.dumps(DOC), json.dumps(DOC, ensure_ascii=False)):
-            self.assertEqual(read(encoded), REPLY)
-            for size in (1, 2, 3, 5, 11):
-                self.assertEqual(read(encoded, size=size), REPLY, size)
-        generator = random.Random(7)
-        encoded = json.dumps(DOC)
-        for _ in range(200):
-            self.assertEqual(read(encoded, size=generator.randint(1, 9)), REPLY)
-
-    def test_only_the_top_level_target_field_is_ever_emitted(self):
-        self.assertEqual(read('{"summary":"private","response":"public"}'), "public")
-        self.assertEqual(read('{"summary":"mine","response":"theirs"}', "summary"), "mine")
-        self.assertEqual(read('{"a":{"summary":"deep"},"summary":"top"}', "summary"), "top")
-        self.assertEqual(read('{"x":"response","response":"v"}'), "v")
-        self.assertEqual(read('{"evidence_ids":["response"],"intent":"research"}'), "")
-
-    def test_a_null_or_non_string_value_streams_nothing(self):
-        self.assertEqual(read('{"response":null,"summary":"x"}'), "")
-        self.assertEqual(read('{"response": 5, "summary":"x"}'), "")
-
-    def test_partial_input_yields_what_is_complete_so_far(self):
-        reader = JsonStringFieldStream("response")
-        self.assertEqual(reader.feed('{"intent":"conversation","respo'), "")
-        self.assertEqual(reader.feed('nse":"Hel'), "Hel")
-        self.assertEqual(reader.feed('lo \\u00'), "lo ")
-        self.assertEqual(reader.feed('e9"}'), "é")
-        self.assertTrue(reader.done)
+from agentforge.orchestration.stream import FLUSH_SECONDS, ReplyStream, clear_stream
 
 
 def chunk(content=None, calls=None, finish=None, usage=None, choices=True, model="reported"):
@@ -93,17 +42,17 @@ class AdapterStreamingTests(IsolatedAsyncioTestCase):
         return adapter
 
     async def test_content_streams_and_the_final_response_matches_the_non_streaming_shape(self):
-        stream = FakeStream([chunk('{"response":"He'), chunk('llo"}'), chunk(finish="stop"),
+        stream = FakeStream([chunk("He"), chunk("llo"), chunk(finish="stop"),
                              chunk(choices=False, usage=NS(prompt_tokens=10, completion_tokens=5))])
         seen = []
         response = await self.adapter(stream).complete([{"role": "user", "content": "x"}], [], on_text=seen.append)
-        self.assertEqual(seen, ['{"response":"He', 'llo"}'])
-        self.assertEqual(response.message, {"role": "assistant", "content": '{"response":"Hello"}'})
+        self.assertEqual(seen, ["He", "llo"])
+        self.assertEqual(response.message, {"role": "assistant", "content": "Hello"})
         self.assertEqual((response.finish_reason, response.model_id), ("stop", "reported"))
         self.assertEqual(response.usage, ModelUsage(10, 5, Decimal("0.00002")))
         self.assertTrue(stream.closed)
         self.assertTrue(self.kwargs["stream"] and self.kwargs["stream_options"] == {"include_usage": True})
-        self.assertEqual(self.kwargs["response_format"], {"type": "json_object"})
+        self.assertNotIn("response_format", self.kwargs)  # the reply is plain text, never a JSON object
         self.assertIs(self.kwargs["store"], False)
 
     async def test_tool_calls_are_reassembled_from_fragments(self):
@@ -117,6 +66,21 @@ class AdapterStreamingTests(IsolatedAsyncioTestCase):
         self.assertEqual(response.message["tool_calls"][0]["function"], {"name": "read_task_input", "arguments": '{"input_kind":"goal"}'})
         self.assertEqual(response.finish_reason, "tool_calls")
 
+    async def test_text_next_to_tool_calls_goes_to_narration_and_is_kept_in_the_message(self):
+        tool = {"type": "function", "function": {"name": "web_search", "parameters": {"type": "object"}}}
+        call = [NS(index=0, id="c1", function=NS(name="web_search", arguments="{}"))]
+        stream = FakeStream([chunk("I'll search."), chunk(calls=call), chunk(finish="tool_calls")])
+        reply, narration = [], []
+        response = await self.adapter(stream).complete([{"role": "user", "content": "x"}], [tool],
+                                                       on_text=reply.append, on_narration=narration.append)
+        self.assertEqual((reply, narration), ([], ["I'll search."]))
+        self.assertEqual(response.message["content"], "I'll search.")
+
+    async def test_the_finish_reason_is_reported_as_the_provider_gave_it(self):
+        for reason in ("stop", "length", "content_filter"):
+            response = await self.adapter(FakeStream([chunk("partial"), chunk(finish=reason)])).complete([], [], on_text=lambda _: None)
+            self.assertEqual(response.finish_reason, reason)
+
     async def test_a_failing_progress_callback_never_fails_the_call(self):
         def broken(_):
             raise RuntimeError("ui failure")
@@ -124,11 +88,13 @@ class AdapterStreamingTests(IsolatedAsyncioTestCase):
         self.assertEqual(response.message["content"], "{}")
         self.assertEqual(response.usage.cost_usd, None)  # no usage reported: cost stays unknown, never guessed
 
-    async def test_a_dropped_connection_is_a_safe_provider_error_and_the_stream_is_closed(self):
+    async def test_a_dropped_connection_is_a_provider_error_with_the_failure_text_and_the_stream_is_closed(self):
         stream = FakeStream([chunk("{"), chunk("}")], fail_at=1)
-        with self.assertRaises(ModelProviderError):
+        with self.assertRaises(ModelProviderError) as caught:
             await self.adapter(stream).complete([], [], on_text=lambda _: None)
         self.assertTrue(stream.closed)
+        self.assertEqual(caught.exception.detail, "connection reset")
+        self.assertFalse(caught.exception.retriable)  # output had begun
 
     async def test_a_stream_that_never_finishes_is_rejected(self):
         with self.assertRaises(ModelProviderError):
@@ -136,10 +102,17 @@ class AdapterStreamingTests(IsolatedAsyncioTestCase):
 
 
 class FakeSessions:
-    """Records each write; mimics `with sessions() as s, s.begin()` and returns the epoch for the upsert."""
+    """In-memory `task_streams` that obeys the statements ReplyStream issues (upsert, fenced update, clear) and records them.
+
+    `row` is the live row ({"epoch", "revision", "kind", "text"}) once something was written; `writes` lists the
+    statement verbs; `last_values` the parameters of the latest write; `history` the row after each change.
+    """
     def __init__(self, fail=False):
-        self.writes, self.epoch, self.fail = [], 0, False
-        self.fail = fail
+        self.writes, self.fail, self.row, self.last_values, self.history = [], fail, None, {}, []
+
+    @property
+    def epoch(self):
+        return self.row["epoch"] if self.row else 0
 
     def __call__(self):
         outer = self
@@ -150,13 +123,26 @@ class FakeSessions:
             def execute(self_inner, statement):
                 if outer.fail:
                     raise RuntimeError("relation task_streams does not exist")
-                text = str(statement)
-                outer.writes.append(text.split()[0])
-                if text.startswith("INSERT"):
-                    outer.epoch += 1
-                    return NS(scalar_one=lambda: outer.epoch)
-                outer.last_values = statement.compile().params
-                return NS()
+                compiled = statement.compile()
+                sql, params, row = str(compiled), compiled.params, outer.row
+                outer.writes.append(sql.split()[0])
+                outer.last_values = params
+                if sql.startswith("INSERT"):
+                    outer.row = {"epoch": 1 if row is None else row["epoch"] + 1, "revision": 0 if row is None else row["revision"] + 1,
+                                 "kind": params["kind"], "text": params["text"]}
+                    outer.history.append(outer.row)
+                    return NS(one=lambda: NS(epoch=outer.row["epoch"], revision=outer.row["revision"]))
+                if row is None:
+                    return NS(rowcount=0)
+                if "task_streams.revision +" in sql:  # clear_stream
+                    outer.row = {**row, "revision": row["revision"] + 1, "kind": params["kind"], "text": params["text"]}
+                    outer.history.append(outer.row)
+                    return NS(rowcount=1)
+                if row["epoch"] != params["epoch_1"] or row["revision"] > params["revision_1"]:
+                    return NS(rowcount=0)  # fenced out by a newer epoch or revision
+                outer.row = {**row, "revision": params["revision"], "kind": params["kind"], "text": params["text"]}
+                outer.history.append(outer.row)
+                return NS(rowcount=1)
         return Session()
 
 
@@ -164,101 +150,76 @@ class ReplyStreamTests(TestCase):
     def stream(self, **kw):
         self.now = 0.0
         sessions = FakeSessions(**kw)
-        return ReplyStream(sessions, uuid4(), "response", clock=lambda: self.now), sessions
+        return ReplyStream(sessions, uuid4(), clock=lambda: self.now), sessions
 
     def test_first_text_opens_an_epoch_and_later_text_is_throttled(self):
         stream, sessions = self.stream()
-        stream.feed('{"intent":"conversation","response":"Hel')
-        self.assertEqual(sessions.writes, ["INSERT", "UPDATE"])            # epoch opened, first text flushed
+        stream.feed("Hel")
+        self.assertEqual(sessions.writes, ["INSERT"])                       # epoch opened, already holding the first text
+        self.assertEqual(sessions.last_values["text"], "Hel")
         self.now += FLUSH_SECONDS / 4
         stream.feed("lo ")
-        self.assertEqual(len(sessions.writes), 2)                           # within the window: buffered only
+        self.assertEqual(len(sessions.writes), 1)                           # within the window: buffered only
         self.now += FLUSH_SECONDS
-        stream.feed('there"}')
-        self.assertEqual(len(sessions.writes), 3)
+        stream.feed("there")
+        self.assertEqual(sessions.writes, ["INSERT", "UPDATE"])
         self.assertEqual(sessions.last_values["text"], "Hello there")
         stream.end()
-        self.assertEqual(len(sessions.writes), 3)                           # nothing left unpublished
+        self.assertEqual(len(sessions.writes), 2)                           # nothing left unpublished
+
+    def test_the_text_is_shown_exactly_as_written_with_no_json_decoding(self):
+        stream, sessions = self.stream()
+        stream.feed('{"summary": "not a field", "text": "a\\nb"}\nline two')
+        self.assertEqual(sessions.last_values["text"], '{"summary": "not a field", "text": "a\\nb"}\nline two')
 
     def test_end_publishes_the_buffered_tail(self):
         stream, sessions = self.stream()
-        stream.feed('{"response":"ab')
+        stream.feed("ab")
         self.now += 0.01
-        stream.feed('cd"}')
+        stream.feed("cd")
         stream.end()
         self.assertEqual(sessions.last_values["text"], "abcd")
 
     def test_a_new_attempt_starts_a_new_epoch_and_forgets_old_text(self):
         stream, sessions = self.stream()
-        stream.feed('{"response":"first')
+        stream.feed("first")
         stream.begin()
         self.now += 1
-        stream.feed('{"response":"second"}')
+        stream.feed("second")
         stream.end()
         self.assertEqual(sessions.writes.count("INSERT"), 2)
         self.assertEqual(sessions.epoch, 2)
         self.assertEqual(sessions.last_values["text"], "second")
 
-    def test_nothing_is_written_when_the_field_is_null_or_a_call_only_uses_tools(self):
+    def test_nothing_is_written_for_empty_or_blank_text(self):
         stream, sessions = self.stream()
-        stream.feed('{"intent":"research","response":null}')
+        stream.begin()
+        stream.feed("")
+        stream.feed("  \n")
         stream.end()
         self.assertEqual(sessions.writes, [])
 
     def test_text_is_capped_like_the_saved_message(self):
         stream, sessions = self.stream()
-        stream.feed('{"response":"' + "x" * (MAX_CHARS + 500))
+        stream.feed("x" * (MAX_ANSWER_CHARS + 500))
         stream.end()
-        self.assertEqual(len(sessions.last_values["text"]), MAX_CHARS)
+        self.assertEqual(len(sessions.last_values["text"]), MAX_ANSWER_CHARS)
+
+    def test_text_is_progress_until_the_call_turns_out_to_be_the_answer(self):
+        stream, sessions = self.stream()
+        stream.begin()
+        stream.feed_narration("The answer")
+        stream.end()
+        self.assertEqual(sessions.row["kind"], "progress")
+        stream.commit_reply()
+        self.assertEqual((sessions.row["kind"], sessions.row["text"]), ("answer", "The answer"))
 
     def test_any_database_failure_switches_streaming_off_without_raising(self):
         stream, sessions = self.stream(fail=True)
-        stream.feed('{"response":"hello"}')
+        stream.feed("hello")
         stream.end()
         self.assertTrue(stream.disabled)
-        stream.feed('{"response":"more"}')  # still silent
+        stream.feed("more")  # still silent
+        stream.commit_reply()
+        stream.discard()
         clear_stream(FakeSessions(fail=True), uuid4())  # cleanup never raises either
-
-
-class RuntimeStreamingTests(IsolatedAsyncioTestCase):
-    async def test_tokens_flow_to_the_sink_per_call_and_the_result_is_unchanged(self):
-        payload = {"status": "PASS", "summary": "Chose to answer directly.", "evidence_ids": ["e1"], "intent": "conversation",
-                   "response": "Hello there", "use_repository": False}
-        text = json.dumps(payload)
-
-        class Model:
-            model_id = "m"
-            def maximum_request_cost(self, messages, tools): return Decimal("0.001")
-            async def complete(self, messages, tools, on_text=None):
-                for start in range(0, len(text), 6):
-                    on_text(text[start:start + 6])
-                return ModelResponse({"role": "assistant", "content": text}, ModelUsage(1, 1, Decimal("0.0001")), "m", "stop")
-
-        events = []
-        sink = NS(begin=lambda: events.append("begin"), feed=lambda piece: events.append(piece), end=lambda: events.append("end"))
-        budget = Budget(max_steps=4, max_tool_calls=4, max_llm_cost_usd=0.2, max_wall_time_sec=60)
-        scope = NS(budget=budget, allowed_tools=("read_task_input",))
-        budgets = NS(check_active=lambda _id: None, authorize_operation=lambda *a, **k: None, record_usage=lambda *a, **k: None)
-        reservation = NS(id=uuid4(), run_id=uuid4(), deadline=__import__("datetime").datetime.now(__import__("datetime").timezone.utc) + __import__("datetime").timedelta(seconds=60))
-        result = await ChildRuntime().run(definition=load_builtin("intent-router", 3), ctx=NS(task_id=uuid4()), scope=scope,
-            model=Model(), gateway=NS(schemas=lambda: []), budgets=budgets, reservation=reservation,
-            messages=[{"role": "user", "content": "x"}], resources=NS(verify_references=AsyncMock()), reauthorize=AsyncMock(), stream=sink)
-        self.assertEqual(events[0], "begin")
-        self.assertEqual(events[-1], "end")
-        self.assertEqual(read("".join(events[1:-1])), "Hello there")
-        self.assertEqual(result.status, "PASS")
-
-    async def test_models_without_streaming_support_still_work_when_no_sink_is_given(self):
-        class Plain:
-            model_id = "m"
-            def maximum_request_cost(self, messages, tools): return Decimal("0.001")
-            async def complete(self, messages, tools):  # note: no on_text parameter
-                return ModelResponse({"role": "assistant", "content": json.dumps({"status": "PARTIAL", "summary": "ok"})}, ModelUsage(1, 1, Decimal("0")), "m", "stop")
-        import datetime
-        budget = Budget(max_steps=4, max_tool_calls=4, max_llm_cost_usd=0.2, max_wall_time_sec=60)
-        reservation = NS(id=uuid4(), run_id=uuid4(), deadline=datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=60))
-        result = await ChildRuntime().run(definition=load_builtin("verifier", 3).model_copy(update={"output_schema_id": "research_result_v1"}),
-            ctx=NS(task_id=uuid4()), scope=NS(budget=budget, allowed_tools=()), model=Plain(), gateway=NS(schemas=lambda: []),
-            budgets=NS(check_active=lambda _i: None, authorize_operation=lambda *a, **k: None, record_usage=lambda *a, **k: None),
-            reservation=reservation, messages=[], resources=NS(verify_references=AsyncMock()), reauthorize=AsyncMock())
-        self.assertEqual(result.status, "PARTIAL")

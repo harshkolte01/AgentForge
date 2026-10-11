@@ -35,7 +35,7 @@ class EstimateTests(TestCase):
     def test_every_turn_starts_with_a_real_but_modest_overhead(self):
         overhead = entry_overhead_tokens()
         self.assertGreater(overhead, 1000)  # platform rules, role prompt and tool schemas are not free
-        self.assertLess(overhead, 8000)
+        self.assertLess(overhead, 12000)  # nineteen tool schemas plus the prompts; still well inside a 32K window
 
     def test_levels_switch_at_the_documented_thresholds(self):
         self.assertEqual([level_for(p) for p in (0, NOTICE_PERCENT - 0.1, NOTICE_PERCENT, HIGH_PERCENT - 0.1, HIGH_PERCENT, 100)],
@@ -48,17 +48,19 @@ class BuildStatusTests(TestCase):
         self.assertEqual((result.history_tokens, result.messages_total, result.last_run), (0, 0, None))
         self.assertEqual((result.used_tokens, result.used_basis), (result.baseline_tokens, "next_turn"))
         self.assertEqual(result.level, "ok")
-        self.assertEqual(result.history_budget_tokens, estimate_tokens(CONTEXT_BUDGET))
+        self.assertEqual(result.history_budget_tokens, CONTEXT_BUDGET // 3)
 
     def test_history_adds_to_the_starting_context(self):
         result = status(usage(history_chars=4000))
         self.assertEqual(result.history_tokens, 1000)
         self.assertEqual(result.used_tokens, result.baseline_tokens + 1000)
 
-    def test_the_latest_run_peak_wins_when_it_is_larger_and_is_reported_as_measured(self):
+    def test_the_latest_run_peak_is_separate_from_the_next_message(self):
         last = {"peak_input_tokens": 60_000, "model_calls": 9, "compacted_results": 2}
         result = status(usage(last_run=last))
-        self.assertEqual((result.used_tokens, result.used_basis, result.percent, result.level), (60_000, "last_run_peak", 60.0, "notice"))
+        self.assertEqual((result.used_tokens, result.used_basis), (result.baseline_tokens + result.history_tokens, "next_turn"))
+        self.assertEqual(result.last_run.peak_input_tokens, 60_000)
+        self.assertEqual(result.level, "ok")
         self.assertEqual(result.last_run.compacted_results, 2)
 
     def test_a_small_peak_never_hides_the_starting_context(self):
@@ -66,7 +68,7 @@ class BuildStatusTests(TestCase):
         self.assertEqual(result.used_basis, "next_turn")
 
     def test_percent_is_capped_and_high_levels_are_flagged(self):
-        result = status(usage(last_run={"peak_input_tokens": 250_000, "model_calls": 1, "compacted_results": 0}))
+        result = status(usage(history_tokens=250_000))
         self.assertEqual((result.percent, result.level), (100.0, "high"))
 
     def test_without_a_configured_window_the_status_is_unknown_not_zero_percent_ok(self):
@@ -138,7 +140,9 @@ class RouteTests(TestCase):
         with patch("agentforge.api.routes_context.SessionRepository") as repository:
             repository.return_value.context_usage.return_value = usage(last_run=last)
             body = self.client().get(f"/api/v1/context?session_id={uuid4()}").json()
-        self.assertEqual((body["used_tokens"], body["used_basis"], body["percent"]), (30_000, "last_run_peak", 30.0))
+        self.assertEqual(body["used_tokens"], body["baseline_tokens"] + body["history_tokens"])
+        self.assertEqual(body["used_basis"], "next_turn")
+        self.assertEqual(body["last_run"]["peak_input_tokens"], 30_000)
         self.assertEqual(body["last_run"]["model_calls"], 4)
 
     def test_an_unknown_or_foreign_session_is_not_found(self):

@@ -250,6 +250,15 @@ class CodingRepository:
                 raise ScopeDenied("coding evidence outside task")
             return {**row.evidence_json, "id": str(row.id), "kind": row.kind, "revision": row.revision}
 
+    def task_inputs(self, ctx):
+        """Complete immutable inputs for this owned task, separate from short planning previews."""
+        with self.session_factory() as session:
+            task = self._task(session, ctx)
+            grants = task.permissions_json or {}
+            return {"untrusted_task_inputs": True, "goal": task.goal,
+                    "attachments": grants.get("attachments", []),
+                    "history": grants.get("session_context", {})}
+
     def verify_references(self, ctx, *, evidence_ids, artifact_ids):
         with self.session_factory() as session:
             self._task(session, ctx)

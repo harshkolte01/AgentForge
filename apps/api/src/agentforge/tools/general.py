@@ -6,15 +6,17 @@ this surface. Every page has durable consumption evidence checked independently.
 from decimal import Decimal
 import hashlib
 import json
+import re
 from uuid import uuid4
+from agentforge.contracts.artifact_names import FORMATS, artifact_filename
 from agentforge.integrations.artifact_storage import ArtifactStorage
 from agentforge.repositories.research_inputs import ResearchInputRepository
 from agentforge.subagents.scope import ScopeDenied
 from agentforge.tools.contracts import ToolOutcome
+from agentforge.tools.errors import ToolError
 
-FORMATS = {"text": ("general-output.txt", "text/plain; charset=utf-8"),
-    "markdown": ("general-report.md", "text/markdown; charset=utf-8"),
-    "csv": ("general-table.csv", "text/csv; charset=utf-8")}
+# A signed number cannot be a spreadsheet formula, so it is left alone when a cell is escaped.
+NUMBER = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
 
 
 def register_general(catalog, sessions, settings):
@@ -71,18 +73,21 @@ def register_general(catalog, sessions, settings):
             stream = io.StringIO(newline="")
             writer = csv.writer(stream)
             for row in rows:
-                writer.writerow(["'" + cell if cell.lstrip().startswith(("=", "+", "-", "@", "\t", "\r")) else cell for cell in row])
+                writer.writerow(["'" + cell if cell.lstrip().startswith(("=", "+", "-", "@", "\t", "\r"))
+                                 and not NUMBER.fullmatch(cell.strip()) else cell for cell in row])
             content = stream.getvalue()
         data = content.encode()
         if len(data) > 120000:
-            raise ScopeDenied("artifact exceeds bounded output size")
+            # Nothing was stored, so this is a definite no-op the model can correct, not an unknown outcome.
+            raise ToolError("INVALID_ARGUMENT", "The content is larger than 120 KB. Save a shorter version, or split it into parts.")
         existing = repository.artifact_for_operation(execution.task, execution.operation_key)
         if existing is None:
             artifact_id = uuid4()
             key, digest = storage.write(task_id=execution.task.task_id, artifact_id=artifact_id, content=data)
             if execution.authorize_current:
                 await execution.authorize_current()
-            filename, mime = FORMATS[args.format]
+            filename = artifact_filename(args.format, args.filename, args.title)
+            mime = FORMATS[args.format][1]
             existing = repository.add_artifact(execution.task, artifact_id=artifact_id,
                 operation_key=execution.operation_key, storage_key=key, sha256=digest,
                 byte_size=len(data), metadata={"title": args.title, "format": args.format},

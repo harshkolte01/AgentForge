@@ -1,16 +1,15 @@
 """Turn a conversation's measured usage into the context status shown beside the composer.
 
-Each turn starts a fresh agent that is given a bounded digest of the conversation, so the window is
-filled by two things: what every turn starts with (instructions, tool schemas and that digest) and
-how far the agent's own working context grew during the latest run (tool results). The headline is
-the larger of the two. Starting context is estimated (about four characters per token); the latest
-run's peak is the provider's reported input size for its largest request.
+Each turn starts a fresh agent with a bounded conversation extract. Its estimated starting input
+is separate from the previous run's measured peak; adding the two would double count different
+requests. Estimates use the same text rules as the runtime, with protocol/tool overhead included.
 """
-import json
 import math
 from functools import lru_cache
 
 from agentforge.contracts.context import ContextStatus, LastRunContext
+from agentforge.llm.limits import input_limit
+from agentforge.llm.models import conservative_input_tokens
 
 CHARS_PER_TOKEN = 4
 NOTICE_PERCENT = 50
@@ -27,21 +26,20 @@ def estimate_tokens(characters: int) -> int:
 
 @lru_cache(maxsize=1)
 def entry_overhead_tokens() -> int:
-    """Tokens every turn begins with before any conversation: the platform rules, the front-door
-    agent's instructions and the schemas of the tools it is offered."""
+    """Tokens every turn begins with before any conversation: the platform rules, the agent's
+    instructions and the schemas of the tools it is offered."""
     from agentforge.tools.catalog import DESCRIPTIONS, clean_schema
     from agentforge.tools.contracts import ARGUMENT_MODELS
 
-    from .prompt_builder import PLATFORM_INSTRUCTIONS
-    from .registry import load_builtin
-    from .runtime import submit_tool
+    from .prompt_builder import compile_chat
+    from types import SimpleNamespace
+    from .registry import AGENT_VERSION, load_builtin
 
-    definition = load_builtin("intent-router", 3)
-    tools = [{"name": name, "description": DESCRIPTIONS[name], "parameters": clean_schema(ARGUMENT_MODELS[name].model_json_schema())}
+    definition = load_builtin("agent", AGENT_VERSION)
+    tools = [{"type": "function", "function": {"name": name, "description": DESCRIPTIONS[name], "parameters": clean_schema(ARGUMENT_MODELS[name].model_json_schema())}}
              for name in definition.allowed_tools]
-    tools.append(submit_tool(definition))
-    text = PLATFORM_INSTRUCTIONS + definition.system_prompt + json.dumps(tools, ensure_ascii=False)
-    return estimate_tokens(len(text) + BRIEF_OVERHEAD_CHARS)
+    messages = compile_chat(definition, SimpleNamespace(context_refs=()), {}, definition.allowed_tools, [])
+    return conservative_input_tokens(messages, tools)
 
 
 def level_for(percent: float) -> str:
@@ -51,18 +49,23 @@ def level_for(percent: float) -> str:
 def build_status(*, model, provider, window, max_output, usage, history_budget_chars) -> ContextStatus:
     """`usage` is SessionRepository.context_usage output (or EMPTY_USAGE for a conversation not yet created)."""
     baseline = entry_overhead_tokens()
-    history = estimate_tokens(usage["history_chars"]) if usage["messages_total"] else 0
+    history = usage.get("history_tokens", estimate_tokens(usage["history_chars"])) if usage["messages_total"] else 0
     start = baseline + history
     last = usage.get("last_run")
-    peak = last["peak_input_tokens"] if last else 0
-    used = max(start, peak)
-    percent = round(min(100.0, used / window * 100), 1) if window else 0.0
+    coverage = usage.get("coverage", {})
+    used = start
+    available = input_limit(model, window, max_output)
+    percent = round(min(100.0, used / available * 100), 1) if available else 0.0
     omitted = max(0, usage["messages_total"] - usage["messages_in_full"] - usage["messages_condensed"])
     return ContextStatus(
         model=model, provider=provider, window_tokens=window, max_output_tokens=max_output,
-        level=level_for(percent) if window else "unknown", percent=percent, used_tokens=used,
-        used_basis="last_run_peak" if peak > start else "next_turn",
-        baseline_tokens=baseline, history_tokens=history, history_budget_tokens=estimate_tokens(history_budget_chars),
+        input_limit_tokens=available,
+        level=level_for(percent) if available else "unknown", percent=percent, used_tokens=used,
+        used_basis="next_turn",
+        baseline_tokens=baseline, history_tokens=history, history_budget_tokens=math.ceil(history_budget_chars / 3),
         last_run=LastRunContext(**last) if last else None,
         messages_total=usage["messages_total"], messages_in_full=usage["messages_in_full"],
-        messages_condensed=usage["messages_condensed"], messages_omitted=omitted)
+        messages_condensed=usage["messages_condensed"], messages_omitted=omitted,
+        summary_through_ordinal=coverage.get("summary_through_ordinal", 0),
+        uncovered_turns=coverage.get("uncovered_turns", 0), retrieval_available=coverage.get("retrieval_available", False),
+        snapshot_revision=coverage.get("revision", 0))

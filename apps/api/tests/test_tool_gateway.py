@@ -1,4 +1,6 @@
-"""Tool gateway: bound identifiers, precise error feedback, duplicate refusal, limits and concurrency."""
+"""Tool gateway: bound identifiers, precise error feedback, effect-unknown handling, concurrency and the ledger.
+
+The gateway does not count, cap or deduplicate calls: a model may repeat a call or make as many as it likes."""
 import asyncio
 import json
 from decimal import Decimal
@@ -12,10 +14,10 @@ from agentforge.subagents.scope import ScopeDenied
 from agentforge.tools.catalog import ToolCatalog
 from agentforge.tools.contracts import ToolOutcome
 from agentforge.tools.errors import ToolError
-from agentforge.tools.gateway import MAX_CONSECUTIVE_ERRORS, ToolGateway, UnknownToolOutcome
+from agentforge.tools.gateway import ToolGateway, UnknownToolOutcome
 
 REPO, SHA = "owner/name", "a" * 40
-ALL = ("read_repo_file", "list_repo_files", "read_sandbox_file", "write_sandbox_file", "get_test_results")
+ALL = ("read_repo_file", "list_repo_files", "read", "write", "grep")
 
 
 class FakeCalls:
@@ -62,7 +64,7 @@ def ok(**data):
     return ToolOutcome(status="ok", data=data, cost_usd=Decimal(0))
 
 
-def make(handlers=None, *, max_tool_calls=20, bound=None):
+def make(handlers=None, *, bound=None):
     handlers = handlers or {}
     catalog = ToolCatalog()
     for name in ALL:
@@ -72,8 +74,7 @@ def make(handlers=None, *, max_tool_calls=20, bound=None):
     calls, budgets = FakeCalls(), FakeBudgets()
     gateway = ToolGateway(
         catalog=catalog, calls=calls, budgets=budgets, resources=FakeResources(bound), reauthorize=AsyncMock(),
-        ctx=NS(task_id=uuid4()), scope=NS(allowed_tools=ALL, permissions=NS(),
-            budget=Budget(max_steps=10, max_tool_calls=max_tool_calls)),
+        ctx=NS(task_id=uuid4()), scope=NS(allowed_tools=ALL, permissions=NS(), budget=Budget()),
         run_id=uuid4(), reservation_id=uuid4())
     return gateway, calls, budgets
 
@@ -93,8 +94,7 @@ class GatewayTests(IsolatedAsyncioTestCase):
         schema = {item["function"]["name"]: item["function"]["parameters"] for item in gateway.schemas()}
         self.assertEqual(set(schema["read_repo_file"]["properties"]), {"path", "line_start", "max_lines"})
         self.assertEqual(schema["read_repo_file"]["required"], ["path"])
-        self.assertIn("run_id", schema["get_test_results"]["properties"])
-        self.assertNotIn("task_id", schema["get_test_results"]["properties"])  # always the task's own
+        self.assertEqual(set(schema["read"]["properties"]), {"path", "offset", "limit"})  # nothing is bound for workspace tools
         outcome = await gateway.execute("read_repo_file", args(path="a.py"), "c1")
         self.assertEqual(outcome.status, "ok")
         self.assertEqual((outcome.data["echo"]["repo_id"], outcome.data["echo"]["ref"]), (REPO, SHA))
@@ -144,15 +144,14 @@ class GatewayTests(IsolatedAsyncioTestCase):
         gateway, _, _ = make()
         self.assertEqual((await gateway.execute("rm_rf", "{}", "c1")).error_code, "TOOL_UNAVAILABLE")
         gateway.scope = NS(**{**gateway.scope.__dict__, "allowed_tools": ("read_repo_file",)})
-        self.assertEqual((await gateway.execute("git_diff", "{}", "c2")).error_code, "TOOL_UNAVAILABLE")
+        self.assertEqual((await gateway.execute("bash", "{}", "c2")).error_code, "TOOL_UNAVAILABLE")  # real tool, not installed
         self.assertEqual((await gateway.execute("list_repo_files", "{}", "c3")).error_code, "SCOPE_DENIED")
 
     async def test_a_typed_adapter_error_is_definite_even_for_an_effectful_tool(self):
         async def reject(args, ctx):
             raise ToolError("STALE_WRITE", "Read the file again.")
-        gateway, calls, budgets = make({"write_sandbox_file": reject})
-        outcome = await gateway.execute("write_sandbox_file",
-            args(sandbox_id="s", path="a.txt", content="SECRET-BODY"), "c1")
+        gateway, calls, budgets = make({"write": reject})
+        outcome = await gateway.execute("write", args(path="a.txt", content="SECRET-BODY"), "c1")
         self.assertEqual((outcome.status, outcome.error_code, outcome.error_detail), ("error", "STALE_WRITE", "Read the file again."))
         self.assertEqual(outcome.cost_usd, Decimal(0))
         self.assertEqual(calls.last()["status"], "FAILED")  # not UNKNOWN: nothing happened
@@ -164,9 +163,9 @@ class GatewayTests(IsolatedAsyncioTestCase):
     async def test_an_untyped_failure_of_an_effectful_tool_stops_the_run_as_unknown(self):
         async def explode(args, ctx):
             raise RuntimeError("provider said something private")
-        gateway, calls, budgets = make({"write_sandbox_file": explode})
+        gateway, calls, budgets = make({"write": explode})
         with self.assertRaises(UnknownToolOutcome) as caught:
-            await gateway.execute("write_sandbox_file", args(sandbox_id="s", path="a.txt", content="x"), "c1")
+            await gateway.execute("write", args(path="a.txt", content="x"), "c1")
         self.assertNotIn("private", str(caught.exception))
         self.assertEqual(calls.last()["status"], "UNKNOWN")
         self.assertIsNone(budgets.usage[-1])  # unknown charge keeps the cap
@@ -179,19 +178,30 @@ class GatewayTests(IsolatedAsyncioTestCase):
         self.assertEqual(outcome.error_code, "TOOL_FAILED")
         self.assertIsNone(outcome.error_detail)
 
-    async def test_an_identical_successful_read_is_refused_until_something_could_have_changed(self):
-        gateway, calls, _ = make()
-        first = await gateway.execute("read_repo_file", args(path="a.py"), "c1")
-        again = await gateway.execute("read_repo_file", args(path="a.py", line_start=1), "c2")  # same after defaults
-        self.assertEqual(first.status, "ok")
-        self.assertEqual((again.status, again.error_code), ("error", "DUPLICATE_CALL"))
-        self.assertIn("call number 1", again.error_detail)
-        self.assertEqual((await gateway.execute("read_repo_file", args(path="b.py"), "c3")).status, "ok")
-        await gateway.execute("write_sandbox_file", args(sandbox_id="s", path="a.py", content="x"), "c4")
-        self.assertEqual((await gateway.execute("read_repo_file", args(path="a.py"), "c5")).status, "ok")
+    async def test_an_identical_call_is_run_every_time_it_is_made(self):
+        runs = []
+        async def counting(args, ctx):
+            runs.append(args.path)
+            return ok(done=True)
+        gateway, calls, _ = make({"read_repo_file": counting})
+        for index in range(30):
+            outcome = await gateway.execute("read_repo_file", args(path="a.py"), f"c{index}")
+            self.assertEqual(outcome.status, "ok")
+        self.assertEqual(len(runs), 30)  # no repeat refusal and no call limit
+        self.assertEqual(len(calls.outcomes), 30)
         self.assertEqual(calls.last()["status"], "SUCCEEDED")
 
-    async def test_duplicates_do_not_count_as_failures_and_failed_reads_can_be_retried(self):
+    async def test_failing_calls_are_never_cut_off_by_a_failure_streak(self):
+        async def fail(args, ctx):
+            raise ToolError("FILE_NOT_FOUND", "no such file")
+        gateway, _, _ = make({"read_repo_file": fail})
+        for index in range(12):
+            outcome = await gateway.execute("read_repo_file", args(path=f"{index}.py"), f"c{index}")
+            self.assertEqual((outcome.status, outcome.error_code), ("error", "FILE_NOT_FOUND"))
+        for gone in ("consecutive_errors", "calls_left", "forget", "repeated_failure_notice"):
+            self.assertFalse(hasattr(gateway, gone), gone)
+
+    async def test_a_failed_read_can_be_retried_and_succeeds(self):
         attempts = []
         async def flaky(args, ctx):
             attempts.append(1)
@@ -201,45 +211,6 @@ class GatewayTests(IsolatedAsyncioTestCase):
         gateway, _, _ = make({"read_repo_file": flaky})
         self.assertEqual((await gateway.execute("read_repo_file", args(path="a.py"), "c1")).status, "error")
         self.assertEqual((await gateway.execute("read_repo_file", args(path="a.py"), "c2")).status, "ok")
-        self.assertEqual((await gateway.execute("read_repo_file", args(path="a.py"), "c3")).error_code, "DUPLICATE_CALL")
-        self.assertEqual(gateway.consecutive_errors, 0)
-
-    async def test_a_call_whose_result_was_compacted_away_may_be_repeated(self):
-        gateway, _, _ = make()
-        await gateway.execute("read_repo_file", args(path="a.py"), "c1")
-        await gateway.execute("read_repo_file", args(path="b.py"), "c2")
-        self.assertEqual((await gateway.execute("read_repo_file", args(path="a.py"), "c3")).error_code, "DUPLICATE_CALL")
-        gateway.forget(["c1", "unknown-id"])
-        self.assertEqual((await gateway.execute("read_repo_file", args(path="a.py"), "c4")).status, "ok")
-        self.assertEqual((await gateway.execute("read_repo_file", args(path="b.py"), "c5")).error_code, "DUPLICATE_CALL")
-
-    async def test_effectful_calls_are_never_deduplicated(self):
-        gateway, _, _ = make()
-        for index in range(2):
-            outcome = await gateway.execute("write_sandbox_file", args(sandbox_id="s", path="a.py", content="x"), f"c{index}")
-            self.assertEqual(outcome.status, "ok")
-
-    async def test_the_tool_limit_returns_an_error_instead_of_aborting_the_run(self):
-        gateway, calls, _ = make(max_tool_calls=2)
-        await gateway.execute("read_repo_file", args(path="a.py"), "c1")
-        await gateway.execute("read_repo_file", args(path="b.py"), "c2")
-        self.assertEqual(gateway.calls_left, 0)
-        outcome = await gateway.execute("read_repo_file", args(path="c.py"), "c3")
-        self.assertEqual(outcome.error_code, "TOOL_LIMIT_REACHED")
-        self.assertEqual(calls.last()["status"], "BLOCKED")
-
-    async def test_consecutive_failures_are_counted_noticed_and_reset_by_success(self):
-        async def fail(args, ctx):
-            raise ToolError("FILE_NOT_FOUND", "no such file")
-        gateway, _, _ = make({"read_repo_file": fail})
-        for index in range(3):
-            await gateway.execute("read_repo_file", args(path=f"{index}.py"), f"c{index}")
-        self.assertEqual(gateway.consecutive_errors, 3)
-        self.assertIn("failed 3 times", gateway.repeated_failure_notice("read_repo_file"))
-        self.assertIsNone(gateway.repeated_failure_notice("list_repo_files"))
-        await gateway.execute("list_repo_files", args(), "ok1")
-        self.assertEqual(gateway.consecutive_errors, 0)
-        self.assertLess(gateway.consecutive_errors, MAX_CONSECUTIVE_ERRORS)
 
     async def test_independent_reads_overlap_while_effects_run_one_at_a_time(self):
         running = {"now": 0, "peak": 0}
@@ -249,11 +220,11 @@ class GatewayTests(IsolatedAsyncioTestCase):
             await asyncio.sleep(0.03)
             running["now"] -= 1
             return ok()
-        gateway, _, _ = make({"read_repo_file": slow, "write_sandbox_file": slow})
+        gateway, _, _ = make({"read_repo_file": slow, "write": slow})
         await asyncio.gather(*(gateway.execute("read_repo_file", args(path=f"{i}.py"), f"r{i}") for i in range(4)))
         self.assertGreaterEqual(running["peak"], 2)
         running["peak"] = 0
-        await asyncio.gather(*(gateway.execute("write_sandbox_file", args(sandbox_id="s", path=f"{i}.py", content="x"), f"w{i}")
+        await asyncio.gather(*(gateway.execute("write", args(path=f"{i}.py", content="x"), f"w{i}")
                                for i in range(4)))
         self.assertEqual(running["peak"], 1)
 
@@ -269,7 +240,7 @@ class GatewayTests(IsolatedAsyncioTestCase):
 
 
 class PaidToolBudgetTests(IsolatedAsyncioTestCase):
-    """The stress-test failure: six paid searches requested at once overdrew a stage's slice and aborted the run."""
+    """Paid tools still run one at a time so recorded usage stays attributable; the gateway never rejects for spend."""
 
     def setUp(self):
         patcher = patch("agentforge.tools.gateway.authorize_tool")
@@ -295,22 +266,19 @@ class PaidToolBudgetTests(IsolatedAsyncioTestCase):
         gateway, _ = self.paid_gateway(slow)
         self.assertFalse(gateway.is_parallel_safe("read_repo_file"))  # paid
         self.assertTrue(gateway.is_parallel_safe("list_repo_files"))  # free read
-        self.assertFalse(gateway.is_parallel_safe("write_sandbox_file"))  # effect
-        self.assertEqual(gateway.max_tool_cost, Decimal("0.02"))
+        self.assertFalse(gateway.is_parallel_safe("write"))  # effect
         await asyncio.gather(*(gateway.execute("read_repo_file", args(path=f"{i}.py"), f"p{i}") for i in range(4)))
         self.assertEqual(running["peak"], 1)
 
-    async def test_running_out_of_budget_is_an_outcome_the_model_can_act_on_not_an_abort(self):
+    async def test_a_refusal_from_the_budget_service_aborts_the_call_and_is_recorded_as_blocked(self):
         from agentforge.subagents.budget import BudgetExceeded
         class Refusing(FakeBudgets):
             def authorize_operation(self, *a, **k):
                 raise BudgetExceeded("child_budget_exceeded")
         gateway, calls = self.paid_gateway(lambda *a: None, budgets=Refusing())
-        outcome = await gateway.execute("read_repo_file", args(path="a.py"), "c1")
-        self.assertEqual((outcome.status, outcome.error_code), ("error", "BUDGET_EXCEEDED"))
-        self.assertIn("Submit what you have", outcome.error_detail)
-        self.assertTrue(gateway.budget_exhausted)
-        self.assertEqual(calls.last()["status"], "BLOCKED")
+        with self.assertRaises(BudgetExceeded):
+            await gateway.execute("read_repo_file", args(path="a.py"), "c1")
+        self.assertEqual((calls.last()["status"], calls.last()["error_code"]), ("BLOCKED", "BUDGET_EXCEEDED"))
 
     async def test_a_finished_or_cancelled_run_still_aborts(self):
         from agentforge.subagents.budget import BudgetExceeded
@@ -320,4 +288,3 @@ class PaidToolBudgetTests(IsolatedAsyncioTestCase):
         gateway, _ = self.paid_gateway(lambda *a: None, budgets=Settled())
         with self.assertRaises(BudgetExceeded):
             await gateway.execute("read_repo_file", args(path="a.py"), "c1")
-        self.assertFalse(gateway.budget_exhausted)

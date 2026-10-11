@@ -1,4 +1,4 @@
-"""Model adapter: request shape, retries that cost nothing, safe error codes and streamed results."""
+"""Model adapter: request shape, retries that cost nothing, error codes that carry the provider's own message, streaming."""
 from decimal import Decimal
 from types import SimpleNamespace as NS
 from unittest import IsolatedAsyncioTestCase, TestCase
@@ -6,16 +6,18 @@ from unittest import IsolatedAsyncioTestCase, TestCase
 import httpx
 import openai
 
-from agentforge.llm.models import SUBMIT_RESULT, ModelContextLimit, ModelProviderError, ModelRates
+from agentforge.llm import models
+from agentforge.llm.models import ModelContextLimit, ModelProviderError, ModelRates, provider_detail, redact
 from agentforge.llm.openai_adapter import MAX_RETRY_WAIT_SEC, OpenAIAdapter
 
 REQUEST = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
 TOOL = {"type": "function", "function": {"name": "read_repo_file", "parameters": {"type": "object"}}}
 MESSAGES = [{"role": "user", "content": "hi"}]
+PROVIDER_TEXT = "You exceeded your current quota, please check your plan and billing details."
 
 
-def status_error(cls, status, body=None, headers=None):
-    return cls("provider text that must never surface", response=httpx.Response(status, request=REQUEST, headers=headers or {}), body=body)
+def status_error(cls, status, body=None, headers=None, text=PROVIDER_TEXT):
+    return cls(text, response=httpx.Response(status, request=REQUEST, headers=headers or {}), body=body)
 
 
 def completion(message=None, finish="stop"):
@@ -55,15 +57,15 @@ class RequestShapeTests(IsolatedAsyncioTestCase):
         self.assertEqual((request["tool_choice"], request["parallel_tool_calls"]), ("auto", True))
         self.assertIs(request["store"], False)
 
-    async def test_without_tools_the_reply_is_requested_as_a_json_object(self):
+    async def test_without_tools_the_reply_is_plain_text_not_a_json_object(self):
         model, completions, _ = adapter([completion()])
         await model.complete(MESSAGES, [])
-        self.assertEqual(completions.requests[0]["response_format"], {"type": "json_object"})
+        self.assertNotIn("response_format", completions.requests[0])
         self.assertNotIn("tools", completions.requests[0])
 
     async def test_a_forced_tool_choice_and_a_disabled_parallel_flag_are_passed_through(self):
         model, completions, _ = adapter([completion()], parallel_tool_calls=False)
-        forced = {"type": "function", "function": {"name": SUBMIT_RESULT}}
+        forced = {"type": "function", "function": {"name": "read_repo_file"}}
         await model.complete(MESSAGES, [TOOL], tool_choice=forced)
         request = completions.requests[0]
         self.assertEqual((request["tool_choice"], request["parallel_tool_calls"]), (forced, False))
@@ -101,13 +103,15 @@ class RetryTests(IsolatedAsyncioTestCase):
         await model.complete(MESSAGES, [TOOL])
         self.assertEqual(len(completions.requests), 3)
 
-    async def test_retries_stop_at_the_limit_with_a_stable_code_and_no_provider_text(self):
+    async def test_retries_stop_at_the_limit_with_a_stable_code_and_the_providers_own_message(self):
         model, completions, _ = adapter([status_error(openai.RateLimitError, 429)] * 3, max_retries=2)
         with self.assertRaises(ModelProviderError) as caught:
             await model.complete(MESSAGES, [TOOL])
         self.assertEqual(len(completions.requests), 3)
         self.assertEqual((caught.exception.code, caught.exception.retriable), ("RATE_LIMIT", True))
-        self.assertNotIn("provider text", str(caught.exception))
+        self.assertEqual(str(caught.exception), "model rate limited")  # the stable text stays free of provider content
+        self.assertEqual(caught.exception.detail, f"429: {PROVIDER_TEXT}")
+        self.assertEqual(caught.exception.shown, f"429: {PROVIDER_TEXT}")
 
     async def test_retries_can_be_switched_off(self):
         model, completions, _ = adapter([status_error(openai.RateLimitError, 429)], max_retries=0)
@@ -128,10 +132,12 @@ class RetryTests(IsolatedAsyncioTestCase):
                 await model.complete(MESSAGES, [TOOL])
             self.assertEqual((caught.exception.code, len(completions.requests)), (code, 1))
 
-    async def test_a_context_overflow_becomes_the_context_limit_error(self):
-        model, _, _ = adapter([status_error(openai.BadRequestError, 400, body={"code": "context_length_exceeded"})])
-        with self.assertRaises(ModelContextLimit):
+    async def test_a_context_overflow_becomes_the_context_limit_error_with_the_providers_words(self):
+        overflow = "This model's maximum context length is 128000 tokens. However, your messages resulted in 131000 tokens."
+        model, _, _ = adapter([status_error(openai.BadRequestError, 400, body={"code": "context_length_exceeded"}, text=overflow)])
+        with self.assertRaises(ModelContextLimit) as caught:
             await model.complete(MESSAGES, [TOOL])
+        self.assertEqual(str(caught.exception), f"400: {overflow}")
 
     async def test_an_empty_completion_is_a_provider_error(self):
         model, _, _ = adapter([NS(choices=[], usage=None, model="m")])
@@ -170,26 +176,27 @@ def fragment(index, ident=None, name=None, arguments=None):
 
 
 class StreamingTests(IsolatedAsyncioTestCase):
-    async def test_submit_result_arguments_stream_as_the_reply_but_narration_does_not(self):
+    async def test_text_beside_tool_calls_streams_as_narration_and_tool_arguments_never_stream(self):
         stream = FakeStream([
-            chunk("Let me think. "),
-            chunk(calls=fragment(0, "s1", SUBMIT_RESULT, '{"summary":"He')),
-            chunk(calls=fragment(0, None, None, 'llo"}')),
+            chunk("Let me look. "),
+            chunk(calls=fragment(0, "c1", "read_repo_file", '{"path":')),
+            chunk(calls=fragment(0, None, None, '"a"}')),
             chunk(finish="tool_calls"),
         ])
         model, _, _ = adapter([stream])
-        shown = []
-        response = await model.complete(MESSAGES, [TOOL], on_text=shown.append)
-        self.assertEqual(shown, ['{"summary":"He', 'llo"}'])  # tools were offered: content is narration
-        self.assertEqual(response.message["tool_calls"][0]["function"]["arguments"], '{"summary":"Hello"}')
-        self.assertEqual(response.message["content"], "Let me think. ")
+        reply, narration = [], []
+        response = await model.complete(MESSAGES, [TOOL], on_text=reply.append, on_narration=narration.append)
+        self.assertEqual((reply, narration), ([], ["Let me look. "]))  # tools were offered: content is a note, not the answer
+        self.assertEqual(response.message["tool_calls"][0]["function"]["arguments"], '{"path":"a"}')
+        self.assertEqual(response.message["content"], "Let me look. ")
 
-    async def test_other_tool_arguments_are_never_shown_as_the_reply(self):
-        stream = FakeStream([chunk(calls=fragment(0, "c1", "read_repo_file", '{"path":"a"}')), chunk(finish="tool_calls")])
+    async def test_without_tools_the_text_streams_as_the_reply(self):
+        stream = FakeStream([chunk("Hel"), chunk("lo"), chunk(finish="stop")])
         model, _, _ = adapter([stream])
-        shown = []
-        await model.complete(MESSAGES, [TOOL], on_text=shown.append)
-        self.assertEqual(shown, [])
+        reply, narration = [], []
+        response = await model.complete(MESSAGES, [], on_text=reply.append, on_narration=narration.append)
+        self.assertEqual((reply, narration), (["Hel", "lo"], []))
+        self.assertEqual(response.message["content"], "Hello")
 
     async def test_a_rate_limit_before_any_output_is_retried_but_a_midstream_failure_is_not(self):
         early, later = status_error(openai.RateLimitError, 429), status_error(openai.RateLimitError, 429)
@@ -205,3 +212,79 @@ class StreamingTests(IsolatedAsyncioTestCase):
         self.assertEqual(len(completions.requests), 1)  # output had begun, so it is not repeated
         self.assertFalse(caught.exception.retriable)
         self.assertTrue(broken.closed)
+
+
+class ClassifyDetailTests(TestCase):
+    """What a person reads when the provider refuses: the provider's own words, with credentials removed."""
+
+    def classify(self, failure, **kwargs):
+        return OpenAIAdapter._classify(failure, **kwargs)
+
+    def test_every_provider_failure_carries_the_providers_message_as_detail(self):
+        cases = [
+            (status_error(openai.RateLimitError, 429, body={"code": "insufficient_quota"}), "MODEL_QUOTA_EXCEEDED"),
+            (status_error(openai.RateLimitError, 429), "RATE_LIMIT"),
+            (status_error(openai.AuthenticationError, 401, text="Incorrect API key provided."), "AUTH_ERROR"),
+            (status_error(openai.PermissionDeniedError, 403, text="Country not supported."), "AUTH_ERROR"),
+            (status_error(openai.InternalServerError, 500, text="The server had an error."), "MODEL_PROVIDER_ERROR"),
+            (status_error(openai.NotFoundError, 404, text="The model `gpt-9` does not exist."), "MODEL_PROVIDER_ERROR"),
+        ]
+        for failure, code in cases:
+            with self.subTest(code=code, status=failure.status_code):
+                error = self.classify(failure)
+                self.assertIsInstance(error, ModelProviderError)
+                self.assertEqual(error.code, code)
+                self.assertEqual(error.detail, f"{failure.status_code}: {failure.message}")
+                self.assertEqual(error.shown, error.detail)
+
+    def test_a_failure_without_a_status_still_shows_what_it_said(self):
+        error = self.classify(RuntimeError("connection reset by peer"))
+        self.assertEqual((error.code, error.detail), ("MODEL_PROVIDER_ERROR", "connection reset by peer"))
+        timeout = self.classify(openai.APITimeoutError(request=REQUEST))
+        self.assertEqual(timeout.code, "MODEL_PROVIDER_ERROR")
+        self.assertTrue(timeout.shown)
+
+    def test_an_echoed_credential_is_removed_from_the_detail(self):
+        error = self.classify(status_error(openai.AuthenticationError, 401, text="Incorrect API key provided: sk-proj-abcdefgh12345678."))
+        self.assertNotIn("sk-proj", error.detail)
+        self.assertIn("Incorrect API key provided", error.detail)
+
+    def test_retriability_depends_on_whether_output_had_started(self):
+        self.assertTrue(self.classify(status_error(openai.RateLimitError, 429)).retriable)
+        self.assertFalse(self.classify(status_error(openai.RateLimitError, 429), before_output=False).retriable)
+        self.assertFalse(self.classify(status_error(openai.AuthenticationError, 401)).retriable)
+
+    def test_our_own_errors_pass_through_unchanged(self):
+        own = ModelProviderError("model returned no completion", detail="empty")
+        self.assertIs(self.classify(own), own)
+        limit = ModelContextLimit("too long")
+        self.assertIs(self.classify(limit), limit)
+
+    def test_shown_falls_back_to_the_message_without_detail(self):
+        self.assertEqual(ModelProviderError("model provider request failed").shown, "model provider request failed")
+        self.assertEqual(ModelProviderError("stable", detail="429: from the provider").shown, "429: from the provider")
+
+
+class ProviderDetailTests(TestCase):
+    def test_status_and_message_are_joined_and_whitespace_is_collapsed(self):
+        failure = status_error(openai.RateLimitError, 429, text="Too   many\n requests.\tSlow down.")
+        self.assertEqual(provider_detail(failure), "429: Too many requests. Slow down.")
+
+    def test_a_plain_exception_uses_its_string_and_an_empty_one_gives_nothing(self):
+        self.assertEqual(provider_detail(ValueError("bad value")), "bad value")
+        self.assertEqual(provider_detail(RuntimeError("")), "")
+
+    def test_the_detail_is_bounded(self):
+        self.assertEqual(len(provider_detail(RuntimeError("x" * 5000))), models.DETAIL_CHARS)
+
+    def test_redact_removes_credentials_and_keeps_everything_else(self):
+        for secret in ("sk-abcdefgh12345678", "sk-proj_abc-12345678", "Bearer abcdefgh.12345-xyz", "api_key=abcdefghijklmnop",
+                       'api-key: "abcdefghijklmnop"', "https://user:hunter2@example.com/path"):
+            with self.subTest(secret=secret):
+                cleaned = redact(f"failed with {secret} while calling")
+                self.assertIn("[redacted]", cleaned)
+                self.assertNotIn("hunter2", cleaned)
+                self.assertNotIn("abcdefgh", cleaned)
+                self.assertTrue(cleaned.startswith("failed with") or "failed with" in cleaned)
+        plain = "The model `gpt-9` does not exist or you do not have access to it (requested 4096 tokens)."
+        self.assertEqual(redact(plain), plain)

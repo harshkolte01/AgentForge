@@ -1,0 +1,122 @@
+.history-row {
+  transition: background-color 160ms ease-out;
+}
+
+.history-title {
+  display: block;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.history-title[data-overflow] {
+  mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
+}
+
+.history-titleText {
+  display: block;
+  width: max-content;
+  min-width: 100%;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .history-row { position: relative; }
+
+  /* Give the title the action button's space until that control is needed. */
+  .history-actions {
+    position: absolute;
+    right: 0;
+    top: 50%;
+    translate: 0 -50%;
+    pointer-events: none;
+  }
+
+  .history-row:is(:hover, :focus-within, :has(:popover-open)) .history-link {
+    padding-right: 3.25rem;
+  }
+
+  .history-actions {
+    opacity: 0;
+    transition: opacity 160ms ease-out;
+  }
+
+  .history-row:hover .history-actions,
+  .history-row:focus-within .history-actions,
+  .history-row:has(:popover-open) .history-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+@media (min-width: 640px) and (hover: hover) and (pointer: fine) {
+  .history-row:is(:hover, :focus-within, :has(:popover-open)) .history-link {
+    padding-right: 2.25rem;
+  }
+}
+
+.history-list {
+  scrollbar-width: none;
+}
+
+.history-list::-webkit-scrollbar {
+  display: none;
+}
+
+/* A reply you have not seen reads a little stronger. */
+.history-row[data-status="unread"] .history-titleText { font-weight: 600; }
+
+/*
+ * The sidebar's loading mark while a conversation is working: the "ASCII braille" spinner ⣾⣽⣻⢿⡿⣟⣯⣷. A braille cell of
+ * eight dots (two columns of four) with one dot missing, the gap stepping down the left column, across the bottom and up the
+ * right, one dot per eighth of the cycle (125 ms of 1 s). Drawn as dots rather than typed as braille characters, so it looks
+ * the same in every font, takes the text colour and needs no script. It sits centred in the same 14 x 16 px box as the other
+ * status marks, so a row never shifts when its status changes.
+ *
+ * Each dot is dark for one frame of the eight. They all run one keyframe ("dark for the first eighth"), started at
+ * --gap eighths into the cycle, which is the frame in which that dot is the missing one. `step-end` holds each value.
+ */
+.status-braille {
+  --cycle: 1s;
+  display: inline-grid;
+  grid-auto-flow: column;
+  /* 2.5px dots on a 4px pitch: light enough to sit beside 13px text, where 3px dots read as a heavy clump. */
+  grid-template-rows: repeat(4, 2.5px);
+  grid-template-columns: repeat(2, 2.5px);
+  gap: 1.5px;
+  place-content: center;
+  width: 0.875rem;
+  height: 1rem;
+}
+
+.status-braille > i {
+  display: block;
+  border-radius: 9999px;
+  background: currentColor;
+  animation: braille-gap var(--cycle) step-end infinite;
+  animation-delay: calc(var(--gap) * var(--cycle) / 8);
+}
+
+/* Left column top to bottom (dots 1, 2, 3, 7), then right column top to bottom (dots 4, 5, 6, 8); --gap is the frame in which each is missing. */
+.status-braille > i:nth-child(1) { --gap: 0; }
+.status-braille > i:nth-child(2) { --gap: 1; }
+.status-braille > i:nth-child(3) { --gap: 2; }
+.status-braille > i:nth-child(4) { --gap: 3; }
+.status-braille > i:nth-child(5) { --gap: 7; }
+.status-braille > i:nth-child(6) { --gap: 6; }
+.status-braille > i:nth-child(7) { --gap: 5; }
+.status-braille > i:nth-child(8) { --gap: 4; }
+
+@keyframes braille-gap { 0% { opacity: 0; } 12.5% { opacity: 1; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .history-row, .history-actions { transition: none; }
+
+  /* Reduced motion slows the spinner to 2.5 s a turn rather than stopping it: it changes which dot is lit, nothing moves. */
+  .status-braille { --cycle: 2.5s; }
+}
+
+@media (forced-colors: active) {
+  .history-title[data-overflow] { mask-image: none; }
+  .history-row:has([aria-current="page"]) { outline: 1px solid Highlight; outline-offset: -1px; }
+}

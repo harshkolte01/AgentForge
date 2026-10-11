@@ -1,14 +1,29 @@
 """Bounded model protocol shared by real and explicitly injected fixture models."""
 
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Protocol
 
+# Credentials a provider message could echo back. Everything else in the message is shown as the provider wrote it.
+_SECRETS = re.compile(r"(sk-[A-Za-z0-9_\-]{8,}|Bearer\s+[A-Za-z0-9._\-]{8,}|(?i:api[_-]?key)[\"'=:\s]+[A-Za-z0-9._\-]{8,}|(?<=://)[^/\s:@]+:[^/\s@]+@)")
+DETAIL_CHARS = 600
 
-# The synthetic tool a child finishes with; its arguments are the typed result.
-SUBMIT_RESULT = "submit_result"
+
+def redact(text: str) -> str:
+    return _SECRETS.sub("[redacted]", text)
+
+
+def provider_detail(exc: BaseException) -> str:
+    """What the provider itself said about a failure ("429: You exceeded your current quota…"), with credentials removed."""
+    message = getattr(exc, "message", None)
+    if not isinstance(message, str) or not message.strip():
+        message = str(exc)
+    status = getattr(exc, "status_code", None)
+    text = " ".join(redact(message).split())[:DETAIL_CHARS]
+    return f"{status}: {text}" if status and text else text
 
 
 class ModelConfigurationError(ValueError):
@@ -16,17 +31,22 @@ class ModelConfigurationError(ValueError):
 
 
 class ModelProviderError(RuntimeError):
-    """Safe error without the provider request, credentials, or response body.
+    """A failure of the model provider, carrying the provider's own (credential-free) message in `detail`.
 
     code is a stable taxonomy value (MODEL_PROVIDER_ERROR, RATE_LIMIT, AUTH_ERROR, ...) the caller
-    stores and shows; retriable marks failures that happened before any completion was produced.
+    stores; retriable marks failures that happened before any completion was produced. `shown` is what a person reads.
     """
 
     def __init__(self, message: str = "model provider request failed", *, code: str = "MODEL_PROVIDER_ERROR",
-                 retriable: bool = False) -> None:
+                 retriable: bool = False, detail: str = "") -> None:
         super().__init__(message)
         self.code = code
         self.retriable = retriable
+        self.detail = detail
+
+    @property
+    def shown(self) -> str:
+        return self.detail or str(self)
 
 
 class ModelContextLimit(ValueError):
@@ -55,9 +75,11 @@ class ToolCallingModel(Protocol):
 
     async def complete(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
                        on_text: Callable[[str], None] | None = None,
-                       tool_choice: dict[str, Any] | str | None = None) -> ModelResponse:
-        """on_text, when given, receives the person-facing reply as it streams (message content, or the
-        arguments of a submit_result call); implementations may ignore it. tool_choice forces a tool."""
+                       tool_choice: dict[str, Any] | str | None = None,
+                       on_narration: Callable[[str], None] | None = None) -> ModelResponse:
+        """The text a model writes streams to on_narration while tools are offered (it may turn out to be a note
+        before tool calls or the final answer, which is only known when the call ends) and to on_text when none are;
+        implementations may ignore both. tool_choice forces a tool."""
         ...
 
 
@@ -103,4 +125,5 @@ def conservative_input_tokens(messages: list[dict[str, Any]], tools: list[dict[s
     real usage about 3.5 times and made small windows unusable.
     """
     payload = json.dumps({"messages": messages, "tools": tools}, ensure_ascii=False, allow_nan=False)
-    return estimate_tokens(payload) + PROTOCOL_OVERHEAD_TOKENS + PER_MESSAGE_OVERHEAD_TOKENS * len(messages)
+    base = estimate_tokens(payload) + PROTOCOL_OVERHEAD_TOKENS + PER_MESSAGE_OVERHEAD_TOKENS * len(messages)
+    return base + max(256, -(-base // 20))  # shared 5% fitting margin, at least 256 tokens

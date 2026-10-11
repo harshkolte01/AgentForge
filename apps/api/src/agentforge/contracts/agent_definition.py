@@ -14,8 +14,13 @@ ToolName = Literal[
     "list_repo_files", "read_sandbox_file", "write_sandbox_file", "edit_sandbox_file", "git_diff",
     "run_sandbox_command", "run_tests", "get_test_results", "get_pr_status",
     "browser_public_page", "read_task_input", "read_research_source", "read_task_artifact", "create_task_artifact",
+    "search_conversation_history", "read_context_resource",
+    # The coding tools, working in the conversation's sandbox. (The fixed-profile sandbox tools above are retired but
+    # stay valid names, so definitions saved earlier keep loading.)
+    "bash", "read", "write", "edit", "grep", "find", "ls", "create_pull_request",
 ]
-OutputSchemaId = Literal["research_result_v1", "execution_result_v1", "review_result_v1", "assessment_result_v1", "general_result_v1", "routing_result_v1"]
+# Every agent now answers in plain text. The older typed ids stay valid so stored definitions keep loading; they have no effect.
+OutputSchemaId = Literal["text_v1", "research_result_v1", "execution_result_v1", "review_result_v1", "assessment_result_v1", "general_result_v1", "routing_result_v1"]
 ResourceIds = Annotated[tuple[Annotated[str, Field(min_length=1, max_length=256)], ...], Field(strict=False, max_length=200)]
 
 
@@ -47,10 +52,12 @@ class Permissions(StrictContract):
 
 
 class Budget(StrictContract):
-    max_steps: int = Field(default=12, ge=1, le=50)
-    max_llm_cost_usd: float = Field(default=0.5, gt=0, le=5)
-    max_wall_time_sec: int = Field(default=180, ge=10, le=1200)
-    max_tool_calls: int = Field(default=25, ge=1, le=100)
+    """Not a limit on a run. Usage is recorded against a reservation row that needs positive numbers, so these are
+    set high enough never to stop anything; a person stops a run with Stop."""
+    max_steps: int = Field(default=1_000_000, ge=1)
+    max_llm_cost_usd: float = Field(default=100_000, gt=0)
+    max_wall_time_sec: int = Field(default=7 * 24 * 3600, ge=1)
+    max_tool_calls: int = Field(default=1_000_000, ge=1)
 
 
 TOOL_CAPABILITIES: dict[str, tuple[str, ...]] = {
@@ -63,6 +70,10 @@ TOOL_CAPABILITIES: dict[str, tuple[str, ...]] = {
     "run_sandbox_command": ("sandbox_exec",), "run_tests": ("sandbox_exec",),
     "get_test_results": (), "browser_public_page": ("web", "browser"),
     "read_task_input": (), "read_research_source": (), "read_task_artifact": (), "create_task_artifact": (),
+    "search_conversation_history": (), "read_context_resource": (),
+    "bash": ("sandbox_exec",), "read": ("sandbox_read",), "grep": ("sandbox_read",), "find": ("sandbox_read",),
+    "ls": ("sandbox_read",), "write": ("sandbox_write",), "edit": ("sandbox_write",),
+    "create_pull_request": ("sandbox_read", "github_read"),
 }
 
 
@@ -71,10 +82,10 @@ class AgentDefinition(StrictContract):
     description: str = Field(min_length=10, max_length=400)
     version: int = Field(ge=1)
     system_prompt: str = Field(min_length=30, max_length=10000)
-    allowed_tools: Annotated[tuple[ToolName, ...], Field(strict=False, min_length=1, max_length=14)]
+    allowed_tools: Annotated[tuple[ToolName, ...], Field(strict=False, min_length=1, max_length=40)]
     permissions: Permissions
-    budget: Budget
-    output_schema_id: OutputSchemaId
+    budget: Budget = Budget()
+    output_schema_id: OutputSchemaId = "text_v1"
     model_profile: Literal["default", "research", "coding", "review"] = "default"
     enabled: bool = True
 

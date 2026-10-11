@@ -1,5 +1,8 @@
 # Agent harness and tool calling
 
+See [context management](context-management.md) for the current model limits,
+history policy, compaction guarantees, cost reservations, and composer semantics.
+
 How a child agent acts, how each tool call is checked, and what the model is told when something goes wrong. The
 design goal is that every call is precise: the right tool, with arguments that match its contract, exactly once, and
 that a mistake is explained well enough to be fixed in one more call.

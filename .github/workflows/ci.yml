@@ -50,6 +50,8 @@ jobs:
         with: {node-version: 24.21.0}
       - run: npm install --global pnpm@10.34.6
       - run: pnpm install --frozen-lockfile
+      - run: pnpm test:context
+      - run: pnpm test:activity
       - run: pnpm lint
       - run: pnpm exec next typegen
       - run: pnpm exec tsc --noEmit

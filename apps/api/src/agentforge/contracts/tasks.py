@@ -11,6 +11,12 @@ from agentforge.contracts.coding import CodingTaskSpec
 
 TaskStatus = Literal["CREATED", "PLANNING", "RUNNING", "VERIFYING", "RETRYING", "AWAITING_APPROVAL", "COMPLETED", "PARTIAL", "FAILED", "CANCELLED"]
 TERMINAL_STATUSES = frozenset({"COMPLETED", "PARTIAL", "FAILED", "CANCELLED"})
+# The longest answer kept whole. A coding answer can be long; a message is cut only if it goes beyond this.
+MAX_ANSWER_CHARS = 100_000
+# Runs are not limited. A task row and its budget reservation need positive numbers, so these are set high enough
+# never to stop anything; usage is still recorded, and a person ends a run with Stop.
+UNLIMITED_COST_USD = Decimal("100000")
+UNLIMITED_WALL_TIME_SEC = 7 * 24 * 3600
 
 
 class TextAttachment(BaseModel):
@@ -26,8 +32,9 @@ class TaskCreate(BaseModel):
     coding: CodingTaskSpec | None = None
     continue_from_task_id: UUID | None = None
     goal: str = Field(min_length=1, max_length=8000)
-    max_cost_usd: Decimal = Field(default=Decimal("0.50"), gt=0, le=5, decimal_places=4, allow_inf_nan=False)
-    max_wall_time_sec: int = Field(default=300, ge=30, le=1200)
+    # Accepted for older clients and ignored: runs are not limited (see UNLIMITED_* below).
+    max_cost_usd: Decimal = Field(default=UNLIMITED_COST_USD, gt=0, decimal_places=4, allow_inf_nan=False)
+    max_wall_time_sec: int = Field(default=UNLIMITED_WALL_TIME_SEC, ge=1)
     allowed_web_hosts: tuple[str, ...] = Field(default=(), max_length=20)
 
     attachments: tuple[TextAttachment, ...] = Field(default=(), max_length=4)

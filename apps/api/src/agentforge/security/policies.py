@@ -61,6 +61,22 @@ def validate_relative_path(path: str) -> str:
     return path
 
 
+# The coding tools work inside the conversation's sandbox, which holds no credentials, so dotfiles such as .env.example
+# and .github are ordinary files there. A path must still be a literal relative one that stays inside the workspace.
+WORKSPACE_TOOLS = frozenset({"read", "write", "edit", "grep", "find", "ls"})
+
+
+def validate_workspace_path(path: str) -> str:
+    if not path or len(path) > 1024 or any(ord(c) < 32 for c in path) or "\\" in path or unquote(path) != path:
+        raise ScopeDenied("invalid workspace path")
+    if PurePosixPath(path).is_absolute() or ":" in path.split("/", 1)[0]:
+        raise ScopeDenied("workspace path must be relative")
+    parts = path.split("/")
+    if ".." in parts or (parts != ["."] and any(part in ("", ".") for part in parts)):
+        raise ScopeDenied("workspace path traversal is forbidden")
+    return path
+
+
 def validate_ref(ref: str) -> str:
     """Validate ref syntax; this does not establish approval or pin a commit."""
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}", ref):
@@ -136,8 +152,11 @@ def authorize_tool(name: str, args: BaseModel | dict[str, Any], ctx: TaskContext
         raise ScopeDenied("sandbox is outside this task's grant")
     if "task_id" in values and str(values["task_id"]) != str(ctx.task_id):
         raise ScopeDenied("cross-task evidence access is forbidden")
-    if "path" in values and not (name == "list_repo_files" and values["path"] == "."):
-        validate_relative_path(values["path"])
+    if "path" in values:
+        if name in WORKSPACE_TOOLS:
+            validate_workspace_path(values["path"])
+        elif not (name == "list_repo_files" and values["path"] == "."):
+            validate_relative_path(values["path"])
     if values.get("path_prefix"):
         validate_relative_path(values["path_prefix"])
     for field in ("ref", "base_ref"):

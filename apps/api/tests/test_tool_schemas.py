@@ -10,7 +10,7 @@ from agentforge.subagents.context import RESULT_PREFIX, compact_messages, conver
 from agentforge.tools.catalog import (
     BINDABLE_FIELDS, DESCRIPTIONS, EFFECT_TOOLS, GENERIC_ERROR_GUIDANCE, ToolCatalog, error_guidance, safe_arguments,
 )
-from agentforge.tools.contracts import ARGUMENT_MODELS, SandboxWriteArgs, ToolOutcome, ToolRequest
+from agentforge.tools.contracts import ARGUMENT_MODELS, FileWriteArgs, ToolOutcome, ToolRequest
 from agentforge.tools.schema import drop_fields, to_strict_schema
 
 # Keywords strict structured outputs may reject; the strict form must not contain them.
@@ -85,11 +85,13 @@ class ContractCoverageTests(TestCase):
     def test_every_tool_is_covered_by_the_request_union_descriptions_and_capabilities(self):
         union = TypeAdapter(ToolRequest)
         self.assertEqual(set(DESCRIPTIONS), set(ARGUMENT_MODELS))
-        self.assertEqual(set(TOOL_CAPABILITIES), set(ARGUMENT_MODELS))
+        # Retired tool names stay in the capability table so definitions saved earlier keep loading.
+        self.assertLessEqual(set(ARGUMENT_MODELS), set(TOOL_CAPABILITIES))
         for name in ARGUMENT_MODELS:
             self.assertTrue(any(name in str(member) for member in union.core_schema["choices"]), name)
         self.assertTrue(EFFECT_TOOLS <= set(ARGUMENT_MODELS))
-        self.assertIn("edit_sandbox_file", EFFECT_TOOLS)
+        self.assertTrue({"bash", "write", "edit", "create_pull_request", "create_task_artifact"} <= EFFECT_TOOLS)
+        self.assertFalse({"read", "grep", "find", "ls", "web_search", "read_repo_file"} & EFFECT_TOOLS)
 
     def test_bindable_identifiers_are_only_ones_the_task_fixes(self):
         self.assertEqual(BINDABLE_FIELDS, {"repo_id", "ref", "base_ref", "sandbox_id", "task_id"})
@@ -97,21 +99,26 @@ class ContractCoverageTests(TestCase):
     def test_every_error_code_the_system_emits_has_specific_guidance(self):
         codes = ["SCOPE_DENIED", "SCHEMA_INVALID", "TOOL_UNAVAILABLE", "TOOL_TIMEOUT", "TOOL_FAILED", "FILE_NOT_FOUND",
                  "BINARY_FILE", "INVALID_RANGE", "LINE_TOO_LONG", "STALE_WRITE", "FILE_EXISTS", "EDIT_NO_MATCH",
-                 "EDIT_AMBIGUOUS", "PROFILE_MISMATCH", "DUPLICATE_CALL", "INVALID_ARGUMENT", "SEARCH_PROVIDER_ERROR",
-                 "SANDBOX_CONFIGURATION_REQUIRED"]
+                 "EDIT_AMBIGUOUS", "PROFILE_MISMATCH", "INVALID_ARGUMENT", "SEARCH_PROVIDER_ERROR", "DEFERRED", "DECLINED",
+                 "SANDBOX_CONFIGURATION_REQUIRED", "SANDBOX_UNAVAILABLE", "NO_REPOSITORY"]
         for code in codes:
             self.assertNotEqual(error_guidance(code), GENERIC_ERROR_GUIDANCE, code)
         self.assertEqual(error_guidance("SOMETHING_NEW"), GENERIC_ERROR_GUIDANCE)
 
-    def test_the_new_edit_tool_parses_through_the_discriminated_union(self):
-        request = TypeAdapter(ToolRequest).validate_python({"name": "edit_sandbox_file", "args": {
-            "sandbox_id": "s", "path": "a.py", "old_string": "x", "new_string": ""}})
+    def test_limits_that_no_longer_exist_have_no_guidance_of_their_own(self):
+        # A repeated call, a call count, a spend cap: none of them is enforced, so the model is never told about them.
+        for code in ("DUPLICATE_CALL", "TOOL_LIMIT_REACHED", "BUDGET_EXCEEDED"):
+            self.assertEqual(error_guidance(code), GENERIC_ERROR_GUIDANCE, code)
+
+    def test_the_edit_tool_parses_through_the_discriminated_union(self):
+        request = TypeAdapter(ToolRequest).validate_python({"name": "edit", "args": {
+            "path": "a.py", "old_string": "x", "new_string": ""}})
         self.assertFalse(request.args.replace_all)
 
 
 class AuditRecordTests(TestCase):
     def test_free_text_and_file_content_never_enter_the_record(self):
-        args = SandboxWriteArgs(sandbox_id="s", path="src/a.py", content="API_KEY=hunter2", expected_sha256="a" * 64)
+        args = FileWriteArgs(path="src/a.py", content="API_KEY=hunter2")
         record = safe_arguments(args)
         self.assertEqual(record["path"], "src/a.py")
         self.assertEqual(record["content_chars"], len("API_KEY=hunter2"))

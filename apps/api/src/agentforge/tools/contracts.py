@@ -68,46 +68,50 @@ class PRStatusArgs(RepoArgs):
     pr_number: int = Field(ge=1, description="The pull request number, without the leading #.")
 
 
-class SandboxArgs(ToolArguments):
-    sandbox_id: ResourceId = Field(description="The sandbox_id given in the brief. Never invent one.")
+class BashArgs(ToolArguments):
+    command: str = Field(min_length=1, max_length=20_000, description="The shell command, run with bash in the workspace directory. Chain steps with && and avoid commands that wait for input.")
+    timeout_sec: int = Field(default=120, ge=1, le=3600, description="Seconds before the command is stopped. Raise it for installs and long test runs.")
 
 
-class SandboxFileArgs(SandboxArgs):
+class FileReadArgs(ToolArguments):
     path: Path = Field(description="File path relative to the workspace root.")
+    offset: int = Field(default=1, ge=1, description="One-based first line. Continue with next_offset from the previous result.")
+    limit: int = Field(default=400, ge=1, le=2000, description="Maximum lines to return; the result is also capped at about 12000 characters.")
 
 
-class SandboxReadArgs(SandboxFileArgs):
-    line_start: int = Field(default=1, ge=1, description="One-based first line; resume with next_line from the previous result.")
-    max_lines: int = Field(default=200, ge=1, le=200, description="Complete lines requested; returned content is also capped at 10000 UTF-8 bytes.")
+class FileWriteArgs(ToolArguments):
+    path: Path = Field(description="File path relative to the workspace root. Missing folders are created.")
+    content: str = Field(max_length=200_000, description="The complete new content of the file, not a patch. Replaces the file if it exists.")
 
 
-class SandboxWriteArgs(SandboxFileArgs):
-    content: str = Field(max_length=100_000, description="The complete new content of the file, not a patch.")
-    # Future sandbox adapters must compare this hash before a write.
-    expected_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$", description="Required to overwrite an existing file: the sha256 returned by your most recent read_sandbox_file of that path. Omit it only to create a new file.")
-
-
-class SandboxEditArgs(SandboxFileArgs):
-    old_string: str = Field(min_length=1, max_length=20_000, description="The exact existing text to replace, including whitespace and indentation. Copy it from read_sandbox_file output. It must match exactly one place unless replace_all is true, so include enough surrounding lines to be unique.")
+class FileEditArgs(ToolArguments):
+    path: Path = Field(description="File path relative to the workspace root.")
+    old_string: str = Field(min_length=1, max_length=20_000, description="The exact existing text to replace, including whitespace and indentation, copied from the file. It must match one place unless replace_all is true, so include enough surrounding lines to be unique.")
     new_string: str = Field(max_length=50_000, description="The replacement text. Use an empty string to delete old_string.")
     replace_all: bool = Field(default=False, description="Replace every occurrence of old_string instead of requiring exactly one match.")
 
 
-class GitDiffArgs(SandboxArgs):
-    base_ref: Ref = Field(description="The base commit SHA given in the brief.")
+class GrepArgs(ToolArguments):
+    pattern: str = Field(min_length=1, max_length=500, description="Regular expression (extended syntax) to search for in file contents.")
+    path: Path = Field(default=".", description="File or folder to search, relative to the workspace root.")
+    glob: str | None = Field(default=None, max_length=200, description="Only search files whose name matches this glob, such as '*.py'.")
+    ignore_case: bool = Field(default=False, description="Match letter case loosely.")
+    max_results: int = Field(default=100, ge=1, le=500, description="Maximum matching lines to return.")
 
 
-class SandboxCommandArgs(SandboxArgs):
-    command_id: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_\-]+$", description="One of the command profiles listed in the brief, such as node_build.")
+class FindArgs(ToolArguments):
+    pattern: str = Field(min_length=1, max_length=200, description="File name glob, such as '*.test.ts' or 'package.json'.")
+    path: Path = Field(default=".", description="Folder to search under, relative to the workspace root.")
+    max_results: int = Field(default=200, ge=1, le=1000, description="Maximum paths to return.")
 
 
-class RunTestsArgs(SandboxArgs):
-    test_profile: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_\-]+$", description="One of the test profiles listed in the brief, such as python_pytest or node_npm_test.")
+class LsArgs(ToolArguments):
+    path: Path = Field(default=".", description="Folder to list, relative to the workspace root.")
 
 
-class TestResultsArgs(ToolArguments):
-    task_id: ResourceId = Field(description="The parent_task_id given in the brief.")
-    run_id: ResourceId = Field(description="The evidence id of the test or build run, as returned by run_tests or run_sandbox_command, or listed in the brief.")
+class PullRequestArgs(ToolArguments):
+    title: str = Field(min_length=1, max_length=200, description="Pull request title.")
+    body: str = Field(default="", max_length=8000, description="Pull request description: what changed and why, and how it was checked.")
 
 
 class BrowserArgs(ToolArguments):
@@ -137,18 +141,35 @@ class TaskArtifactCreateArgs(ToolArguments):
     format: Literal["text", "markdown", "csv"] = Field(description="markdown for documents and reports, csv for tables, text for plain text.")
     content: str = Field(min_length=1, max_length=60000, description="The complete finished content of the file.")
     title: str = Field(min_length=1, max_length=120, description="A short human-readable title for the file.")
+    filename: str | None = Field(default=None, max_length=120, description="Download filename, not a workspace path. Use letters, numbers, spaces, underscores, hyphens and dots; end in .txt for text, .md for markdown or .csv for csv. Preserve the user's requested filename. Null uses the default name.")
+
+    @model_validator(mode="after")
+    def safe_filename(self) -> Self:
+        from agentforge.contracts.artifact_names import valid_artifact_filename
+        if self.filename is not None and not valid_artifact_filename(self.filename, self.format):
+            raise ValueError("filename must be a safe basename with the extension matching format")
+        return self
+
+
+class ConversationSearchArgs(ToolArguments):
+    query: str = Field(max_length=200, description="Words in an earlier message or an attachment/deliverable name. Empty lists messages.")
+    cursor: int = Field(default=0, ge=0, description="Resume message results at next_cursor, or 0 for the first page.")
+    limit: int = Field(default=10, ge=1, le=20, description="Maximum messages and resource references to return (1-20).")
+
+
+class ContextResourceArgs(PageArgs):
+    resource_id: ResourceId = Field(description="Opaque resource_id from history, search, or a compacted tool result.")
 
 
 ARGUMENT_MODELS: dict[str, type[ToolArguments]] = {
+    "search_conversation_history": ConversationSearchArgs, "read_context_resource": ContextResourceArgs,
     "read_task_input": TaskInputArgs, "read_research_source": ResearchSourceArgs,
     "read_task_artifact": TaskArtifactReadArgs, "create_task_artifact": TaskArtifactCreateArgs,
     "web_search": WebSearchArgs, "fetch_webpage": FetchWebpageArgs,
     "read_repo_file": RepoFileArgs, "search_repo": RepoSearchArgs,
     "get_issue": IssueArgs, "list_repo_files": RepoFilesArgs,
-    "read_sandbox_file": SandboxReadArgs, "write_sandbox_file": SandboxWriteArgs,
-    "edit_sandbox_file": SandboxEditArgs,
-    "git_diff": GitDiffArgs, "run_sandbox_command": SandboxCommandArgs,
-    "run_tests": RunTestsArgs, "get_test_results": TestResultsArgs,
+    "bash": BashArgs, "read": FileReadArgs, "write": FileWriteArgs, "edit": FileEditArgs,
+    "grep": GrepArgs, "find": FindArgs, "ls": LsArgs, "create_pull_request": PullRequestArgs,
     "get_pr_status": PRStatusArgs, "browser_public_page": BrowserArgs,
 }
 
@@ -216,39 +237,44 @@ class RepoFilesRequest(_Request):
     args: RepoFilesArgs
 
 
-class SandboxFileRequest(_Request):
-    name: Literal["read_sandbox_file"]
-    args: SandboxReadArgs
+class BashRequest(_Request):
+    name: Literal["bash"]
+    args: BashArgs
 
 
-class SandboxWriteRequest(_Request):
-    name: Literal["write_sandbox_file"]
-    args: SandboxWriteArgs
+class ReadRequest(_Request):
+    name: Literal["read"]
+    args: FileReadArgs
 
 
-class SandboxEditRequest(_Request):
-    name: Literal["edit_sandbox_file"]
-    args: SandboxEditArgs
+class WriteRequest(_Request):
+    name: Literal["write"]
+    args: FileWriteArgs
 
 
-class DiffRequest(_Request):
-    name: Literal["git_diff"]
-    args: GitDiffArgs
+class EditRequest(_Request):
+    name: Literal["edit"]
+    args: FileEditArgs
 
 
-class CommandRequest(_Request):
-    name: Literal["run_sandbox_command"]
-    args: SandboxCommandArgs
+class GrepRequest(_Request):
+    name: Literal["grep"]
+    args: GrepArgs
 
 
-class TestsRequest(_Request):
-    name: Literal["run_tests"]
-    args: RunTestsArgs
+class FindRequest(_Request):
+    name: Literal["find"]
+    args: FindArgs
 
 
-class TestResultsRequest(_Request):
-    name: Literal["get_test_results"]
-    args: TestResultsArgs
+class LsRequest(_Request):
+    name: Literal["ls"]
+    args: LsArgs
+
+
+class PullRequestRequest(_Request):
+    name: Literal["create_pull_request"]
+    args: PullRequestArgs
 
 
 class PRStatusRequest(_Request):
@@ -281,11 +307,21 @@ class TaskArtifactCreateRequest(_Request):
     args: TaskArtifactCreateArgs
 
 
+class ConversationSearchRequest(_Request):
+    name: Literal["search_conversation_history"]
+    args: ConversationSearchArgs
+
+
+class ContextResourceRequest(_Request):
+    name: Literal["read_context_resource"]
+    args: ContextResourceArgs
+
+
 ToolRequest = Annotated[
     WebSearchRequest | FetchRequest | RepoFileRequest | RepoSearchRequest |
-    IssueRequest | RepoFilesRequest | SandboxFileRequest | SandboxWriteRequest | SandboxEditRequest |
-    DiffRequest | CommandRequest | TestsRequest | TestResultsRequest |
+    IssueRequest | RepoFilesRequest | BashRequest | ReadRequest | WriteRequest | EditRequest |
+    GrepRequest | FindRequest | LsRequest | PullRequestRequest |
     PRStatusRequest | BrowserRequest | TaskInputRequest | ResearchSourceRequest |
-    TaskArtifactReadRequest | TaskArtifactCreateRequest,
+    TaskArtifactReadRequest | TaskArtifactCreateRequest | ConversationSearchRequest | ContextResourceRequest,
     Field(discriminator="name"),
 ]

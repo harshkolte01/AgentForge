@@ -7,6 +7,7 @@ must be assembled by a trusted parent from server-owned grants and current user.
 import asyncio
 import hashlib
 import json
+import logging
 from dataclasses import replace
 from collections.abc import Awaitable, Callable
 from decimal import Decimal
@@ -16,34 +17,46 @@ from langchain_core.runnables import RunnableConfig
 
 from agentforge.contracts.subagent import SpawnRequest, SubagentResult
 from agentforge.contracts.agent_definition import Budget
+from agentforge.contracts.tasks import MAX_ANSWER_CHARS
 from agentforge.llm.models import ModelConfigurationError, ModelContextLimit, ModelProviderError
 from agentforge.llm.router import ModelRouter
 from agentforge.repositories.runs import AgentRunRepository, ToolCallRepository
 from agentforge.security.policies import AuthorizationService
 from agentforge.tools.catalog import ToolCatalog
 from agentforge.tools.gateway import ToolGateway, UnknownToolOutcome
+from agentforge.tools.lifecycle import LifecycleSink
 
 from .budget import BudgetExceeded, BudgetService
-from .prompt_builder import compile_prompt
+from .prompt_builder import compile_chat
 from .registry import AgentRegistry
 from .resources import DenyUnknownResources, ResourceResolver
 from .runtime import ChildRuntime
 from .scope import ScopeDenied, TaskContext, intersect_and_validate
 
 
-# What a person is told when a child run stops early. The error code stays in the run record.
+log = logging.getLogger(__name__)
+
+# What a person reads when a run breaks for a reason that is ours rather than the model provider's. Provider failures
+# are shown with the provider's own message instead (see `_failure_text`).
 STOPPED_SUMMARIES = {
-    "MODEL_CONTEXT_LIMIT": "This request needed more room than the model's context window allows. Try a narrower question, or start a new conversation.",
-    "RATE_LIMIT": "The model provider is limiting requests right now. Please try again in a moment.",
-    "MODEL_PROVIDER_ERROR": "The model provider returned an error, so this could not be completed. Please try again.",
-    "MODEL_QUOTA_EXCEEDED": "The model provider account has run out of quota. Check its billing, then try again.",
-    "AUTH_ERROR": "The model provider rejected the configured credentials. Check the model connection in Settings.",
-    "BUDGET_EXCEEDED": "This run used up its budget before it could finish. Try a narrower request.",
-    "TOOL_TIMEOUT": "This run ran out of time before it could finish. Try a narrower request.",
     "SCOPE_DENIED": "This run stopped because it needed access it was not granted.",
+    "TOOL_TIMEOUT": "A tool did not respond in time, so the run stopped.",
     "UNKNOWN_REMOTE_OUTCOME": "This run stopped because an action's outcome could not be confirmed. Nothing was repeated automatically.",
 }
-GENERIC_STOPPED_SUMMARY = "This run stopped before it could finish. Please try again."
+GENERIC_STOPPED_SUMMARY = "Something went wrong while working on this. Please try again."
+
+
+def _failure_text(exc: BaseException) -> tuple[str, str]:
+    """(error code, text a person reads) for a failed run. Provider errors say what the provider said."""
+    if isinstance(exc, ModelProviderError):
+        return exc.code, exc.shown
+    if isinstance(exc, ModelContextLimit):
+        return "MODEL_CONTEXT_LIMIT", str(exc)
+    if isinstance(exc, ModelConfigurationError):
+        return "MODEL_PROVIDER_ERROR", f"The model is not configured correctly: {exc}"
+    code = ("SCOPE_DENIED" if isinstance(exc, ScopeDenied) else "BUDGET_EXCEEDED" if isinstance(exc, BudgetExceeded)
+            else "TOOL_TIMEOUT" if isinstance(exc, TimeoutError) else "UNKNOWN_REMOTE_OUTCOME")
+    return code, STOPPED_SUMMARIES.get(code, GENERIC_STOPPED_SUMMARY)
 
 
 class SpawnService:
@@ -51,17 +64,25 @@ class SpawnService:
                  budgets: BudgetService, runs: AgentRunRepository,
                  calls: ToolCallRepository, catalog: ToolCatalog, models: ModelRouter,
                  resources: ResourceResolver | None = None,
-                 runtime: ChildRuntime | None = None) -> None:
+                 runtime: ChildRuntime | None = None,
+                 lifecycle: LifecycleSink | None = None, approvals=None) -> None:
         self.registry, self.authorizer, self.budgets = registry, authorizer, budgets
+        # Asks the person before a tool that changes something runs (tools/approvals.py); None: nothing asks.
+        self.approvals = approvals
         self.runs, self.calls, self.catalog, self.models = runs, calls, catalog, models
         self.resources = resources if resources is not None else DenyUnknownResources()
         self.runtime = runtime if runtime is not None else ChildRuntime()
+        # Where each gateway reports tool.started / tool.finished (the task's event log in production).
+        self.lifecycle = lifecycle
 
     async def spawn_subagent(self, request: SpawnRequest, ctx: TaskContext, *,
                              config: RunnableConfig | None = None,
                              run_id: UUID | None = None,
                              authority: Callable[[], Awaitable[None]] | None = None,
-                             stream=None) -> SubagentResult:
+                             stream=None,
+                             conversation: list[dict] | None = None) -> SubagentResult:
+        """Runs one agent on `conversation` (chat messages: earlier turns, then the person's message) and returns
+        its plain-text answer, or the reason the run broke."""
         # Reject model_construct/model_copy bypasses at this trust boundary too.
         request = SpawnRequest.model_validate_json(request.model_dump_json())
         if authority is not None:
@@ -71,8 +92,8 @@ class SpawnService:
         scope = intersect_and_validate(resolved.definition, ctx, request.context_refs)
         available = self.catalog.available(scope.allowed_tools)
         if not available:
-            return SubagentResult(status="BLOCKED", summary="No authorized capability adapters are installed for this child.")
-        async with asyncio.timeout(min(30, scope.budget.max_wall_time_sec)):
+            return SubagentResult(status="FAIL", error_code="TOOL_UNAVAILABLE", summary="No tools are available for this agent, so it cannot run.")
+        async with asyncio.timeout(30):
             context = await self.resources.load_context(ctx, scope.context_refs)
         model = self.models.choose(resolved.definition.model_profile)
         run_id = run_id or uuid4()
@@ -95,8 +116,8 @@ class SpawnService:
             # cap and revalidate before storing the effective security snapshot.
             scope = replace(scope, budget=Budget.model_validate({
                 **scope.budget.model_dump(), "max_llm_cost_usd": float(reservation.amount_usd)}))
-            messages = compile_prompt(resolved.definition, request, ctx, scope, context,
-                                      tuple(tool.name for tool in available))
+            messages = compile_chat(resolved.definition, scope, context, tuple(tool.name for tool in available),
+                                    conversation or [{"role": "user", "content": request.prompt}])
             self.runs.record_start(
                 run_id=run_id, task_id=ctx.task_id, owner_id=ctx.user_id, project_id=ctx.project_id,
                 definition_version_id=resolved.version_id, definition_sha256=resolved.sha256,
@@ -121,41 +142,31 @@ class SpawnService:
             gateway = ToolGateway(catalog=self.catalog, calls=self.calls, budgets=self.budgets,
                 resources=self.resources, reauthorize=reauthorize, ctx=ctx, scope=scope,
                 run_id=run_id, reservation_id=reservation.id,
-                strict_tools=bool(getattr(model, "strict_tools", False)))
+                strict_tools=bool(getattr(model, "strict_tools", False)), lifecycle=self.lifecycle,
+                approvals=self.approvals)
             result = await self.runtime.run(
                 definition=resolved.definition, ctx=ctx, scope=scope, model=model, gateway=gateway,
                 budgets=self.budgets, reservation=reservation, messages=messages,
                 resources=self.resources, reauthorize=reauthorize, config=config,
                 **({"stream": stream} if stream is not None else {}),
             )
-            terminal_status = {"PASS": "COMPLETED", "FAIL": "FAILED", "PARTIAL": "PARTIAL", "BLOCKED": "BLOCKED"}[result.status]
+            terminal_status = "COMPLETED"
         except asyncio.CancelledError:
             terminal_status, error_code = "CANCELLED", "USER_CANCELLED"
-            result = SubagentResult(status="BLOCKED", summary="Child invocation was cancelled.")
+            result = SubagentResult(status="FAIL", error_code=error_code, summary="Stopped.")
             # Sync short transactions below execute even though CancelledError
             # is a BaseException. Preserve cancellation to the parent afterwards.
             raise
         except (ScopeDenied, BudgetExceeded, TimeoutError, ModelContextLimit,
                 ModelProviderError, ModelConfigurationError, UnknownToolOutcome) as exc:
-            if isinstance(exc, ScopeDenied):
-                error_code = "SCOPE_DENIED"
-            elif isinstance(exc, BudgetExceeded):
-                error_code = "BUDGET_EXCEEDED"
-            elif isinstance(exc, TimeoutError):
-                error_code = "TOOL_TIMEOUT"
-            elif isinstance(exc, ModelContextLimit):
-                error_code = "MODEL_CONTEXT_LIMIT"
-            elif isinstance(exc, UnknownToolOutcome):
-                error_code = "UNKNOWN_REMOTE_OUTCOME"
-            elif isinstance(exc, ModelProviderError):
-                error_code = exc.code
-            else:
-                error_code = "MODEL_PROVIDER_ERROR"
-            terminal_status = "BLOCKED"
-            result = SubagentResult(status="BLOCKED", summary=STOPPED_SUMMARIES.get(error_code, GENERIC_STOPPED_SUMMARY))
+            error_code, text = _failure_text(exc)
+            terminal_status = "FAILED"
+            result = SubagentResult(status="FAIL", error_code=error_code, summary=text[:MAX_ANSWER_CHARS] or GENERIC_STOPPED_SUMMARY)
         except Exception:
+            # The person is told only that the run failed; the cause belongs in the server log (no model or user content).
+            log.warning("agent run failed: run_id=%s task_id=%s type=%s", run_id, ctx.task_id, request.type, exc_info=True)
             error_code, terminal_status = "CHILD_RUNTIME_ERROR", "FAILED"
-            result = SubagentResult(status="FAIL", summary="Child invocation failed before a verified handoff.")
+            result = SubagentResult(status="FAIL", error_code=error_code, summary=GENERIC_STOPPED_SUMMARY)
         finally:
             # No network/await occurs inside these repository transactions. A DB
             # failure propagates instead of returning a falsely persisted success.
@@ -167,5 +178,4 @@ class SpawnService:
                 self.budgets.settle(reservation.id)
         if result is None:
             raise RuntimeError("child execution produced no handoff")
-        return SubagentResult.model_validate_json(json.dumps(result.model_dump(
-            mode="json", include=set(SubagentResult.model_fields))))
+        return result

@@ -40,6 +40,8 @@ class User(_UUIDTimestampMixin, Base):
 
     github_user_id: Mapped[int] = mapped_column(BigInteger, unique=True)
     display_name: Mapped[str] = mapped_column(Text)
+    # "ask": the agent asks before anything that changes something. "auto": it never asks.
+    approval_mode: Mapped[str] = mapped_column(Text, server_default=text("'ask'"))
 
 
 class Project(_UUIDTimestampMixin, Base):
@@ -115,6 +117,8 @@ class Task(_UUIDTimestampMixin, Base):
     thread_id: Mapped[str] = mapped_column(Text, unique=True)
     max_cost_usd: Mapped[Decimal] = mapped_column(Numeric(12, 4))
     max_wall_time_sec: Mapped[int] = mapped_column(Integer)
+    execution_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    execution_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     event_sequence: Mapped[int] = mapped_column(BigInteger, server_default=text("0"))
     permissions_json: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))

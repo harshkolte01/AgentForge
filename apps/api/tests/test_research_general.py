@@ -2,7 +2,6 @@ import json
 from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import patch
-from agentforge.orchestration.graph import bounded_stages
 from agentforge.repositories.research_inputs import full_range
 from agentforge.tools.catalog import ToolCatalog
 from agentforge.tools.contracts import TaskInputArgs
@@ -12,12 +11,6 @@ from agentforge.subagents.scope import ScopeDenied
 
 
 class BoundTests(TestCase):
-    def test_complexity_is_bounded_and_goal_is_never_sliced_into_lost_clauses(self):
-        self.assertEqual(len(bounded_stages("What does this policy require?", "research")), 1)
-        self.assertEqual(len(bounded_stages("Compare A; evaluate B\nThen C", "research")), 3)
-        self.assertEqual(len(bounded_stages("a" * 8000, "research")), 3)
-        self.assertEqual(len(bounded_stages("Compare A; evaluate B", "general")), 1)
-
     def test_model_only_general_configuration_is_truthful(self):
         from agentforge.api.routes_configuration import configuration
         from agentforge.settings import Settings
@@ -39,20 +32,20 @@ class BoundTests(TestCase):
 
     def test_custom_source_versions_can_read_owned_inputs_without_execution_grants(self):
         from agentforge.api.routes_agents import validate_management
-        from agentforge.contracts.agent_definition import AgentDefinition, Permissions
-        definition = load_builtin("researcher", 2).model_copy(update={"name": "private-research", "version": 1,
-            "permissions": Permissions(web=True, allowed_repo_ids=(), allowed_sandbox_ids=(), allowed_context_refs=(),
+        from agentforge.contracts.agent_definition import AgentDefinition, Budget, Permissions
+        definition = AgentDefinition(name="private-research", version=1, description="Reads the sources it is given.",
+            system_prompt="Read the supplied sources and answer from them only, in plain text.",
+            allowed_tools=("web_search", "fetch_webpage", "read_task_input", "read_research_source"),
+            permissions=Permissions(web=True, allowed_repo_ids=(), allowed_sandbox_ids=(), allowed_context_refs=(),
                 allowed_command_profiles=(), allowed_web_hosts=()),
-            "budget": load_builtin("researcher", 1).budget})
-        validated = AgentDefinition.model_validate_json(definition.model_dump_json())
-        validate_management(validated)
+            output_schema_id="research_result_v1", budget=Budget(max_steps=8, max_tool_calls=12, max_llm_cost_usd=0.5, max_wall_time_sec=120))
+        validate_management(AgentDefinition.model_validate_json(definition.model_dump_json()))
 
-    def test_new_versions_leave_existing_coding_and_research_snapshots_valid(self):
-        for name, version in (("researcher", 1), ("researcher", 2), ("general-executor", 2), ("general-executor", 3), ("verifier", 2), ("verifier", 3)):
-            definition = load_builtin(name, version)
-            self.assertEqual(definition.version, version)
-        self.assertEqual(load_builtin("general-executor", 3).output_schema_id, "general_result_v1")
-        self.assertNotIn("run_sandbox_command", load_builtin("general-executor", 3).allowed_tools)
+    def test_a_stored_definition_of_the_old_pipeline_still_validates_as_data(self):
+        # Rows saved before the plain-text agent keep loading even though their typed output ids no longer do anything.
+        from agentforge.contracts.agent_definition import AgentDefinition
+        stored = load_builtin("agent", 1).model_dump(mode="json") | {"name": "old-research", "output_schema_id": "general_result_v1"}
+        self.assertEqual(AgentDefinition.model_validate(stored).output_schema_id, "general_result_v1")
 
 
 class PageTests(IsolatedAsyncioTestCase):

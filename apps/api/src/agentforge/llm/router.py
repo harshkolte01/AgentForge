@@ -28,6 +28,10 @@ class ModelRouter:
         return cls(OpenAIAdapter(
             api_key=settings.llm_api_key.get_secret_value(), model_id=settings.llm_model,
             rates=ModelRates(settings.llm_input_usd_per_million, settings.llm_output_usd_per_million),
+            long_context_rates=(ModelRates(settings.llm_long_context_input_usd_per_million,
+                                           settings.llm_long_context_output_usd_per_million)
+                if settings.llm_long_context_input_usd_per_million is not None
+                and settings.llm_long_context_output_usd_per_million is not None else None),
             context_window_tokens=settings.llm_context_window_tokens,
             max_output_tokens=settings.llm_max_output_tokens, timeout_sec=settings.llm_timeout_sec,
             reasoning_effort=settings.llm_reasoning_effort,

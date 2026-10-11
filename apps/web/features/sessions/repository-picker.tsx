@@ -1,7 +1,6 @@
 "use client";
 import Link from "next/link";
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import { Switch } from "@base-ui/react/switch";
 import { ArrowLeft, Check, ChevronDown, FolderGit2, Lock, Plus, RefreshCw, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -13,9 +12,7 @@ import type { RepositorySelection } from "@/lib/workspace-api";
 
 const SEARCH_THRESHOLD = 6;
 
-export type RepositoryContinuation = { checked: boolean; onChange: (checked: boolean) => void };
-
-export function RepositoryPicker({ repository, disabled, onChange, side = "top", continuation }: { continuation?: RepositoryContinuation; repository: RepositorySelection | null; disabled: boolean; onChange: (value: RepositorySelection | null) => Promise<void>; side?: "top" | "bottom" }) {
+export function RepositoryPicker({ repository, disabled, onChange, side = "top" }: { repository: RepositorySelection | null; disabled: boolean; onChange: (value: RepositorySelection | null) => Promise<void>; side?: "top" | "bottom" }) {
   const id = useId();
   const [repositories, setRepositories] = useState<GitHubRepository[]>([]);
   const [loading, setLoading] = useState(true);
@@ -31,12 +28,23 @@ export function RepositoryPicker({ repository, disabled, onChange, side = "top",
   const search = useRef<HTMLInputElement>(null);
   const list = useRef<HTMLDivElement>(null);
   useEffect(() => {
+    if (!open) return;
     const controller = new AbortController();
     void api<{ repositories: GitHubRepository[] }>("/github/repositories", { signal: controller.signal }).then((value) => {
       if (!controller.signal.aborted) { setRepositories(value.repositories); setUnavailable(false); setLoading(false); }
     }).catch(() => { if (!controller.signal.aborted) { setUnavailable(true); setLoading(false); } });
     return () => controller.abort();
-  }, [refresh]);
+  }, [refresh, open]);
+  useEffect(() => {
+    if (!open) return;
+    const reload = () => {
+      if (document.hidden) return;
+      setLoading(true);
+      setRefresh((value) => value + 1);
+    };
+    window.addEventListener("focus", reload);
+    return () => window.removeEventListener("focus", reload);
+  }, [open]);
   const listed = repositories.some((item) => item.full_name === repository?.repo_id);
   const showSearch = repositories.length > SEARCH_THRESHOLD;
   const needle = query.trim().toLowerCase();
@@ -45,7 +53,7 @@ export function RepositoryPicker({ repository, disabled, onChange, side = "top",
   function changeOpen(next: boolean) {
     if (next && (blocked || busy)) return;
     setOpen(next);
-    if (next) { setCustom(false); setQuery(""); setError(""); }
+    if (next) { setLoading(true); setCustom(false); setQuery(""); setError(""); }
   }
   async function choose(value: RepositorySelection | null) {
     if (busy) return;
@@ -87,10 +95,9 @@ export function RepositoryPicker({ repository, disabled, onChange, side = "top",
     rows.push({ key: String(item.id), label: item.full_name, selected, private: item.private, detail: selected && repository ? (repository.ref === "HEAD" ? "default branch" : repository.ref) : undefined, value: selected && repository ? repository : { repo_id: item.full_name, ref: item.default_branch } });
   }
   return <Popover open={open} onOpenChange={changeOpen}>
-    <PopoverTrigger disabled={blocked} aria-label={`Conversation repository: ${label}`} title={repository ? `${repository.repo_id} · ${repository.ref === "HEAD" ? "default branch" : repository.ref}${continuation && !continuation.checked ? " · starting from the selected revision" : ""}` : "Work without a repository"} className={`${chipClass} ${repository ? "text-foreground" : ""}`}>
+    <PopoverTrigger disabled={blocked} aria-label={`Conversation repository: ${label}`} title={repository ? `${repository.repo_id} · ${repository.ref === "HEAD" ? "default branch" : repository.ref}` : "Work without a repository"} className={`${chipClass} ${repository ? "text-foreground" : ""}`}>
       <FolderGit2 className="size-4" aria-hidden="true" />
       <span className="min-w-0 truncate">{label}</span>
-      {repository && continuation && !continuation.checked ? <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">· fresh start</span> : null}
       <ChevronDown className="size-3 opacity-60 max-[359px]:hidden" aria-hidden="true" />
     </PopoverTrigger>
     <PopoverContent side={side} align="start" className="w-[min(22rem,calc(100vw-1.5rem))]" initialFocus={(type) => type === "touch" ? true : custom ? true : showSearch ? search.current : list.current?.querySelector<HTMLElement>('[aria-selected="true"]') ?? true}>
@@ -116,7 +123,6 @@ export function RepositoryPicker({ repository, disabled, onChange, side = "top",
         {!loading && !unavailable && !repositories.length ? <p className="px-2.5 py-2 text-xs leading-5 text-muted-foreground">No connected repositories yet. <Link href="/settings?section=github" className="underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-ring/60">Manage GitHub access</Link></p> : null}
         {error ? <p role="alert" className="px-2.5 py-2 text-xs leading-5 text-destructive">{error}</p> : null}
         <div className="mt-1 border-t pt-1"><button type="button" className={optionClass} onClick={openCustom}><Plus className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" /><span className="flex-1">Use another repository…</span></button></div>
-        {repository && continuation ? <div className="mt-1 border-t pt-1"><label className="flex min-h-11 cursor-pointer items-start gap-3 rounded-lg px-2.5 py-2 hover:bg-muted"><span className="min-w-0 flex-1"><span className="block text-[13px] leading-5">Continue saved changes</span><span className="block text-xs leading-5 text-muted-foreground">Build on your last run in this repository. Turn off to start from the selected revision.</span></span><Switch.Root checked={continuation.checked} onCheckedChange={continuation.onChange} disabled={blocked} className="mt-0.5 flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full bg-input p-0.5 outline-none transition-colors data-checked:bg-primary focus-visible:ring-2 focus-visible:ring-ring/60 disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none dark:bg-input/60"><Switch.Thumb className="size-4 rounded-full bg-background shadow-sm transition-[translate] duration-150 data-checked:translate-x-4 motion-reduce:transition-none" /></Switch.Root></label></div> : null}
       </div>}
     </PopoverContent>
   </Popover>;

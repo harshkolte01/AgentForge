@@ -20,7 +20,7 @@ async def prepare_task(body: TaskCreate, request: Request, user: User, repositor
     await run_in_threadpool(repository.authorize_project, owner_id=user.id, project_id=body.project_id)
     if body.coding is not None:
         settings = request.app.state.settings
-        if not (getattr(settings, "e2b_api_key", None) and getattr(settings, "e2b_template_id", None) and getattr(settings, "e2b_template_qualified", False)):
+        if not getattr(settings, "e2b_api_key", None):
             raise HTTPException(503, "coding_sandbox_not_configured")
         from agentforge.auth.github_service import github_for_user
         from agentforge.api.dependencies import sessions

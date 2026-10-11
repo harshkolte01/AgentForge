@@ -77,10 +77,10 @@ research/general stage. Other fields, and fields that are `null`, never stream.
    epoch (a retry or newer attempt starts a new one) and is best effort: any failure switches streaming off for the
    run and the task still completes. Apply the migration (`uv run alembic upgrade head`) to enable it; without the
    table, replies simply arrive when complete.
-3. The task's SSE endpoint sends `message.delta` events (`epoch`, `offset`, `text`) and polls quickly only while a
+3. The task's SSE endpoint sends `message.delta` events (`epoch`, `revision`, `kind`, `offset`, `text`, `reset`) and polls quickly only while a
    reply is being written. They are not part of the durable event log, so a reconnect restarts from offset 0.
 4. `TaskTurn` renders the text as it grows, folds the steps into an "N actions" line, and the saved message takes its
-   place without a second entrance. The copy is deleted when the task ends; the saved message stays authoritative.
+   place without a second entrance. The copy is cleared when the task ends; the saved message stays authoritative.
 
 `tests/test_streaming.py` covers the extractor, adapter assembly, the writer and the runtime wiring;
 `examples/phase8_streaming_smoke.py` checks the migration, SQL, fencing and the SSE endpoint on a disposable database.

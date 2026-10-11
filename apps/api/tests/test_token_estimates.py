@@ -3,8 +3,12 @@ import json
 from decimal import Decimal
 from unittest import TestCase
 
-from agentforge.llm.models import conservative_input_tokens, estimate_tokens
-from agentforge.subagents.spawn_service import GENERIC_STOPPED_SUMMARY, STOPPED_SUMMARIES
+from agentforge.llm.models import (ModelConfigurationError, ModelContextLimit, ModelProviderError, conservative_input_tokens,
+                                   estimate_tokens)
+from agentforge.subagents.budget import BudgetExceeded
+from agentforge.subagents.scope import ScopeDenied
+from agentforge.subagents.spawn_service import GENERIC_STOPPED_SUMMARY, STOPPED_SUMMARIES, _failure_text
+from agentforge.tools.gateway import UnknownToolOutcome
 
 
 class EstimateTests(TestCase):
@@ -36,11 +40,31 @@ class EstimateTests(TestCase):
 
 
 class StoppedSummaryTests(TestCase):
-    def test_every_stop_reason_a_person_can_see_has_a_plain_explanation_without_internal_codes(self):
-        for code in ("MODEL_CONTEXT_LIMIT", "RATE_LIMIT", "MODEL_PROVIDER_ERROR", "AUTH_ERROR", "BUDGET_EXCEEDED",
-                     "TOOL_TIMEOUT", "SCOPE_DENIED", "UNKNOWN_REMOTE_OUTCOME"):
-            text = STOPPED_SUMMARIES[code]
+    def test_every_stop_reason_of_our_own_has_a_plain_explanation_without_internal_codes(self):
+        # Provider failures are not in this table: a person reads what the provider itself said.
+        self.assertEqual(set(STOPPED_SUMMARIES), {"SCOPE_DENIED", "TOOL_TIMEOUT", "UNKNOWN_REMOTE_OUTCOME"})
+        for code, text in STOPPED_SUMMARIES.items():
             self.assertTrue(text.endswith("."), code)
             self.assertNotIn(code, text)
             self.assertNotIn("Child invocation", text)
+        self.assertTrue(GENERIC_STOPPED_SUMMARY.endswith("."))
         self.assertNotIn("Child invocation", GENERIC_STOPPED_SUMMARY)
+
+    def test_provider_failures_show_the_providers_own_message_and_keep_their_code(self):
+        quota = ModelProviderError("model quota exhausted", code="MODEL_QUOTA_EXCEEDED", detail="429: You exceeded your current quota.")
+        self.assertEqual(_failure_text(quota), ("MODEL_QUOTA_EXCEEDED", "429: You exceeded your current quota."))
+        bare = ModelProviderError("model provider unreachable")
+        self.assertEqual(_failure_text(bare), ("MODEL_PROVIDER_ERROR", "model provider unreachable"))
+        limit = ModelContextLimit("400: This model's maximum context length is 128000 tokens.")
+        self.assertEqual(_failure_text(limit), ("MODEL_CONTEXT_LIMIT", "400: This model's maximum context length is 128000 tokens."))
+        self.assertEqual(_failure_text(ModelConfigurationError("no key"))[0], "MODEL_PROVIDER_ERROR")
+
+    def test_our_own_failures_get_a_plain_sentence_and_never_leak_the_exception_text(self):
+        for exc, code in ((ScopeDenied("secret detail"), "SCOPE_DENIED"), (TimeoutError("secret detail"), "TOOL_TIMEOUT"),
+                          (UnknownToolOutcome("secret detail"), "UNKNOWN_REMOTE_OUTCOME"), (BudgetExceeded("secret detail"), "BUDGET_EXCEEDED")):
+            with self.subTest(code=code):
+                got_code, text = _failure_text(exc)
+                self.assertEqual(got_code, code)
+                self.assertNotIn("secret", text)
+                self.assertTrue(text.endswith("."))
+        self.assertEqual(_failure_text(BudgetExceeded("x"))[1], GENERIC_STOPPED_SUMMARY)

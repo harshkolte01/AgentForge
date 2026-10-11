@@ -42,6 +42,12 @@ class DatabaseResourceResolver:
     def __init__(self, repository: "ResearchRepository", authorizer: "AuthorizationService") -> None:
         self.repository, self.authorizer = repository, authorizer
 
+    async def record_provider_input(self, ctx, operation_key, messages, tools):
+        from agentforge.repositories.conversation_context import ConversationContextRepository
+        import asyncio
+        await asyncio.to_thread(ConversationContextRepository(self.repository.session_factory).record_provider_input,
+            ctx.task_id, operation_key, messages, tools)
+
     async def load_context(self, ctx: TaskContext, references: tuple[str, ...]) -> dict[str, str]:
         await self.authorizer.check_context(ctx)
         if len(references) > 20 or not set(references).issubset(ctx.authorized_context_refs):

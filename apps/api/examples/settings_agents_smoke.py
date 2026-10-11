@@ -49,10 +49,11 @@ try:
     with sessions() as db:
         identity, outsider = db.get(User, user_id), db.get(User, other_id)
         db.expunge_all()
-    definition = load_builtin("researcher", 1).model_dump(mode="json")
+    definition = load_builtin("agent", 1).model_dump(mode="json")
     definition["name"] = "alpha-researcher"
-    definition["allowed_tools"] = ["read_task_input", "read_research_source", "web_search", "fetch_webpage"]
-    definition["permissions"]["github_read"] = False
+    definition["allowed_tools"] = ["read_research_source", "web_search", "fetch_webpage"]
+    for key in ("github_read", "sandbox_read", "sandbox_write", "sandbox_exec"):
+        definition["permissions"][key] = False
     for key in definition["permissions"]:
         if key.startswith("allowed_"):
             definition["permissions"][key] = []

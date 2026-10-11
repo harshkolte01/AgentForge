@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     llm_timeout_sec: float = Field(default=60, gt=0, le=120)
     llm_input_usd_per_million: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
     llm_output_usd_per_million: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
+    llm_long_context_input_usd_per_million: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
+    llm_long_context_output_usd_per_million: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
     # Let the model request several independent read-only tools in one turn.
     llm_parallel_tool_calls: bool = True
     # Send tool schemas in the provider's strict structured-output form. Verify the configured
@@ -65,6 +67,10 @@ class Settings(BaseSettings):
     worker_lease_sec: int = Field(default=90, ge=30, le=300)
     worker_heartbeat_sec: int = Field(default=10, ge=2, le=30)
     worker_poll_sec: float = Field(default=2, ge=0.2, le=30)
+    conversation_queue_enabled: bool = True
+    conversation_summaries_enabled: bool = True
+    # Name a new conversation from what it is about, with one small model call before its first reply.
+    conversation_titles_enabled: bool = True
     neatlogs_api_key: SecretStr | None = Field(default=None, repr=False)
     neatlogs_workflow_name: str = Field(default="agentforge-ai", min_length=1, max_length=100)
     tavily_api_key: SecretStr | None = Field(default=None, repr=False)
@@ -73,14 +79,12 @@ class Settings(BaseSettings):
     research_storage_path: Path = REPO_ROOT / ".local" / "artifacts"
     research_fetch_timeout_sec: float = Field(default=15, gt=0, le=30)
     research_max_response_bytes: int = Field(default=1_000_000, ge=1024, le=2_000_000)
+    # The coding sandbox. With a key, the agent gets bash, file and search tools; the template is optional (E2B's default
+    # image has git, Python and Node). The sandbox is paused after `e2b_sandbox_ttl_sec` idle seconds and resumed on use.
     e2b_api_key: SecretStr | None = Field(default=None, repr=False)
     e2b_template_id: str | None = Field(default=None, min_length=1, max_length=200)
-    e2b_template_qualified: bool = False
-    e2b_command_timeout_sec: float = Field(default=120, gt=0, le=180)
-    e2b_request_timeout_sec: float = Field(default=15, gt=0, le=30)
-    e2b_sandbox_ttl_sec: int = Field(default=300, ge=60, le=600)
-    e2b_max_output_bytes: int = Field(default=65536, ge=1024, le=131072)
-    e2b_execution_max_cost_usd: Decimal = Field(default=Decimal("0.10"), gt=0, le=1, allow_inf_nan=False)
+    e2b_request_timeout_sec: float = Field(default=30, gt=0, le=120)
+    e2b_sandbox_ttl_sec: int = Field(default=3600, ge=60, le=86400)
     auth_mode: Literal["disabled", "local_single_user", "github_app"] = "disabled"
     github_client_id: str | None = Field(default=None, min_length=1, max_length=200)
     github_client_secret: SecretStr | None = Field(default=None, repr=False)
@@ -95,14 +99,6 @@ class Settings(BaseSettings):
     public_signup_enabled: bool = True
     session_absolute_ttl_sec: int = Field(default=86400, ge=300, le=604800)
     session_idle_ttl_sec: int = Field(default=1800, ge=60, le=86400)
-    public_max_concurrent_tasks: int = Field(default=2, ge=1, le=10)
-    public_max_daily_tasks: int = Field(default=20, ge=1, le=1000)
-    public_max_daily_cost_usd: Decimal = Field(default=Decimal("5"), gt=0, le=100, allow_inf_nan=False)
-    public_max_task_cost_usd: Decimal = Field(default=Decimal("1"), gt=0, le=10, allow_inf_nan=False)
-    global_max_concurrent_tasks: int = Field(default=10, ge=1, le=100)
-    global_max_daily_tasks: int = Field(default=100, ge=1, le=10000)
-    global_max_daily_cost_usd: Decimal = Field(default=Decimal("20"), gt=0, le=1000, allow_inf_nan=False)
-    github_approval_ttl_sec: int = Field(default=900, ge=60, le=3600)
     local_user_id: UUID | None = None
     local_bootstrap_token: SecretStr | None = Field(default=None, repr=False, min_length=32)
     local_session_ttl_sec: int = Field(default=3600, ge=60, le=86400)

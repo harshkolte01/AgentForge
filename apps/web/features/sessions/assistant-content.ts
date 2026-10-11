@@ -1,32 +1,26 @@
-/** Only leading provider thinking tags are metadata; examples in the answer stay untouched. */
-export function splitAssistantContent(content: string, streaming = false) {
+/**
+ * Separates the answer from legacy provider metadata. Some providers once put their reasoning in a leading
+ * `<think>`/`<thinking>` block; that is never shown in chat. Only a block at the very start counts: the same tags inside an
+ * answer (an example, a quoted prompt) are the answer's own words and stay untouched.
+ */
+export function splitAssistantContent(content: string, streaming = false): { answer: string; hadLeadingThoughts: boolean } {
   let answer = content;
-  const thoughts: string[] = [];
+  let hadLeadingThoughts = false;
   while (answer.trimStart()) {
     const start = answer.trimStart();
     const opening = /^<(think|thinking)>/.exec(start);
     if (!opening) {
-      if (streaming && ["<think>", "<thinking>"].some((tag) => tag.startsWith(start))) {
-        return { answer: "", reasoning: thoughts.join("\n\n"), isThinking: true };
-      }
+      // The opening tag itself may be split across chunks: show nothing until it is clear whether this is metadata.
+      if (streaming && ["<think>", "<thinking>"].some((tag) => tag.startsWith(start))) return { answer: "", hadLeadingThoughts };
       break;
     }
+    hadLeadingThoughts = true;
     const closing = `</${opening[1]}>`;
     const body = start.slice(opening[0].length);
     const end = body.indexOf(closing);
-    if (end === -1) {
-      // A closing tag can arrive over several chunks. Keep its partial syntax out of the UI.
-      let text = body;
-      if (streaming) {
-        for (let length = closing.length - 1; length > 0; length--) {
-          if (text.endsWith(closing.slice(0, length))) { text = text.slice(0, -length); break; }
-        }
-      }
-      thoughts.push(text.trim());
-      return { answer: "", reasoning: thoughts.join("\n\n"), isThinking: streaming };
-    }
-    thoughts.push(body.slice(0, end).trim());
+    // No closing tag (yet): everything after the opening tag is still metadata, and a partial closing tag is not an answer.
+    if (end === -1) return { answer: "", hadLeadingThoughts };
     answer = body.slice(end + closing.length).trimStart();
   }
-  return { answer, reasoning: thoughts.length ? thoughts.join("\n\n") : null, isThinking: false };
+  return { answer, hadLeadingThoughts };
 }

@@ -22,7 +22,8 @@ KEEP_RECENT_RESULTS = 4
 # these makes the model forget what it was asked, so they are never stubbed however full the window is.
 PINNED_TOOLS = frozenset({"read_task_input"})
 STUB_NOTE = ("Full result removed to save space; the ids below remain valid. "
-             "Call the tool again if you need the content.")
+             "Read its resource_id with read_context_resource when available; this reads stored data without "
+             "repeating the original paid or effectful operation. Otherwise use an authorized source read.")
 
 
 def conversation_tokens(messages: list[dict[str, Any]]) -> int:
@@ -38,6 +39,14 @@ def _stub(message: dict[str, Any]) -> dict[str, Any] | None:
     except ValueError:
         original = {}
     kept = {key: original[key] for key in ("tool", "status", "error_code", "evidence_ids", "artifact_ids") if key in original}
+    data = original.get("data")
+    if isinstance(data, dict):
+        # Keep navigation and identity, so a compacted read can be resumed or fetched again.
+        # Content is deliberately not promoted to a generated summary or trusted instruction.
+        anchors = {key: data[key] for key in ("id", "resource_id", "path", "sha256", "content_sha256", "offset",
+            "next_offset", "line_start", "next_line", "total_lines", "total_chars", "truncated") if key in data}
+        if len(json.dumps(anchors, ensure_ascii=False).encode("utf-8")) <= 800:
+            kept["data"] = anchors
     stub = RESULT_PREFIX + json.dumps({**kept, "compacted": True, "note": STUB_NOTE}, ensure_ascii=False)
     if len(stub) >= len(content):
         return None
@@ -80,8 +89,10 @@ def compact_messages(messages: list[dict[str, Any]], limit_tokens: int | None,
         stub = _stub(compacted[index])
         if stub is None:
             continue
-        total -= estimate_tokens(compacted[index]["content"]) - estimate_tokens(stub["content"])
         compacted[index] = stub
+        # Recount the serialized envelope, including escaping. Subtracting raw content estimates
+        # can claim a request fits when JSON backslashes and role boundaries say otherwise.
+        total = conversation_tokens(compacted)
         if total <= limit_tokens:
             break
     return compacted

@@ -53,7 +53,7 @@ def validate_management(definition):
         raise HTTPException(422, "built_in_name_or_disabled_definition")
     # Phase 6 exposes reviewed source research tools. Future sandbox roles require
     # separately reviewed management grants and execution verification.
-    if definition.output_schema_id != "research_result_v1" or not set(definition.allowed_tools).issubset({"web_search", "fetch_webpage", "read_task_input", "read_research_source"}):
+    if definition.output_schema_id not in {"text_v1", "research_result_v1"} or not set(definition.allowed_tools).issubset({"web_search", "fetch_webpage", "read_task_input", "read_research_source"}):
         raise HTTPException(422, "custom_agents_support_source_research_tools")
     if not definition.permissions.web or any(getattr(definition.permissions, field) for field in
         ("sandbox_read", "sandbox_exec", "sandbox_write", "github_read", "github_write", "browser")):
@@ -64,9 +64,6 @@ def validate_management(definition):
             if value is None or (field != "allowed_web_hosts" and value):
                 raise HTTPException(422, "custom_agent_requires_explicit_restricted_resources")
     TaskCreate.validate_hosts(definition.permissions.allowed_web_hosts)
-    budget = definition.budget
-    if budget.max_steps > 12 or budget.max_tool_calls > 20 or budget.max_llm_cost_usd > 1 or budget.max_wall_time_sec > 300:
-        raise HTTPException(422, "custom_agent_budget_exceeds_management_ceiling")
 
 
 @router.get("")

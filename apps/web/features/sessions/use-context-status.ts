@@ -19,16 +19,23 @@ export function useContextStatus(sessionId: string | null, revision: string, liv
   const [tick, setTick] = useState(0);
   useEffect(() => {
     const controller = new AbortController();
-    void api<ContextStatus>(`/context${sessionId ? `?session_id=${sessionId}` : ""}`, { signal: controller.signal })
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    void api<ContextStatus>(`/context${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ""}`, {
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(12_000)]),
+    })
       .then((status) => { if (!controller.signal.aborted) { setLoaded({ key, status }); setFailedKey(null); } })
-      .catch(() => { if (!controller.signal.aborted) setFailedKey(key); });
-    return () => controller.abort();
-  }, [sessionId, key, revision, tick]);
+      .catch(() => { if (!controller.signal.aborted) setFailedKey(key); })
+      .finally(() => {
+        // Schedule after completion: slow requests aren't repeatedly aborted by the polling clock.
+        if (!controller.signal.aborted && live && !document.hidden) timer = setTimeout(() => setTick((value) => value + 1), LIVE_REFRESH_MS);
+      });
+    return () => { controller.abort(); clearTimeout(timer); };
+  }, [sessionId, key, revision, tick, live]);
   useEffect(() => {
-    if (!live) return;
-    const timer = window.setInterval(() => setTick((value) => value + 1), LIVE_REFRESH_MS);
-    return () => window.clearInterval(timer);
-  }, [live]);
+    const resume = () => { if (!document.hidden) setTick((value) => value + 1); };
+    document.addEventListener("visibilitychange", resume);
+    return () => document.removeEventListener("visibilitychange", resume);
+  }, []);
   const refresh = useCallback(() => setTick((value) => value + 1), []);
   return { status: loaded?.key === key ? loaded.status : null, failed: failedKey === key, refresh };
 }

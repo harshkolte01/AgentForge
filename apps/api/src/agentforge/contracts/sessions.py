@@ -4,7 +4,8 @@ from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from .tasks import TaskCreate, TaskView, TextAttachment
+from .activity import AttachmentView, MessageActivity
+from .tasks import UNLIMITED_COST_USD, UNLIMITED_WALL_TIME_SEC, TaskCreate, TaskView, TextAttachment
 from .coding import RepoSelection
 
 class SessionCreate(BaseModel):
@@ -13,6 +14,7 @@ class SessionCreate(BaseModel):
     title: str = Field(default="New session", min_length=1, max_length=120)
     mode: Literal["research", "general", "coding"] = "general"
     repository: RepoSelection | None = None
+    idempotency_key: UUID | None = None
 
 class SessionPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -33,6 +35,20 @@ class SessionView(BaseModel):
     updated_at: datetime
     repository: RepoSelection | None = None
     continuation_task_id: UUID | None = None
+    queue_paused: bool = False
+    queued_count: int = 0
+    revision: int = 0
+    # What the sidebar shows beside the conversation: "running" while the agent works (or the next message is about to
+    # start), "waiting_approval" while a tool call waits for the person, "failed" when the latest reply failed or a
+    # queued message could not start, "unread" when a reply finished that the owner has not seen yet, otherwise "idle".
+    status: Literal["idle", "running", "waiting_approval", "failed", "unread"] = "idle"
+    read_sequence: int = 0
+
+
+class ReadReceipt(BaseModel):
+    """The owner has seen the conversation up to this message. It can only move forward and never past the last message."""
+    model_config = ConfigDict(extra="forbid")
+    sequence: int = Field(ge=0, le=2_000_000)
 
 class StepView(BaseModel):
     """One tool call made while producing a reply: the tool's name and how it ended, never its content."""
@@ -49,7 +65,12 @@ class MessageView(BaseModel):
     content: str
     task_id: UUID | None
     created_at: datetime
+    # `steps` is the older, capped list of finished calls; `activity` carries the exact counts the client should trust.
     steps: list[StepView] = []
+    activity: MessageActivity | None = None            # assistant messages that came from a task
+    attachments: list[AttachmentView] = []             # user messages: names and sizes of attached files only
+    turn_id: UUID | None = None
+    turn_state: str | None = None
 
 class SessionTurnCreate(TaskCreate):
     # Project is derived from the owned session, never selected by this caller.
@@ -68,6 +89,16 @@ class TurnView(BaseModel):
     task: TaskView | None
     assistant_message: MessageView | None = None
     replayed: bool = False
+    turn_id: UUID | None = None
+    state: str = "running"
+    queue_position: int | None = None
+    error_code: str | None = None
+
+
+class QueueCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # Stop is fenced to what the browser actually observed, never a successor.
+    task_id: UUID | None = None
 
 
 class AutoTurnCreate(BaseModel):
@@ -78,8 +109,9 @@ class AutoTurnCreate(BaseModel):
     goal: str = Field(min_length=1, max_length=8000)
     repository: RepoSelection | None = None
     continue_from_task_id: UUID | None = None
-    max_cost_usd: Decimal = Field(default=Decimal("0.50"), gt=0, le=5, decimal_places=4, allow_inf_nan=False)
-    max_wall_time_sec: int = Field(default=300, ge=30, le=1200)
+    # Accepted for older clients and ignored: runs are not limited.
+    max_cost_usd: Decimal = Field(default=UNLIMITED_COST_USD, gt=0, decimal_places=4, allow_inf_nan=False)
+    max_wall_time_sec: int = Field(default=UNLIMITED_WALL_TIME_SEC, ge=1)
     allowed_web_hosts: tuple[str, ...] = Field(default=(), max_length=20)
     attachments: tuple[TextAttachment, ...] = Field(default=(), max_length=4)
     agent_key: str | None = Field(default=None, max_length=160, pattern=r"^project/[0-9a-f-]{36}/[a-z][a-z0-9-]+$")

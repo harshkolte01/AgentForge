@@ -27,6 +27,26 @@ def reconcile(store, budgets) -> bool:
             if run is not None and run.finished_at is not None and run.result_json is not None:
                 continue
             if run is None:
+                from agentforge.database.sessions import SummaryAttempt
+                attempt = session.get(SummaryAttempt, reservation.run_id)
+                if attempt is not None:
+                    # Summaries have no external effects. An interrupted paid
+                    # summary is charged but never repeated; originals survive.
+                    for operation in session.scalars(select(BudgetOperation).where(
+                        BudgetOperation.reservation_id == reservation.id, BudgetOperation.recorded_at.is_(None))):
+                        operation.cost_usd, operation.recorded_at = operation.max_cost_usd, now
+                        operation.usage_json = {"cost_source": "authorized_upper_bound", "recovery": "summary_interrupted"}
+                    attempt.status = "failed" if attempt.status == "prepared" else attempt.status
+                    continue
+                from .conversation_title import title_run_id
+                if reservation.run_id == title_run_id(task.id):
+                    # Naming the conversation has no external effect and the reply does not depend on it. An
+                    # interrupted paid call is charged at its upper bound and never repeated; the title stays as it was.
+                    for operation in session.scalars(select(BudgetOperation).where(
+                        BudgetOperation.reservation_id == reservation.id, BudgetOperation.recorded_at.is_(None))):
+                        operation.cost_usd, operation.recorded_at = operation.max_cost_usd, now
+                        operation.usage_json = {"cost_source": "authorized_upper_bound", "recovery": "title_interrupted"}
+                    continue
                 # Parent-required coding checks have no child AgentRun. Their
                 # successful durable receipt establishes exact operation outcome.
                 from agentforge.database.coding import CodingOperation

@@ -1,4 +1,4 @@
-"""Disposable PostgreSQL and mocked GitHub qualification; no live providers."""
+"""Disposable PostgreSQL and mocked GitHub qualification of identity: sessions, OAuth and webhooks; no live providers."""
 import asyncio
 import hashlib
 import json
@@ -10,7 +10,7 @@ from uuid import uuid4
 import httpx
 from pydantic import SecretStr
 from sqlalchemy import create_engine, select, text, func
-from sqlalchemy.engine import make_url, URL
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 from agentforge.settings import Settings
 from _disposable_db import admin_engine
@@ -33,20 +33,14 @@ async def run(settings):
     cfg.set_main_option("script_location", str(ROOT / "apps/api/alembic"))
     stage = "migrations"
     command.upgrade(cfg, "head")
-    from agentforge.database.models import User, Project, Task
-    from agentforge.database.identity import AuthSession, Approval, ExternalOperation, GitHubCredential
-    from agentforge.database.coding import CodingSession, CodingSnapshot, CodingEvidence, CodingArtifact
+    from agentforge.database.models import User, Project
+    from agentforge.database.identity import AuthSession, GitHubCredential
     from agentforge.auth.github_service import GitHubIdentityService
     from agentforge.auth.durable import DurableSessionStore, now
-    from agentforge.contracts.approvals import ApprovalPrepare, ApprovalDecision
-    from agentforge.repositories.approvals import ApprovalRepository, ApprovalError
-    from agentforge.repositories.coding import _encode
-    from agentforge.sandbox.workspace import workspace_revision, build_diff
-    from agentforge.integrations.github_write import GitHubWriteService, blob_sha
     from agentforge.integrations.github_client import GitHubError
     engine = create_engine(settings.database_url)
     sessions = sessionmaker(engine, expire_on_commit=False)
-    owner, outsider, project, task_id, coding_id = uuid4(), uuid4(), uuid4(), uuid4(), uuid4()
+    owner, outsider, project = uuid4(), uuid4(), uuid4()
     with sessions.begin() as db:
         db.add_all([User(id=owner, github_user_id=8123, display_name="Fixture"), User(id=outsider, github_user_id=8124, display_name="Other")])
         db.flush()
@@ -83,7 +77,6 @@ async def run(settings):
         identity._store_token(row, {"access_token": "ghu_fixture", "refresh_token": "ghr_fixture", "expires_in": 28800, "refresh_token_expires_in": 15897600})
         db.add(row)
     stage = "public signup and rotating refresh"
-    from agentforge.integrations.github_app import GitHubAppClient
     def auth_handler(request):
         if request.url.path == "/login/oauth/access_token":
             return httpx.Response(200, json={"access_token": "ghu_signup_fixture", "refresh_token": "ghr_signup_fixture", "token_type": "bearer",
@@ -130,178 +123,6 @@ async def run(settings):
             check(str(error) == "github_reauthorization_required", "refresh uncertainty not fenced")
         else:
             raise AssertionError("unknown refresh outcome accepted")
-    stage = "verified coding fixture"
-    base = {"app.py": b"x = 1\n", "test_app.py": b"assert x == 2\n"}
-    current = {**base, "app.py": b"x = 2\n"}
-    base_revision, revision = workspace_revision(base), workspace_revision(current)
-    base_sha, tree_sha, new_tree_sha, commit_sha = "b"*40, "c"*40, "d"*40, "e"*40
-    diff = build_diff(base, current).encode()
-    evidence_ids = [uuid4(), uuid4(), uuid4()]
-    artifact_id = uuid4()
-    with sessions.begin() as db:
-        db.add(Task(id=task_id, created_by=owner, project_id=project, goal="Fix fixture", status="COMPLETED", thread_id=str(task_id),
-            max_cost_usd=1, max_wall_time_sec=60, permissions_json={"kind": "coding"}, event_sequence=0,
-            final_result={"coding": {"revision": revision, "base_sha": base_sha, "test_evidence_ids": [str(evidence_ids[0])],
-                "review_evidence_ids": [str(item) for item in evidence_ids[1:]], "diff_artifact_id": str(artifact_id)},
-                "verification": {"status": "PASS", "fresh_revision": True, "secret_check": True}}))
-        db.flush()
-        db.add(CodingSession(id=coding_id, task_id=task_id, repo_id="fixture/repo", commit_sha=base_sha, baseline_revision=base_revision, revision=revision))
-        db.flush()
-        db.add_all([CodingSnapshot(id=uuid4(), task_id=task_id, session_id=coding_id, revision=base_revision, files_json=_encode(base)),
-            CodingSnapshot(id=uuid4(), task_id=task_id, session_id=coding_id, revision=revision, files_json=_encode(current))])
-        db.add_all([CodingEvidence(id=identifier, task_id=task_id, session_id=coding_id, revision=revision, operation_key=str(identifier),
-            kind=kind, evidence_json={"qualified": True}) for identifier, kind in zip(evidence_ids, ("test", "review", "verification"))])
-        db.add(CodingArtifact(id=artifact_id, task_id=task_id, operation_key="diff", kind="diff", filename="changes.diff", mime_type="text/plain",
-            storage_key="fixture/changes.diff", sha256=hashlib.sha256(diff).hexdigest(), byte_size=len(diff), metadata_json={"revision": revision}))
-    remote_repo = {"id": 42, "full_name": "fixture/repo", "default_branch": "main", "private": True, "permissions": {"pull": True, "push": True}}
-    installation = {"id": 7, "app_id": 123, "account": {"id": 80, "login": "fixture"}, "permissions": {"contents": "write", "issues": "read", "pull_requests": "write"}, "repository_selection": "selected"}
-    repository = ApprovalRepository(sessions, settings)
-    preview = repository.prepare(task_id, owner, ApprovalPrepare(title="Fix fixture", body="A verified change."), (remote_repo, installation))
-    stage = "exact approval policy"
-    for who, action_hash in ((outsider, preview["action_hash"]), (owner, "f"*64)):
-        try:
-            repository.decision(preview["id"], who, ApprovalDecision(action_hash=action_hash, decision="approve"))
-        except ApprovalError:
-            pass
-        else:
-            raise AssertionError("approval owner/hash bypass")
-    repository.decision(preview["id"], owner, ApprovalDecision(action_hash=preview["action_hash"], decision="approve"))
-    stage = "approval cancellation and execution lease fencing"
-    from agentforge.repositories.tasks import TaskRepository
-    repository.begin(preview["id"], owner)
-    operation = repository.operation(preview["id"], owner, "lease-fixture", {})
-    with sessions.begin() as db:
-        db.get(Approval, preview["id"]).execution_expires_at = now() - timedelta(seconds=1)
-    for action in (lambda: repository.require_unexpired(preview["id"], owner),
-                   lambda: repository.operation_state(operation["id"], "SENT"),
-                   lambda: repository.complete(preview["id"], owner, {})):
-        try:
-            action()
-        except ApprovalError:
-            pass
-        else:
-            raise AssertionError("expired execution lease accepted")
-    replacement = ApprovalRepository(sessions, settings)
-    replacement.begin(preview["id"], owner)
-    try:
-        repository.operation_state(operation["id"], "SENT")
-    except ApprovalError:
-        pass
-    else:
-        raise AssertionError("replaced executor retained authority")
-    replacement.operation_state(operation["id"], "SENT")
-    TaskRepository(sessions).cancel(task_id, owner)
-    for action in (lambda: replacement.operation(preview["id"], owner, "new-after-cancel", {}),
-                   lambda: replacement.require_unexpired(preview["id"], owner),
-                   lambda: replacement.operation_state(operation["id"], "SENT")):
-        try:
-            action()
-        except ApprovalError:
-            pass
-        else:
-            raise AssertionError("cancelled task admitted new GitHub effect")
-    replacement.operation_state(operation["id"], "CONFIRMED", {"fixture": True})
-    with sessions.begin() as db:
-        task = db.get(Task, task_id)
-        task.status, task.cancel_requested_at = "AWAITING_APPROVAL", None
-    replacement.release(preview["id"], owner)
-    try:
-        with sessions.begin() as db:
-            db.execute(text("UPDATE approvals SET action_json='{}'::jsonb"))
-    except Exception:
-        pass
-    else:
-        raise AssertionError("immutable action changed")
-    state = {"branch": None, "pr": None, "branch_posts": 0, "pr_posts": 0, "base_sha": base_sha}
-    action = preview["action"]
-    leaves = [{"path": path, "mode": "100755" if path == "app.py" else "100644", "type": "blob", "sha": blob_sha(data)} for path, data in base.items()]
-    final_leaves = [{**item, "sha": blob_sha(current[item["path"]])} for item in leaves]
-    def handler(request):
-        path, method = request.url.path, request.method
-        payload = json.loads(request.content) if request.content else {}
-        if path == "/user/installations":
-            return httpx.Response(200, json={"installations": [installation]})
-        if path == "/user/installations/7/repositories":
-            return httpx.Response(200, json={"repositories": [remote_repo]})
-        if method == "GET" and path.endswith("/git/ref/heads/main"):
-            return httpx.Response(200, json={"object": {"sha": state["base_sha"]}})
-        if method == "GET" and path.endswith("/git/commits/"+base_sha):
-            return httpx.Response(200, json={"tree": {"sha": tree_sha}})
-        if method == "GET" and "/git/trees/" in path:
-            return httpx.Response(200, json={"tree": final_leaves if path.endswith(new_tree_sha) else leaves, "truncated": False})
-        if method == "POST" and path.endswith("/git/blobs"):
-            import base64
-            return httpx.Response(201, json={"sha": blob_sha(base64.b64decode(payload["content"]))})
-        if method == "POST" and path.endswith("/git/trees"):
-            check(payload["base_tree"] == tree_sha and payload["tree"][0]["mode"] == "100755", "base tree or original mode lost")
-            check([item["path"] for item in payload["tree"]] == ["app.py"], "unchanged path written")
-            return httpx.Response(201, json={"sha": new_tree_sha})
-        if method == "POST" and path.endswith("/git/commits"):
-            check(payload["parents"] == [base_sha], "unapproved commit parent")
-            return httpx.Response(201, json={"sha": commit_sha})
-        if method == "GET" and "/git/ref/heads/agentforge/" in path:
-            return httpx.Response(200, json=state["branch"]) if state["branch"] else httpx.Response(404)
-        if method == "POST" and path.endswith("/git/refs"):
-            state["branch_posts"] += 1
-            check(payload["ref"] == "refs/heads/"+action["head_branch"], "unapproved branch")
-            state["branch"] = {"ref": payload["ref"], "object": {"sha": commit_sha}}
-            return httpx.Response(201, json=state["branch"])
-        if method == "GET" and path.endswith("/pulls"):
-            return httpx.Response(200, json=[state["pr"]] if state["pr"] else [])
-        if method == "POST" and path.endswith("/pulls"):
-            state["pr_posts"] += 1
-            check(payload["draft"] is True, "non-draft PR attempted")
-            state["pr"] = {"number": 8, "html_url": "https://github.com/fixture/repo/pull/8", "draft": True, "state": "open",
-                "head": {"ref": action["head_branch"], "sha": commit_sha, "repo": {"id": 42}},
-                "base": {"ref": "main", "sha": base_sha, "repo": {"id": 42}}}
-            raise httpx.ReadTimeout("simulated provider accepted then response lost")
-        raise AssertionError("unexpected mocked provider request")
-    stage = "ambiguous PR then reconciliation"
-    transport = httpx.MockTransport(handler)
-    state["base_sha"] = "a"*40
-    try:
-        await GitHubWriteService(repository, sessions, settings, transport=transport).execute(preview["id"], owner)
-    except ApprovalError as error:
-        check(str(error) == "github_base_branch_moved", "moved base not rejected")
-    else:
-        raise AssertionError("changed approved base accepted")
-    check(state["branch_posts"] == 0 and state["pr_posts"] == 0, "moved base caused write")
-    state["base_sha"] = base_sha
-    try:
-        await GitHubWriteService(repository, sessions, settings, transport=transport).execute(preview["id"], owner)
-    except GitHubError as error:
-        check(str(error) == "github_unavailable", "unexpected ambiguity code")
-    else:
-        raise AssertionError("lost response reported confirmed")
-    with sessions() as db:
-        check(db.scalar(select(ExternalOperation).where(ExternalOperation.kind == "draft_pr")).status == "UNKNOWN", "ambiguous outcome not persisted")
-    cancelled = TaskRepository(sessions).cancel(task_id, owner)
-    check(cancelled.status == "CANCELLED", "awaiting approval cancellation never settled")
-    state["base_sha"] = "a"*40
-    state["pr"]["base"]["sha"] = state["base_sha"]
-    restarted = ApprovalRepository(sessions, settings)
-    result = await GitHubWriteService(restarted, sessions, settings, transport=transport).execute(preview["id"], owner)
-    check(result["state"] == "CONSUMED" and result["result"]["pr_url"].endswith("/pull/8"), "delivery not confirmed")
-    check(state["pr_posts"] == 1 and state["branch_posts"] == 1, "duplicate external write")
-    with sessions() as db:
-        check(db.get(Task, task_id).status == "CANCELLED", "reconciliation erased cancellation")
-    result = await GitHubWriteService(ApprovalRepository(sessions, settings), sessions, settings, transport=transport).execute(preview["id"], owner)
-    check(result["state"] == "CONSUMED" and state["pr_posts"] == 1, "consumed approval replayed")
-    stage = "cancelled branch-only read reconciliation"
-    from agentforge.contracts.approvals import canonical_hash
-    branch_approval = uuid4()
-    branch_action = {**preview["action"], "title": "Interrupted before PR"}
-    with sessions.begin() as db:
-        db.add(Approval(id=branch_approval, task_id=task_id, user_id=owner, state="EXECUTING", action_json=branch_action,
-            action_hash=canonical_hash(branch_action), expires_at=now() - timedelta(seconds=1)))
-        db.flush()
-        for kind, payload, status, response in (("commit", {"parents": [base_sha]}, "CONFIRMED", {"sha": commit_sha}),
-                ("branch", {"ref": "refs/heads/"+action["head_branch"], "sha": commit_sha}, "UNKNOWN", None)):
-            db.add(ExternalOperation(task_id=task_id, approval_id=branch_approval, operation_key=f"github:{branch_approval}:{kind}",
-                kind=kind, status=status, request_json=payload, input_sha256=canonical_hash(payload), response_json=response))
-    branch_result = await GitHubWriteService(ApprovalRepository(sessions, settings), sessions, settings, transport=transport).execute(branch_approval, owner)
-    check(branch_result["result"]["delivery_kind"] == "branch_only" and "pr_url" not in branch_result["result"], "branch reported as PR")
-    check(state["pr_posts"] == 1 and state["branch_posts"] == 1, "cancelled branch reconciliation wrote remotely")
     stage = "webhook durable replay and revocation"
     from fastapi import FastAPI
     from agentforge.api.routes_github import router as github_router
@@ -316,7 +137,7 @@ async def run(settings):
         check((await http.post("/api/v1/github/webhook", content=raw, headers=headers)).status_code == 202, "valid webhook rejected")
         check((await http.post("/api/v1/github/webhook", content=raw, headers=headers)).status_code == 409, "webhook replay accepted")
         check((await http.post("/api/v1/github/webhook", content=raw+b" ", headers=headers)).status_code == 403, "forged raw body accepted")
-    print("PASS durable session cap/restart/revocation; PKCE state binding/replay; approval owner/hash/immutability/lease fencing; changed-only Git trees preserve modes; cancelled PR response-loss reconciles read-only after base advance to one branch and one draft PR", flush=True)
+    print("PASS durable session cap/restart/revocation; PKCE state binding/replay; rotating refresh with concurrent revocation and lost responses; signed webhook replay and forgery", flush=True)
 
 try:
     source = make_url(Settings().database_url)

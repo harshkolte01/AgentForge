@@ -120,8 +120,12 @@ class SafeWebFetcher:
                     if hop >= self.max_redirects or not headers.get("location"):
                         raise FetchFailure("FETCH_REDIRECT_LIMIT")
                     current = urljoin(current, headers["location"])
-                    # Lexical and exact-host check before any next DNS lookup.
-                    validate_public_url_syntax(current, allowed_hosts)
+                    # Lexical and exact-host check before any next DNS lookup. A redirect to a site the task has not
+                    # discovered is an ordinary failed fetch the model can work around, not an authorization failure.
+                    try:
+                        validate_public_url_syntax(current, allowed_hosts)
+                    except ScopeDenied:
+                        raise FetchFailure("FETCH_REDIRECT_OFF_HOST") from None
                     continue
                 if status != 200:
                     raise FetchFailure("FETCH_HTTP_ERROR")

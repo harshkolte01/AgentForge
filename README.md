@@ -1,35 +1,45 @@
 # AgentForge AI
 
-AgentForge runs bounded research, general and repository coding tasks through a
-shared subagent runtime. Each task keeps a durable plan, scoped grants, budget
-ledger, event history and evidence-backed receipt. Coding commands run in managed
-E2B sandboxes. Publishing a branch and draft pull request requires a separate,
-single-use approval of the exact repository, commit, revision and diff.
+AgentForge is a chat with one honest agent: a system prompt and a set of tools.
+It answers directly, researches the web, reads and edits code in a sandbox, and
+replies in plain text. The reply is shown exactly as the model wrote it. Nothing
+grades it, wraps it in a status or limits how long it works; a provider's own
+error is shown as it is, and Stop ends a run. See [the agent](docs/agent.md).
+
+Coding runs in a persistent E2B sandbox per conversation (internet on, no
+secrets inside). In **Ask me** mode the agent stops before anything that changes
+something (a command, a file write or edit, a pull request) and the chat shows an
+Approve / Decline card; in **Approve for me** mode it never asks. Each task keeps
+event history and a usage ledger.
 
 The workspace supports persistent conversations and immutable custom-agent
 versions. GitHub App sign-in uses durable, revocable sessions and retains the
 user's own repository permissions. See [implementation status](phase-status.md)
 and [qualification tracker](docs/remaining-phases.md) for tested boundaries.
 
-Start a conversation and describe the work. AgentForge routes the request
-automatically; the composer has an optional repository selection that defaults to
-No repo. The sidebar focuses on conversations. Account, model/limits, GitHub
+Start a conversation and describe the work. The composer has an optional
+repository selection that defaults to No repo, and the Ask me / Approve for me
+switch. The sidebar focuses on conversations. Account, model/limits, GitHub
 connections and custom-agent management live in Settings. See
 [conversation behavior and migration](docs/conversation-ux.md) for the details.
+Durable queued follow-ups, source-linked conversation summaries, original-input
+retrieval and deployment requirements are documented in
+[conversation reliability](docs/conversation-reliability.md).
 
 ```mermaid
 flowchart LR
     Browser --> Proxy[Same-origin TLS proxy]
     Proxy --> Web[Next.js workspace]
     Proxy --> API[FastAPI identity and task API]
-    API --> DB[(PostgreSQL tasks, events, leases, checkpoints)]
-    Worker[Python worker and LangGraph parent] --> DB
-    Worker --> Runtime[Bounded shared subagent runtime]
-    Runtime --> Providers[Configured model and research adapters]
-    Runtime --> E2B[Managed E2B sandbox]
+    API --> DB[(PostgreSQL tasks, events, leases)]
+    Worker[Python worker] --> DB
+    Worker --> Agent[Agent loop: model, tools, plain-text answer]
+    Agent --> Providers[Configured model and research adapters]
+    Agent --> E2B[Persistent E2B sandbox per conversation]
+    Agent --> Approvals[Inline approval cards in the chat]
     Worker --> Artifacts[Private POSIX artifact storage]
     API --> Artifacts
-    API --> GitHub[Approval-bound GitHub delivery]
+    Worker --> GitHub[Draft pull requests, opened by the backend]
 ```
 
 ## Development
@@ -43,9 +53,8 @@ contract. Never overwrite an existing `.env` with a template.
 ```sh
 cd apps/api
 uv sync --locked
-# Explicitly target a development database before either setup operation.
+# Explicitly target a development database before migrating.
 uv run alembic upgrade head
-uv run python -m agentforge.workers.checkpoints setup
 uv run uvicorn agentforge.main:app --host 127.0.0.1 --port 8000 --no-access-log
 ```
 
@@ -68,7 +77,8 @@ Next.js's API rewrite; it defaults to `http://localhost:8000`. Deployments route
 local single-user access or [GitHub identity](docs/phase-5.md) explicitly before
 using protected routes. Provider names, tool/JSON support, context/output limits
 and current per-token prices must be configured; missing keys fail closed.
-Managed E2B setup is described in [infra/e2b](infra/e2b/README.md).
+Set `E2B_API_KEY` to give the agent its coding sandbox (`E2B_TEMPLATE_ID` is
+optional; E2B's default image has git, Python and Node).
 
 ## Checks and release
 

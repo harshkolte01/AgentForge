@@ -90,7 +90,7 @@ class FixtureModel:
     def maximum_request_cost(self, messages, tools):
         return Decimal("0.0010")
 
-    async def complete(self, messages, tools):
+    async def complete(self, messages, tools, **_):
         self.calls += 1
         if self.calls == 1:
             message = {"role": "assistant", "content": None, "tool_calls": [{
@@ -101,16 +101,10 @@ class FixtureModel:
             }]}
             reason = "tool_calls"
         else:
-            # PARTIAL makes the synthetic evidence boundary explicit.
-            message = {"role": "assistant", "content": json.dumps({
-                "status": "PARTIAL", "summary": "Mock fixture completed; real-world research remains unverified.",
-                "observations": ["Injected fixture model and tool only."],
-                "evidence_ids": [self.evidence_id], "artifact_ids": [],
-                "claims": [{"claim": "Fixture says intent precedes an adapter call.",
-                            "source_ids": [self.evidence_id], "confidence": "uncertain"}],
-                "unknowns": ["No live provider or public source was queried."],
-                "retryable": False,
-            })}
+            # A plain-text answer that says the evidence is synthetic.
+            message = {"role": "assistant", "content":
+                "Mock fixture completed. The synthetic source says a durable intent precedes an adapter call. "
+                "No live provider or public source was queried, so this is not real research."}
             reason = "stop"
         return ModelResponse(message=message, usage=ModelUsage(10, 10, Decimal("0.0001")),
                              model_id=self.model_id, finish_reason=reason)
@@ -136,7 +130,7 @@ async def main(*, real_model: bool = False):
                 max_wall_time_sec=180))
         permissions = Permissions(web=True, allowed_repo_ids=(), allowed_sandbox_ids=(),
             allowed_context_refs=(), allowed_command_profiles=(), allowed_web_hosts=())
-        budget = Budget(max_steps=10, max_llm_cost_usd=0.35, max_wall_time_sec=180, max_tool_calls=20)
+        budget = Budget()
         ctx = TaskContext(user_id=user_id, project_id=project_id, task_id=task_id,
             platform_permissions=permissions, user_permissions=permissions,
             task_permissions=permissions, parent_permissions=permissions,
@@ -148,10 +142,9 @@ async def main(*, real_model: bool = False):
             budgets=BudgetService(sessions), runs=AgentRunRepository(sessions),
             calls=ToolCallRepository(sessions), catalog=catalog,
             models=configured_models or ModelRouter(FixtureModel(resources.evidence_id)), resources=resources)
-        result = await service.spawn_subagent(SpawnRequest(type="builtin/researcher", version=1,
-            prompt="Use the synthetic search fixture and report its explicit limitations. "
-                   "All tool evidence is synthetic: return PARTIAL, cite the exact returned fixture evidence ID, "
-                   "and do not claim real-world research was verified."), ctx)
+        result = await service.spawn_subagent(SpawnRequest(type="builtin/agent", version=1,
+            prompt="Use the synthetic search fixture and say what it shows. "
+                   "All tool evidence is synthetic: do not claim real-world research was verified."), ctx)
         print(json.dumps({"fixture": True, "task_id": str(task_id),
                           "model_mode": "real-provider" if real_model else "mock",
                           "result": result.model_dump(mode="json")}, indent=2))

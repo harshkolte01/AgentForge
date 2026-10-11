@@ -5,19 +5,16 @@ It can make paid configured provider calls for queued owner-authorized tasks.
 """
 import argparse
 import asyncio
-from datetime import datetime, timedelta, timezone
 import logging
 import signal
 from uuid import uuid4
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from sqlalchemy.orm import sessionmaker
 from agentforge.bootstrap import compose_runtime
 from agentforge.contracts.tasks import TERMINAL_STATUSES
 from agentforge.database.engine import create_db_engine
 from agentforge.llm.models import ModelConfigurationError
-from agentforge.orchestration.graph import build_graph
+from agentforge.orchestration.agent_turn import pin_repository, run_agent_turn
 from agentforge.orchestration.store import WorkflowStore
-from agentforge.orchestration.verification import VerificationService
 from agentforge.repositories.jobs import JobRepository, LeaseLost, TaskCancelled
 from agentforge.settings import get_settings
 from agentforge.subagents.budget import BudgetService
@@ -31,21 +28,21 @@ logger = logging.getLogger(__name__)
 
 async def task_authority(settings, runtime, store, jobs, lease):
     await jobs.authority(lease)
-    if settings.auth_mode == "github_app" and runtime.coding is not None:
+    # Public and local APIs can share this worker. Recheck any owner-bound client
+    # even when the worker itself was launched in local-token mode.
+    if callable(getattr(getattr(runtime, "repository_github", None), "authorize", None)):
         current = store.task()
-        selection = current.permissions_json["coding"]["repository"]
-        await runtime.coding.github.authorize(selection["repo_id"])
-        await jobs.authority(lease)
-    elif settings.auth_mode == "github_app" and getattr(runtime, "repository_github", None) is not None:
-        current = store.task()
-        await runtime.repository_github.authorize(current.permissions_json["repository"]["repo_id"])
-        await jobs.authority(lease)
+        repository = current.permissions_json.get("repository")
+        if repository:
+            await runtime.repository_github.authorize(repository["repo_id"])
+            await jobs.authority(lease)
 
 
-async def execute(settings, sessions, saver, telemetry, jobs, lease):
+async def execute(settings, sessions, telemetry, jobs, lease):
     store = WorkflowStore(sessions, lease)
     runtime = None
     try:
+        await asyncio.to_thread(jobs.begin_execution, lease)
         task = store.task()
         if task.status in TERMINAL_STATUSES:
             jobs.complete(lease)
@@ -53,85 +50,48 @@ async def execute(settings, sessions, saver, telemetry, jobs, lease):
         ambiguous = reconcile(store, BudgetService(sessions))
         task = store.task()
         if task.cancel_requested_at is not None:
-            store.finish("CANCELLED", "Task cancelled before further work.", error_code="USER_CANCELLED")
+            store.finish("CANCELLED", "Stopped.", error_code="USER_CANCELLED")
         elif ambiguous:
-            store.finish("PARTIAL", "The previous worker stopped during a child invocation. Unknown paid operations were charged at their authorized bounds and were not repeated.", error_code="UNKNOWN_REMOTE_OUTCOME")
-        elif datetime.now(timezone.utc) >= task.created_at + timedelta(seconds=task.max_wall_time_sec):
-            store.finish("PARTIAL", "The task reached its wall-time limit before safe continuation.", error_code="BUDGET_EXCEEDED")
+            store.finish("FAILED", "The worker stopped in the middle of an action, so this run was ended instead of repeating it. Send your message again to retry.", error_code="UNKNOWN_REMOTE_OUTCOME")
+        elif not await pin_repository(store=store, settings=settings, sessions=sessions, jobs=jobs, lease=lease):
+            pass  # the selected repository could not be reached; the task has ended with the reason
         else:
             runtime = compose_runtime(settings, sessions, telemetry, store)
             async def authority():
                 # Cached workspace content never bypasses current source rights.
                 await task_authority(settings, runtime, store, jobs, lease)
             config = {"configurable": {"thread_id": task.thread_id},
-                "callbacks": telemetry.callbacks(), "recursion_limit": 40,
+                "callbacks": telemetry.callbacks(),
                 "metadata": {"task_id": str(task.id), "lease_generation": lease.generation}}
             async def invoke():
-                nonlocal runtime
-                automatic = store.task().permissions_json.get("automatic")
-                if automatic and not automatic.get("resolved"):
-                    from agentforge.orchestration.automatic import route_turn
-                    from agentforge.integrations.github_client import GitHubClient
-                    if settings.auth_mode == "github_app":
-                        from agentforge.integrations.github_app import AuthorizedGitHubClient
-                        github = AuthorizedGitHubClient(sessions, settings, task.created_by)
-                    else:
-                        github = GitHubClient()
-                    await route_turn(store=store, service=runtime.service, settings=settings,
-                        github=github, authority=authority, config=config)
-                    if store.task().status in TERMINAL_STATUSES:
-                        return
-                    # No child remains active when resolved grants are persisted.
-                    # A fresh composition binds tools/context to the resolved kind.
-                    await runtime.close()
-                    runtime = compose_runtime(settings, sessions, telemetry, store)
-                if runtime.coding is not None:
-                    from agentforge.orchestration.coding_graph import build_coding_graph
-                    graph = build_coding_graph(store=store, service=runtime.service, coding=runtime.coding,
-                        github=runtime.coding.github, authority=authority, checkpointer=saver)
-                else:
-                    graph = build_graph(store=store, service=runtime.service,
-                        verifier=VerificationService(sessions), authority=authority, checkpointer=saver)
-                snapshot = await graph.aget_state(config)
-                # Existing pending checkpoints resume with None. Supplying
-                # initial input would restart logic and potentially paid calls.
-                if snapshot.next:
-                    graph_input = None
-                elif snapshot.values:
-                    store.finish("PARTIAL", "The saved workflow ended without a terminal task receipt; no new provider calls were made.", error_code="UNKNOWN_REMOTE_OUTCOME")
-                    return
-                else:
-                    graph_input = {"task_id": str(task.id)}
-                return await graph.ainvoke(graph_input, config)
+                from agentforge.workers.conversation_context import prepare_turn_context
+                from agentforge.workers.conversation_title import name_conversation
+                # Optional and fenced: the sidebar shows the generated title as soon as it exists, and a failure keeps the first-message title.
+                await name_conversation(store, runtime, settings)
+                await prepare_turn_context(store, runtime, settings, authority)
+                await run_agent_turn(store=store, service=runtime.service, authority=authority, config=config)
             invoke = telemetry.decorate(invoke, kind="WORKFLOW", name="agentforge_task")
-            remaining = max(0, (task.created_at + timedelta(seconds=task.max_wall_time_sec)
-                - datetime.now(timezone.utc)).total_seconds())
-            async with asyncio.timeout(remaining):
-                await supervise(invoke, jobs, lease, store, settings.worker_heartbeat_sec)
+            await supervise(invoke, jobs, lease, store, settings.worker_heartbeat_sec)
         jobs.complete(lease)
     except TaskCancelled:
-        store.finish("CANCELLED", "Task cancelled; in-flight usage remains accounted for.", error_code="USER_CANCELLED")
+        store.finish("CANCELLED", "Stopped.", error_code="USER_CANCELLED")
         jobs.complete(lease)
     except LeaseLost:
         # The new generation owns recovery; the stale process cannot finalize.
         logger.warning("Worker lease lost; task_id=%s", lease.task_id)
-    except ModelConfigurationError:
-        store.finish("PARTIAL", "The model configuration is incomplete or incompatible. Review model feature flags, reasoning settings and pricing before a new task.", error_code="MODEL_PROVIDER_ERROR")
-        jobs.complete(lease)
-    except TimeoutError:
-        # asyncio.timeout waits for supervise's cancellation/finally accounting.
-        store.finish("PARTIAL", "The task reached its wall-time limit before verified delivery.", error_code="BUDGET_EXCEEDED")
+    except ModelConfigurationError as exc:
+        store.finish("FAILED", f"The model is not configured correctly: {exc}", error_code="MODEL_PROVIDER_ERROR")
         jobs.complete(lease)
     except asyncio.CancelledError:
         # supervise has awaited all child cancellation before reaching this path.
         try:
-            store.finish("PARTIAL", "Worker stopped during the task; any unknown usage remains conservatively accounted for.", error_code="UNKNOWN_REMOTE_OUTCOME")
+            store.finish("FAILED", "The worker was restarted while this was running. Send your message again to retry.", error_code="UNKNOWN_REMOTE_OUTCOME")
             jobs.complete(lease)
         except LeaseLost:
             pass
         raise
     except Exception:
-        # Provider/DB errors can include private request/connection details.
+        # Internal errors can include private request/connection details, so the person is told only that the run failed.
         # Attempt a truthful receipt; if DB unavailable retain the lease/job for
         # later reconciliation rather than pretending persistence succeeded.
         # The traceback goes only to the operator's log, never to the task or its events; without it a
@@ -139,7 +99,7 @@ async def execute(settings, sessions, saver, telemetry, jobs, lease):
         logger.error("Worker task failed; task_id=%s", lease.task_id, exc_info=True)
         try:
             reconcile(store, BudgetService(sessions))
-            store.finish("PARTIAL", "The workflow stopped before verified delivery. Review task history before starting another task.", error_code="CHILD_RUNTIME_ERROR")
+            store.finish("FAILED", "Something went wrong while working on this. Please try again.", error_code="CHILD_RUNTIME_ERROR")
             jobs.complete(lease)
         except Exception:
             logger.error("Task recovery receipt unavailable; task_id=%s", lease.task_id)
@@ -165,21 +125,19 @@ async def run(*, once=False):
             pass
     worker_id = f"worker-{uuid4()}"
     try:
-        async with AsyncPostgresSaver.from_conn_string(settings.langgraph_checkpoint_db_url) as saver:
-            # Read readiness before claiming any job. Missing checkpoint tables
-            # require the separate explicit setup CLI, never automatic DDL.
-            await saver.aget_tuple({"configurable": {"thread_id": "00000000-0000-0000-0000-000000000000"}})
-            while not stopped.is_set():
-                lease = jobs.claim(worker_id)
-                if lease is not None:
-                    await execute(settings, sessions, saver, telemetry, jobs, lease)
-                if once:
-                    return
-                if lease is None:
-                    try:
-                        await asyncio.wait_for(stopped.wait(), timeout=settings.worker_poll_sec)
-                    except TimeoutError:
-                        pass
+        while not stopped.is_set():
+            from agentforge.repositories.sessions import SessionRepository
+            await asyncio.to_thread(SessionRepository(sessions).dispatch_ready)
+            lease = await asyncio.to_thread(jobs.claim, worker_id)
+            if lease is not None:
+                await execute(settings, sessions, telemetry, jobs, lease)
+            if once:
+                return
+            if lease is None:
+                try:
+                    await asyncio.wait_for(stopped.wait(), timeout=settings.worker_poll_sec)
+                except TimeoutError:
+                    pass
     finally:
         try:
             telemetry.shutdown()

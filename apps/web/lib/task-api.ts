@@ -90,9 +90,77 @@ export type Artifact = {
   created_at: string;
 };
 
+/** How a tool call ended. "running" is only ever derived by a client from a start without a finish. */
+export type ToolCallOutcome = "running" | "completed" | "failed" | "blocked" | "cancelled" | "unknown";
+/** What a live text row holds: a progress note being written, or the answer being written. */
+export type LiveTextKind = "progress" | "answer";
+/** Wire types below mirror `apps/api/src/agentforge/contracts/activity.py` field for field. */
+export type LiveStreamSnapshot = {
+  task_id: string;
+  epoch: number;
+  revision: number;
+  kind: LiveTextKind;
+  text: string;
+  event_sequence: number;
+  terminal: boolean;
+};
+export type MessageActivity = {
+  action_count: number;
+  note_count: number;
+  available: boolean;
+  event_watermark: number;
+  terminal: boolean;
+  status: string | null;
+  error_code: string | null;
+  approval_pending: boolean;
+  source_count: number;
+  artifact_count: number;
+  /** First to last event of the run, in milliseconds. Absent from servers that do not send it. */
+  duration_ms?: number | null;
+};
+export type ActivitySummary = MessageActivity & { task_id: string; terminal_sequence: number | null };
+export type AttachmentView = { name: string; characters: number | null };
+export type ToolDetailText = { text: string; truncated: boolean; bytes: number | null };
+export type ToolDetailExecution = {
+  profile_id: string | null;
+  exit_code: number | null;
+  timed_out: boolean | null;
+  qualified: boolean | null;
+  output_truncated: boolean | null;
+  observed_test_count: number | null;
+};
+export type ToolDetailFile = { path: string; additions: number | null; deletions: number | null };
+export type ToolDetailArtifact = { id: string; filename: string; mime_type: string; byte_size: number; download_url: string };
+export type ToolCallDetail = {
+  task_id: string;
+  tool_call_id: string;
+  tool: string;
+  kind: "execution" | "diff" | "artifact";
+  outcome: ToolCallOutcome;
+  error_code: string | null;
+  started_at: string;
+  finished_at: string | null;
+  duration_ms: number | null;
+  execution: ToolDetailExecution | null;
+  files: ToolDetailFile[];
+  stdout: ToolDetailText | null;
+  stderr: ToolDetailText | null;
+  diff: ToolDetailText | null;
+  preview: ToolDetailText | null;
+  artifacts: ToolDetailArtifact[];
+  /** Why there is nothing more to show ("evidence_unavailable", "artifact_missing", ...), when that is the case. */
+  unavailable_reason: string | null;
+};
+
+// Erasable TypeScript (no parameter properties) so Node's type stripping can load this module in tests.
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  status: number;
+  /** The server's machine-readable `detail` (for example "tool_detail_unavailable"), when it sent one. */
+  code: string | undefined;
+  constructor(status: number, message: string, code?: string) {
     super(message);
+    this.status = status;
+    this.code = code;
   }
 }
 
@@ -137,6 +205,7 @@ const friendlyErrors: Record<string, string> = {
   custom_agents_support_source_research_tools: "Custom agents support full task input reads, stored source reads, web search and source fetching with research_result_v1 output.",
   task_not_found: "This task is unavailable for the current workspace.",
   artifact_unavailable: "The report file is unavailable. Try downloading it again later.",
+  tool_detail_unavailable: "There are no details to show for this action.",
 };
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -154,15 +223,36 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     }
     throw new ApiError(response.status, friendlyErrors[detail] ??
       (response.status === 422 ? "Check the goal, budget and repository or source settings, then try again." :
-        `The request could not be completed (HTTP ${response.status}). Try again.`));
+        `The request could not be completed (HTTP ${response.status}). Try again.`), detail || undefined);
   }
   return response.status === 204 ? undefined as T : await response.json() as T;
 }
 
+/** The most events one history page may hold; the API rejects a larger `limit`. */
+export const EVENT_PAGE_LIMIT = 100;
+const taskPath = (taskId: string) => `/tasks/${encodeURIComponent(taskId)}`;
+/** One page of a task's durable events with a sequence greater than `after`, oldest first. */
+export function fetchEventHistory(taskId: string, after: number, limit: number, init: RequestInit = {}): Promise<TaskEvent[]> {
+  return api<TaskEvent[]>(`${taskPath(taskId)}/events/history?after=${after}&limit=${limit}`, init);
+}
+/** Exact action count, activity availability, terminal state and event watermark of a task. */
+export function fetchActivitySummary(taskId: string, init: RequestInit = {}): Promise<ActivitySummary> {
+  return api<ActivitySummary>(`${taskPath(taskId)}/activity-summary`, init);
+}
+/** Bounded, allowlisted detail of one finished execution, diff or artifact call (404 `tool_detail_unavailable` for other tools). */
+export function fetchToolDetail(taskId: string, toolCallId: string, init: RequestInit = {}): Promise<ToolCallDetail> {
+  return api<ToolCallDetail>(`${taskPath(taskId)}/tool-calls/${encodeURIComponent(toolCallId)}`, init);
+}
+/** The whole current live text of a task: recovery after an offset mismatch, and the polling fallback. */
+export function fetchStreamSnapshot(taskId: string, init: RequestInit = {}): Promise<LiveStreamSnapshot> {
+  return api<LiveStreamSnapshot>(`${taskPath(taskId)}/stream-snapshot`, init);
+}
+
 export const terminalStatuses = new Set(["COMPLETED", "PARTIAL", "FAILED", "CANCELLED"]);
 export const eventTypes = ["task.created", "task.status", "task.cancel_requested", "task.plan.created",
-  "task.step.updated", "subagent.started", "subagent.finished", "model.started", "model.finished", "tool.started", "tool.finished",
-  "task.verified", "task.recovered", "task.finished", "sandbox.workspace.created", "test.finished", "task.repair.started"];
+  "task.step.updated", "subagent.started", "subagent.finished", "model.started", "model.finished", "assistant.message", "tool.started", "tool.finished",
+  "task.verified", "task.recovered", "task.finished", "sandbox.workspace.created", "test.finished", "task.repair.started",
+  "approval.required", "approval.decided", "github.delivery.confirmed"];
 export function statusLabel(status: string): string {
   return status.toLowerCase().replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
 }

@@ -26,6 +26,51 @@ the sidebar, history or in-progress thread. The first message of a new conversat
 URL to its `/chat/<id>`. Browser tab titles follow the conversation title. The REST API is
 unchanged (`/api/v1/sessions…`, `/api/v1/tasks…`); browser URL constants live in `apps/web/lib/routes.ts`.
 
+## Conversation titles
+
+A new conversation first shows its opening message as its title. Before the agent starts on that message, the worker
+makes one small call to the configured model (`workers/conversation_title.py`) and replaces the title with a short
+one for the task, in the language the person wrote in ("Fix flaky login test"). The sidebar, the header and the browser
+tab pick it up through the usual `conversation.changed` stream; no client change is involved.
+
+* Only the title the app gave itself is replaced. A title set at creation or by **Rename** is never touched, including a
+  rename made while the title is being generated.
+* A greeting names nothing, so the first message `hey` keeps its text and the next of the first three messages tries
+  again. Later messages never do, so existing conversations keep their titles.
+* It is optional end to end. If it is switched off (`CONVERSATION_TITLES_ENABLED=false`), refused, slow (8 s), empty
+  or malformed, the first-message title stays and the reply goes ahead unchanged. Stop is honoured first.
+* One call per task, capped at 512 output tokens and USD 0.01, recorded in the task's usage ledger like a summary
+  update (operation key `title:<task>`). It does not appear as agent activity and is excluded from the context
+  status. A worker that restarts mid-call charges the call at its upper bound and never repeats it.
+* The model sees only the person's own opening messages (up to three, each shortened to 1,200 characters), never
+  attachments or replies, and treats them as text to name rather than instructions.
+
+## Sidebar status
+
+Each conversation in the sidebar shows what is going on in it, so you can start work, move to another conversation and
+come back when it needs you. Each state has its own shape as well as colour, a name for screen readers and a tooltip.
+
+| Shown | Meaning |
+| --- | --- |
+| Braille dot spinner (⣾⣽⣻⢿⡿⣟⣯⣷) | The agent is working (or the next queued message is about to start) |
+| Shield with a question mark | A tool call is waiting for your **Approve / Decline** |
+| Alert circle | The latest reply failed, or a queued message could not start |
+| Blue dot, title in bolder text | A reply finished that you have not seen yet |
+| Nothing | Idle, or the latest run was stopped by you |
+
+* The server decides (`SessionView.status`), from the active task, its pending approval and the latest finished turn, so
+  every tab and device agrees. Listing conversations answers it in three queries however many there are.
+* "Seen" is stored per conversation (`conversations.read_sequence`, migration `0013_conversation_read_state`). Opening a
+  conversation in a tab you are looking at sends `POST /api/v1/sessions/{id}/read` with the last message shown. It only
+  moves forward, is clamped to the last message, and changes neither the order of the sidebar nor the conversation's
+  revision. A reply that arrives while you are looking at that conversation is never flagged; one that arrives while the tab
+  is hidden stays flagged until you return.
+* A failure stays until seen. A queued message that could not start stays "failed" until you resume or cancel it. Existing
+  conversations count as seen when the migration runs.
+* The sidebar reads the list again by itself: every 4 s while something is working or waiting for you, every 30 s
+  otherwise, immediately when the tab is shown or focused, and never while the tab is hidden or a search is showing.
+  A screen reader is told when a conversation you are not looking at finishes, fails or needs approval.
+
 ## Sending a message
 
 The composer sends a message with `routing: "auto"`, platform-managed bounded
@@ -54,9 +99,12 @@ prior patch. Changing repository or choosing No repo breaks that compatibility.
 Publishing still requires separate approval of the exact changes.
 
 Messages remain the primary content. Actual task status, cancellation and run
-details are available beside the corresponding turn. Run internals stay out of the thread: while a turn runs the conversation shows only a quiet
-"Thinking" indicator, and the finished reply is plain text. Assistant Markdown is rendered as inert text/formatting
-with restricted links; it cannot execute supplied HTML or scripts.
+details are available beside the corresponding turn. While a turn runs the conversation shows the agent's intentional progress notes
+and compact activity rows (never internal reasoning), then the answer as it is written; a quiet "Thinking" line covers the gaps. The
+activity stays in place, expanded, when the answer arrives in the open view, and is a collapsed "N actions" summary when history is
+loaded. The answer stays outside it, with compact sources and downloadable files beneath. Assistant Markdown is rendered as inert
+text/formatting with restricted links; it cannot execute supplied HTML or scripts. See `docs/live-activity.md` for how activity, tool
+details and the live-to-saved hand-off work.
 
 ## Settings
 

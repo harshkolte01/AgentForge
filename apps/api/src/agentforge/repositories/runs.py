@@ -1,7 +1,7 @@
 """Persist immutable run identity and committed tool intent before external effects."""
 
 from collections.abc import Callable, Sequence
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -34,10 +34,8 @@ class AgentRunRepository:
             definition = session.get(AgentDefinition, snapshot.definition_id) if snapshot else None
             if (task is None or task.cancel_requested_at is not None
                 or task.status in {"COMPLETED", "PARTIAL", "FAILED", "CANCELLED"}
-                or datetime.now(timezone.utc) >= task.created_at + timedelta(seconds=task.max_wall_time_sec)
                 or reservation is None or reservation.task_id != task_id
                 or reservation.run_id != run_id or reservation.settled_at is not None
-                or datetime.now(timezone.utc) >= reservation.deadline
                 or snapshot is None or definition is None or definition.disabled_at is not None
                 or definition.project_id not in (None, project_id)
                 or snapshot.sha256 != definition_sha256 or snapshot.definition_json != definition_snapshot):
@@ -69,6 +67,17 @@ class AgentRunRepository:
 class ToolCallRepository:
     def __init__(self, session_factory: SessionFactory):
         self.session_factory = session_factory
+
+    def store_result(self, task_id, operation_key, result):
+        from agentforge.database.sessions import ToolResultSnapshot
+        from uuid import NAMESPACE_URL, uuid5
+        import hashlib, json
+        ident = uuid5(NAMESPACE_URL, "agentforge:tool-result:" + operation_key)
+        content = json.dumps(result.model_dump(mode="json"), ensure_ascii=False, allow_nan=False)
+        with self.session_factory() as session, session.begin():
+            session.add(ToolResultSnapshot(id=ident, task_id=task_id, operation_key=operation_key,
+                content=content, sha256=hashlib.sha256(content.encode()).hexdigest()))
+        return f"tool:{ident}"
 
     def record_intent(self, *, task_id: UUID, run_id: UUID, tool_name: str,
                       args_digest: str, intent_json_sanitized: dict[str, Any],

@@ -17,8 +17,10 @@ from agentforge.auth.session import SessionStore
 from agentforge.api.routes_github import router as github_router
 from agentforge.api.routes_approvals import router as approvals_router
 from agentforge.api.routes_sessions import router as sessions_router
+from agentforge.api.routes_conversation_events import router as conversation_events_router
 from agentforge.api.routes_context import router as context_router
 from agentforge.api.routes_agents import router as agents_router
+from agentforge.api.routes_activity import router as activity_router
 from agentforge.database.engine import create_db_engine
 from agentforge.settings import Settings, get_settings
 from agentforge.security.request_limits import RequestBodyLimitMiddleware
@@ -68,17 +70,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(tasks_router)
     app.include_router(events_router)
     app.include_router(artifacts_router)
+    app.include_router(activity_router)
     app.include_router(configuration_router)
     app.include_router(github_router)
     app.include_router(approvals_router)
     app.include_router(sessions_router)
+    app.include_router(conversation_events_router)
     app.include_router(context_router)
     app.include_router(agents_router)
     @app.middleware("http")
     async def private_response_headers(request, call_next):
         response = await call_next(request)
         if request.url.path.startswith("/api/v1/") and not request.url.path.startswith("/api/v1/health/"):
-            response.headers["Cache-Control"] = "no-store"
+            # Never cacheable. A route that already chose its own non-caching policy keeps it: the event stream needs
+            # `no-transform`, or an intermediary (the web app's proxy) compresses it and holds back live updates.
+            if "no-store" not in response.headers.get("Cache-Control", ""):
+                response.headers["Cache-Control"] = "no-store"
             response.headers["X-Content-Type-Options"] = "nosniff"
         return response
     return app

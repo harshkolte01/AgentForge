@@ -1,10 +1,10 @@
 "use client";
-import { Children, isValidElement, memo, useEffect, useRef, type ReactElement, type ReactNode } from "react";
+import { Children, createContext, isValidElement, memo, useContext, useEffect, useMemo, useRef, type ReactElement, type ReactNode } from "react";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { CopyButton } from "@/features/sessions/copy-button";
+import { CodeBlock } from "@/features/sessions/code-block";
 import { splitAssistantContent } from "@/features/sessions/assistant-content";
-import { ThinkingBlock } from "@/features/sessions/thinking-block";
+import { stabilizeMarkdown } from "@/lib/markdown-stabilize";
 
 function safeLink(value: string) {
   if (value.startsWith("#") || (value.startsWith("/") && !value.startsWith("//") && !value.includes("\\"))) return value;
@@ -19,17 +19,15 @@ function textOf(node: ReactNode): string {
   return "";
 }
 
-function CodeBlock({ children }: { children?: ReactNode }) {
+/** Whether the reply is still being written: its code blocks stay plain text until it is complete. */
+const StreamingContext = createContext(false);
+
+function Fence({ children }: { children?: ReactNode }) {
+  const streaming = useContext(StreamingContext);
   const child = Children.toArray(children).find((node): node is ReactElement<{ className?: string; children?: ReactNode }> => isValidElement(node));
   const code = textOf(child?.props.children).replace(/\n$/, "");
   const language = /language-([\w+#.-]+)/.exec(child?.props.className ?? "")?.[1];
-  return <div className="my-4 overflow-hidden rounded-xl border bg-muted/40">
-    <div className="flex min-h-9 items-center justify-between border-b bg-muted/60 pl-3.5 pr-1.5 text-xs text-muted-foreground">
-      <span className="font-mono">{language ?? "text"}</span>
-      <CopyButton text={code} label="Copy code" showLabel />
-    </div>
-    <pre className="max-w-full overflow-x-auto p-3.5 font-mono text-[13px] leading-6" tabIndex={0} aria-label={`${language ?? "Code"} block`}><code>{code}</code></pre>
-  </div>;
+  return <CodeBlock code={code} language={language} streaming={streaming} />;
 }
 
 const components: Components = {
@@ -41,7 +39,7 @@ const components: Components = {
   ul: ({ children }) => <ul className="list-disc space-y-1 pl-6 marker:text-muted-foreground [&_ol]:mt-1.5 [&_ul]:mt-1.5">{children}</ul>,
   ol: ({ children }) => <ol className="list-decimal space-y-1 pl-6 marker:text-muted-foreground [&_ol]:mt-1.5 [&_ul]:mt-1.5">{children}</ol>,
   li: ({ children }) => <li className="pl-1">{children}</li>,
-  pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
+  pre: ({ children }) => <Fence>{children}</Fence>,
   code: ({ children }) => <code className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[0.875em]">{children}</code>,
   blockquote: ({ children }) => <blockquote className="border-l-2 pl-4 text-muted-foreground">{children}</blockquote>,
   hr: () => <hr className="my-6" />,
@@ -55,15 +53,18 @@ const components: Components = {
 
 const plugins = [remarkGfm];
 
-/** A reply. While `streaming`, it is the live text so far and `onProgress` fires as it grows. */
-export const AssistantMessage = memo(function AssistantMessage({ content, reasoning, isThinking = false, streaming = false, onProgress }: { content: string; reasoning?: string; isThinking?: boolean; streaming?: boolean; onProgress?: () => void }) {
+/**
+ * A reply, rendered as inert Markdown (raw HTML is skipped, links are restricted). While `streaming` it is the live text so far:
+ * incomplete fences, tables, links and emphasis are stabilized so the growing prefix always looks like the finished text, and
+ * `onProgress` fires as it grows. Legacy leading reasoning tags are never shown.
+ */
+export const AssistantMessage = memo(function AssistantMessage({ content, streaming = false, onProgress }: { content: string; streaming?: boolean; onProgress?: () => void }) {
   const progress = useRef(onProgress);
   useEffect(() => { progress.current = onProgress; }, [onProgress]);
   useEffect(() => { if (streaming) progress.current?.(); }, [content, streaming]);
-  const parsed = splitAssistantContent(content, streaming);
-  const thoughts = reasoning ?? parsed.reasoning ?? (isThinking ? "" : null);
-  return <div className="min-w-0 space-y-4 break-words text-[15px] leading-7 [&>*:first-child]:mt-0">
-    {thoughts !== null ? <ThinkingBlock content={thoughts} isThinking={isThinking || parsed.isThinking} onToggle={() => requestAnimationFrame(() => progress.current?.())} /> : null}
-    {parsed.answer ? <Markdown skipHtml urlTransform={safeLink} remarkPlugins={plugins} components={components}>{parsed.answer}</Markdown> : null}
+  const { answer } = splitAssistantContent(content, streaming);
+  const text = useMemo(() => stabilizeMarkdown(answer, { streaming }), [answer, streaming]);
+  return <div className="min-w-0 space-y-4 break-words text-[15px] leading-7 [&>*:first-child]:mt-0" data-streaming={streaming ? "true" : undefined}>
+    {text ? <StreamingContext value={streaming}><Markdown skipHtml urlTransform={safeLink} remarkPlugins={plugins} components={components}>{text}</Markdown></StreamingContext> : null}
   </div>;
 });

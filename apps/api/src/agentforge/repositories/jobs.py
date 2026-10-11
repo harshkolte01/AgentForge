@@ -44,6 +44,22 @@ class JobRepository:
     def __init__(self, session_factory: SessionFactory, *, lease_sec: int = 90):
         self.session_factory, self.lease_sec = session_factory, lease_sec
 
+    def begin_execution(self, lease: Lease) -> None:
+        """Start new conversation deadlines once; queue waiting is not execution."""
+        from agentforge.database.sessions import TurnExecution, TurnInput
+        with self.session_factory() as session, session.begin():
+            execution = session.scalar(select(TurnExecution.turn_id).join(TurnInput, TurnInput.turn_id == TurnExecution.turn_id)
+                .where(TurnExecution.task_id == lease.task_id))
+            if execution is None:
+                return
+            task = session.scalar(select(Task).where(Task.id == lease.task_id).with_for_update())
+            if task is None:
+                raise LeaseLost("task_missing")
+            assert_lease(session, task, lease, allow_cancel=True)
+            if task.execution_started_at is None:
+                task.execution_started_at = session.scalar(select(func.clock_timestamp()))
+                task.execution_deadline = task.execution_started_at + timedelta(seconds=task.max_wall_time_sec)
+
     def claim(self, worker_id: str) -> Lease | None:
         with self.session_factory() as session, session.begin():
             now = session.scalar(select(func.clock_timestamp()))

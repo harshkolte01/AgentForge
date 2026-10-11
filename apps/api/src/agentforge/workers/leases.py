@@ -3,10 +3,19 @@ import asyncio
 from agentforge.repositories.jobs import TaskCancelled
 
 
+# A stop request is noticed within about a second; the lease heartbeat keeps its own, slower rhythm.
+CANCEL_POLL_SEC = 1.0
+
+
 async def monitor(jobs, lease, store, heartbeat_sec):
+    since_heartbeat = 0.0
     while True:
-        await asyncio.sleep(heartbeat_sec)
-        jobs.heartbeat(lease)
+        pause = min(CANCEL_POLL_SEC, heartbeat_sec)
+        await asyncio.sleep(pause)
+        since_heartbeat += pause
+        if since_heartbeat >= heartbeat_sec:
+            jobs.heartbeat(lease)
+            since_heartbeat = 0.0
         if store.task().cancel_requested_at is not None:
             raise TaskCancelled("task_cancelled")
 

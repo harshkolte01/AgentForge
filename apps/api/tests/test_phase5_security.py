@@ -1,4 +1,7 @@
-"""Provider-free contracts for GitHub authentication and approval boundaries."""
+"""Provider-free contracts for GitHub authentication, webhooks and request bounds.
+
+The old post-run pull request approval flow (prepare, approve, execute) is gone: approvals now happen inline in the chat
+before a tool runs (see test_tool_approvals.py)."""
 import asyncio
 import hashlib
 import hmac
@@ -8,12 +11,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 import httpx
-from pydantic import SecretStr, ValidationError
+from pydantic import SecretStr
 from agentforge.auth.crypto import CredentialCipher
-from agentforge.contracts.approvals import ApprovalDecision, canonical_hash
 from agentforge.integrations.github_app import GitHubAppClient
 from agentforge.integrations.github_client import GitHubError
-from agentforge.integrations.github_write import GitHubWriteService
 from agentforge.security.webhook_verification import verify_github_signature
 from agentforge.settings import Settings
 from fastapi import FastAPI, Request
@@ -26,12 +27,6 @@ from fastapi import HTTPException
 from urllib.parse import urlsplit, parse_qs
 
 class SecurityTests(unittest.TestCase):
-    def test_canonical_hash_and_exact_decision(self):
-        self.assertEqual(canonical_hash({"b": 2, "a": ["é", 1]}), canonical_hash({"a": ["é", 1], "b": 2}))
-        self.assertNotEqual(canonical_hash({"sha": "a"}), canonical_hash({"sha": "b"}))
-        with self.assertRaises(ValidationError):
-            ApprovalDecision(action_hash="a"*64, decision="approve", action={"repo": "evil"})
-
     def test_tokens_encrypted_and_tampering_rejected(self):
         cipher = CredentialCipher(SecretStr("fixture-key-" + "x" * 32))
         encrypted = cipher.encrypt("ghu_fixture_never_log")
@@ -49,16 +44,6 @@ class SecurityTests(unittest.TestCase):
         for body, supplied in ((raw+b" ", signature), (raw, None), (raw, signature.upper())):
             with self.assertRaises(ValueError):
                 verify_github_signature(body, supplied, secret)
-
-    def test_pr_confirmation_is_exact(self):
-        action = {"repo_id": "owner/repo", "repository_id": 42, "head_branch": "agentforge/task-a", "base_branch": "main", "base_sha": "b"*40}
-        value = {"number": 7, "html_url": "https://github.com/owner/repo/pull/7", "draft": True, "state": "open",
-            "head": {"ref": action["head_branch"], "sha": "a"*40, "repo": {"id": 42}},
-            "base": {"ref": "main", "sha": "b"*40, "repo": {"id": 42}}}
-        GitHubWriteService._checked_pr(value, action, "a"*40)
-        for change in ({"draft": False}, {"html_url": "https://evil.example/pr"}, {"base": {**value["base"], "sha": "c"*40}}):
-            with self.assertRaises(GitHubError):
-                GitHubWriteService._checked_pr({**value, **change}, action, "a"*40)
 
 class ProviderTests(unittest.IsolatedAsyncioTestCase):
     def settings(self):
@@ -96,53 +81,6 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
             json={"access_token": "ghu_fixture", "token_type": True}))
         with self.assertRaises(GitHubError):
             await client.oauth({})
-
-    async def test_unknown_pr_outcome_reconciles_without_reissue(self):
-        store = SimpleNamespace(operation=lambda *args: {"id": uuid4(), "status": "UNKNOWN", "response": None},
-            operation_state=lambda *args: None, require_unexpired=lambda *args: None)
-        service = GitHubWriteService(store, None, self.settings())
-        client = SimpleNamespace(request=AsyncMock())
-        approval = {"id": str(uuid4())}
-        remote = {"number": 1}
-        result = await service._effect(approval, uuid4(), client, "draft_pr", "/path", {}, reconcile=AsyncMock(return_value=remote))
-        self.assertEqual(result, remote)
-        client.request.assert_not_called()
-        with self.assertRaisesRegex(GitHubError, "outcome_unknown"):
-            await service._effect(approval, uuid4(), client, "draft_pr", "/path", {}, reconcile=AsyncMock(return_value=None))
-        client.request.assert_not_called()
-
-    async def test_branch_only_cancellation_reconciles_without_creating_pr(self):
-        approval_id, owner = uuid4(), uuid4()
-        action = {"repo_id": "owner/repo", "repository_id": 42, "installation_id": 7,
-            "head_branch": "agentforge/task-a", "base_branch": "main"}
-        branch = {"object": {"sha": "a"*40}}
-        client = SimpleNamespace(request=AsyncMock(return_value=branch))
-        adapter = SimpleNamespace(authorize=AsyncMock(return_value=(client, {}, {"id": 7})))
-        states = []
-        store = SimpleNamespace(begin=lambda *args: {"state": "EXECUTING", "action": action},
-            sent_delivery_receipt=lambda *args: {"id": uuid4(), "kind": "branch", "commit": {"sha": "a"*40}},
-            operation_state=lambda *args: states.append(args[1]),
-            complete=lambda approval, user, result: {"state": "CONSUMED", "result": result}, release=lambda *args: None)
-        with patch("agentforge.integrations.github_write.AuthorizedGitHubClient", return_value=adapter):
-            result = await GitHubWriteService(store, None, self.settings()).execute(approval_id, owner)
-        self.assertEqual(states, ["CONFIRMED"])
-        self.assertNotIn("pr_url", result["result"])
-        self.assertEqual(result["result"]["commit_sha"], "a"*40)
-        self.assertEqual(client.request.await_count, 1)
-        self.assertEqual(client.request.await_args.args[0], "GET")
-        self.assertNotIn("write", adapter.authorize.await_args.kwargs)
-
-    async def test_sent_is_durable_before_network_and_error_becomes_unknown(self):
-        states=[]
-        store = SimpleNamespace(operation=lambda *args: {"id": uuid4(), "status": "PREPARED", "response": None},
-            operation_state=lambda op, state, *args: states.append(state), require_unexpired=lambda *args: None)
-        async def failed(*args, **kwargs):
-            self.assertEqual(states, ["SENT"])
-            raise GitHubError("github_unavailable")
-        with self.assertRaises(GitHubError):
-            await GitHubWriteService(store, None, self.settings())._effect({"id": str(uuid4())}, uuid4(),
-                SimpleNamespace(request=failed), "draft_pr", "/path", {})
-        self.assertEqual(states, ["SENT", "UNKNOWN"])
 
     async def test_body_limit_counts_chunked_bytes_and_length(self):
         app = FastAPI()

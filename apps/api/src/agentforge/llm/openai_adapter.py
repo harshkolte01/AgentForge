@@ -10,6 +10,8 @@ of times with jittered backoff, because such a request was not billed and the ru
 """
 
 import asyncio
+import copy
+import json
 import random
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
@@ -19,9 +21,11 @@ from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessageParam, ChatCompletionToolParam
 
 from .models import (
-    SUBMIT_RESULT, ModelConfigurationError, ModelContextLimit, ModelProviderError,
-    ModelRates, ModelResponse, ModelUsage, conservative_input_tokens,
+    ModelConfigurationError, ModelContextLimit, ModelProviderError,
+    ModelRates, ModelResponse, ModelUsage, PER_MESSAGE_OVERHEAD_TOKENS,
+    PROTOCOL_OVERHEAD_TOKENS, conservative_input_tokens, provider_detail,
 )
+from .limits import LUNA_LONG_CONTEXT_THRESHOLD, LUNA_WINDOW, input_limit, is_luna
 
 MAX_RETRY_WAIT_SEC = 8.0
 BASE_RETRY_WAIT_SEC = 0.5
@@ -32,6 +36,7 @@ class OpenAIAdapter:
                  context_window_tokens: int, max_output_tokens: int,
                  timeout_sec: float = 60, reasoning_effort: str | None = None,
                  parallel_tool_calls: bool = True, strict_tools: bool = False,
+                 long_context_rates: ModelRates | None = None,
                  max_retries: int = 2, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
         if not api_key or not model_id or context_window_tokens <= max_output_tokens or max_output_tokens < 1:
             raise ModelConfigurationError("explicit model, API key and valid token limits are required")
@@ -39,6 +44,7 @@ class OpenAIAdapter:
             raise ModelConfigurationError("model retries must be between 0 and 5")
         self.model_id = model_id
         self.rates = rates
+        self.long_context_rates = long_context_rates
         self.context_window_tokens = context_window_tokens
         self.max_output_tokens = max_output_tokens
         self.reasoning_effort = reasoning_effort
@@ -46,11 +52,18 @@ class OpenAIAdapter:
         self.strict_tools = strict_tools
         self.max_retries = max_retries
         self._sleep = sleep
-        if model_id.startswith("gpt-6-luna"):
+        if is_luna(model_id):
             if reasoning_effort != "none":
                 raise ModelConfigurationError("gpt-6-luna Chat Completions tool calls require reasoning_effort=none")
-            if context_window_tokens > 262144:
-                raise ModelConfigurationError("gpt-6-luna configured pricing requires short-context cap <=262144")
+            if context_window_tokens > LUNA_WINDOW:
+                raise ModelConfigurationError("gpt-6-luna window exceeds its verified provider limit")
+            if self.max_input_tokens > LUNA_LONG_CONTEXT_THRESHOLD and long_context_rates is None:
+                raise ModelConfigurationError("gpt-6-luna long context requires explicit long-context input and output rates")
+            if long_context_rates is not None and (
+                long_context_rates.input_per_million < rates.input_per_million or
+                long_context_rates.output_per_million < rates.output_per_million
+            ):
+                raise ModelConfigurationError("long-context rates cannot be lower than standard rates")
         # Pin the official origin; user/model data and ambient OPENAI_BASE_URL
         # cannot redirect credentials. No hidden SDK retry may bypass the ledger.
         self._client = AsyncOpenAI(api_key=api_key, base_url="https://api.openai.com/v1",
@@ -59,7 +72,7 @@ class OpenAIAdapter:
     @property
     def max_input_tokens(self) -> int:
         """The most input a request may carry once room for the reply is set aside."""
-        return max(0, self.context_window_tokens - self.max_output_tokens)
+        return input_limit(self.model_id, self.context_window_tokens, self.max_output_tokens) or 0
 
     @property
     def context_budget_tokens(self) -> int:
@@ -67,11 +80,34 @@ class OpenAIAdapter:
         usable window, which leaves room for what the next turn adds."""
         return self.max_input_tokens // 2
 
+    def with_output_limit(self, max_output_tokens: int) -> "OpenAIAdapter":
+        """This adapter with replies capped at `max_output_tokens` (never above its own cap).
+
+        For small side requests, such as naming a conversation, whose worst-case cost should reflect the few
+        tokens they can produce rather than a full answer. It shares the client, so the ledger, the pinned
+        origin and the no-hidden-retries rule are unchanged; `self` is not modified.
+        """
+        if max_output_tokens < 1:
+            raise ModelConfigurationError("an output limit must be positive")
+        limited = copy.copy(self)
+        limited.max_output_tokens = min(max_output_tokens, self.max_output_tokens)
+        return limited
+
     def maximum_request_cost(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]):
         count = conservative_input_tokens(messages, tools)
-        if count + self.max_output_tokens > self.context_window_tokens:
+        if count > self.max_input_tokens:
             raise ModelContextLimit("bounded model context is exhausted")
-        return self.rates.cost(count, self.max_output_tokens)
+        # Character estimates are useful for fitting, but cannot cap the cost of arbitrary text.
+        # A byte-level upper bound also covers dense code and multilingual inputs. Successful
+        # requests cannot exceed the provider input limit; rejected requests generate no output.
+        byte_bound = len(json.dumps({"messages": messages, "tools": tools}, ensure_ascii=False).encode("utf-8"))
+        upper = min(self.max_input_tokens, byte_bound + PROTOCOL_OVERHEAD_TOKENS + PER_MESSAGE_OVERHEAD_TOKENS * len(messages))
+        return self._rates_for(upper).cost(upper, self.max_output_tokens)
+
+    def _rates_for(self, input_tokens: int) -> ModelRates:
+        if is_luna(self.model_id) and input_tokens > LUNA_LONG_CONTEXT_THRESHOLD and self.long_context_rates:
+            return self.long_context_rates
+        return self.rates
 
     # --- request assembly -------------------------------------------------------------------
     def _request(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
@@ -82,37 +118,34 @@ class OpenAIAdapter:
         if self.reasoning_effort is not None:
             kwargs["reasoning_effort"] = self.reasoning_effort
         if tools:
-            # With tools offered the model answers by calling a tool (finally submit_result), so JSON
-            # mode would only push it to write JSON text instead of calling one.
             kwargs.update(tools=cast(list[ChatCompletionToolParam], tools),
                           tool_choice=tool_choice or "auto", parallel_tool_calls=self.parallel_tool_calls)
-        else:
-            kwargs["response_format"] = {"type": "json_object"}
         return kwargs
 
     # --- failure handling -------------------------------------------------------------------
     @staticmethod
     def _classify(exc: BaseException, *, before_output: bool = True) -> ModelProviderError | ModelContextLimit:
-        """Map an SDK failure to a safe error. Raw SDK errors may include request data, so only
-        the error class and a few stable fields are consulted, never the message."""
+        """Map an SDK failure to an error that carries the provider's own message (see `provider_detail`), so the
+        person reads what the provider actually said. The request itself is never included."""
         if isinstance(exc, (ModelProviderError, ModelContextLimit)):
             return exc
+        detail = provider_detail(exc)
         if isinstance(exc, openai.RateLimitError):
             if getattr(exc, "code", None) == "insufficient_quota":
-                return ModelProviderError("model quota exhausted", code="MODEL_QUOTA_EXCEEDED")
-            return ModelProviderError("model rate limited", code="RATE_LIMIT", retriable=before_output)
+                return ModelProviderError("model quota exhausted", code="MODEL_QUOTA_EXCEEDED", detail=detail)
+            return ModelProviderError("model rate limited", code="RATE_LIMIT", retriable=before_output, detail=detail)
         if isinstance(exc, openai.BadRequestError) and getattr(exc, "code", None) == "context_length_exceeded":
-            return ModelContextLimit("provider context window exceeded")
+            return ModelContextLimit(detail or "provider context window exceeded")
         if isinstance(exc, (openai.AuthenticationError, openai.PermissionDeniedError)):
-            return ModelProviderError("model credentials were rejected", code="AUTH_ERROR")
+            return ModelProviderError("model credentials were rejected", code="AUTH_ERROR", detail=detail)
         if isinstance(exc, openai.InternalServerError):
-            return ModelProviderError("model provider unavailable", retriable=before_output)
+            return ModelProviderError("model provider unavailable", retriable=before_output, detail=detail)
         if isinstance(exc, openai.APITimeoutError):
             # The provider may have started (and billed) generation, so a timeout is not repeated.
-            return ModelProviderError("model request timed out")
+            return ModelProviderError("model request timed out", detail=detail)
         if isinstance(exc, openai.APIConnectionError):
-            return ModelProviderError("model provider unreachable", retriable=before_output)
-        return ModelProviderError("model provider request failed")
+            return ModelProviderError("model provider unreachable", retriable=before_output, detail=detail)
+        return ModelProviderError("model provider request failed", detail=detail)
 
     @staticmethod
     def _retry_after(exc: BaseException) -> float | None:
@@ -141,13 +174,15 @@ class OpenAIAdapter:
     # --- completion -------------------------------------------------------------------------
     async def complete(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
                        on_text: Callable[[str], None] | None = None,
-                       tool_choice: dict[str, Any] | str | None = None) -> ModelResponse:
-        """One completion. With on_text, the person-facing reply is delivered as it arrives; the
-        returned response (message, usage, finish reason) is identical to the non-streaming path."""
+                       tool_choice: dict[str, Any] | str | None = None,
+                       on_narration: Callable[[str], None] | None = None) -> ModelResponse:
+        """One completion. With on_text, the person-facing reply is delivered as it arrives; with on_narration,
+        so is the plain text the model writes next to its tool calls. The returned response (message, usage,
+        finish reason) is identical to the non-streaming path."""
         self.maximum_request_cost(messages, tools)
         request = self._request(messages, tools, tool_choice)
-        if on_text is not None:
-            return await self._with_retries(lambda: self._complete_streaming(request, bool(tools), on_text))
+        if on_text is not None or on_narration is not None:
+            return await self._with_retries(lambda: self._complete_streaming(request, bool(tools), on_text, on_narration))
         return await self._with_retries(lambda: self._complete_once(request))
 
     async def _complete_once(self, request: dict[str, Any]) -> ModelResponse:
@@ -164,11 +199,12 @@ class OpenAIAdapter:
             measured = ModelUsage(0, 0, None)
         else:
             measured = ModelUsage(usage.prompt_tokens, usage.completion_tokens,
-                                  self.rates.cost(usage.prompt_tokens, usage.completion_tokens))
+                                  self._rates_for(usage.prompt_tokens).cost(usage.prompt_tokens, usage.completion_tokens))
         return ModelResponse(message, measured, response.model, choice.finish_reason)
 
     async def _complete_streaming(self, request: dict[str, Any], has_tools: bool,
-                                  on_text: Callable[[str], None]) -> ModelResponse:
+                                  on_text: Callable[[str], None] | None,
+                                  on_narration: Callable[[str], None] | None = None) -> ModelResponse:
         parts: list[str] = []
         calls: dict[int, dict[str, Any]] = {}
         finish_reason: str | None = None
@@ -177,9 +213,11 @@ class OpenAIAdapter:
         stream = None
         received = False
 
-        def show(text: str) -> None:
+        def show(text: str, sink: Callable[[str], None] | None = on_text) -> None:
+            if sink is None:
+                return
             try:
-                on_text(text)
+                sink(text)
             except Exception:
                 pass  # Showing progress must never fail the model call.
 
@@ -198,8 +236,8 @@ class OpenAIAdapter:
                 delta = choice.delta
                 if delta is not None and delta.content:
                     parts.append(delta.content)
-                    if not has_tools:
-                        show(delta.content)  # with tools offered, content is narration, not the reply
+                    # With tools offered, content is narration written next to the calls, not the reply.
+                    show(delta.content, on_narration if has_tools else on_text)
                 for call in (delta.tool_calls or []) if delta is not None else []:
                     slot = calls.setdefault(call.index, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
                     if call.id:
@@ -207,8 +245,6 @@ class OpenAIAdapter:
                     if call.function is not None:
                         slot["function"]["name"] += call.function.name or ""
                         slot["function"]["arguments"] += call.function.arguments or ""
-                        if call.function.arguments and slot["function"]["name"] == SUBMIT_RESULT:
-                            show(call.function.arguments)  # the typed result is the reply envelope
                 if choice.finish_reason:
                     finish_reason = choice.finish_reason
         except Exception as exc:
@@ -232,7 +268,7 @@ class OpenAIAdapter:
             measured = ModelUsage(0, 0, None)
         else:
             measured = ModelUsage(usage.prompt_tokens, usage.completion_tokens,
-                                  self.rates.cost(usage.prompt_tokens, usage.completion_tokens))
+                                  self._rates_for(usage.prompt_tokens).cost(usage.prompt_tokens, usage.completion_tokens))
         return ModelResponse(message, measured, reported_model, finish_reason)
 
     async def aclose(self) -> None:

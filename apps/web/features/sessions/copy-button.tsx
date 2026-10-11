@@ -1,22 +1,24 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { Check, Copy } from "lucide-react";
+import { Check, Copy, TriangleAlert } from "lucide-react";
+import { copyLabels, copyToClipboard, type CopyState } from "@/features/sessions/copy-feedback";
 
-/** Icon button that copies text and briefly confirms. Clipboard failures stay silent; nothing else depends on them. */
+/** Icon button that copies text and briefly confirms. A refused clipboard is stated too ("Couldn't copy"), announced, and clears itself. */
 export function CopyButton({ text, label = "Copy", showLabel = false, className = "" }: { text: string; label?: string; showLabel?: boolean; className?: string }) {
-  const [copied, setCopied] = useState(false);
+  const [state, setState] = useState<CopyState>("idle");
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(timer.current), []);
   async function copy() {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true); clearTimeout(timer.current);
-      timer.current = setTimeout(() => setCopied(false), 1800);
-    } catch { /* Clipboard access can be denied; the text stays selectable. */ }
+    const next: CopyState = (await copyToClipboard(text)) ? "copied" : "failed";
+    setState(next);
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => setState("idle"), copyLabels(next, label).clearAfter ?? 0);
   }
-  return <button type="button" onClick={() => void copy()} aria-label={copied ? "Copied" : label} title={copied ? "Copied" : label} className={`inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg text-xs text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 motion-reduce:transition-none ${showLabel ? "h-7 px-2" : "size-8"} ${className}`}>
-    {copied ? <Check className="size-3.5" aria-hidden="true" /> : <Copy className="size-3.5" aria-hidden="true" />}
-    {showLabel ? <span>{copied ? "Copied" : label}</span> : null}
-    <span role="status" className="sr-only">{copied ? "Copied to clipboard" : ""}</span>
+  const labels = copyLabels(state, label);
+  const Icon = state === "copied" ? Check : state === "failed" ? TriangleAlert : Copy;
+  return <button type="button" onClick={() => void copy()} aria-label={labels.name} title={labels.name} data-copy-state={state} className={`inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg text-xs text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 motion-reduce:transition-none ${showLabel ? "h-7 px-2" : "size-8"} ${className}`}>
+    <Icon className="size-3.5" aria-hidden="true" />
+    {showLabel ? <span>{labels.visible}</span> : null}
+    <span role="status" aria-live="polite" className="sr-only">{labels.status}</span>
   </button>;
 }

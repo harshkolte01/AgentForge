@@ -1,8 +1,11 @@
-"""Durable, task-serialized reservations and finite per-child execution bounds.
+"""Durable, task-serialized usage ledger. It records what a run spends; it does not stop a run.
 
 All mutations lock the parent task first. Unknown or interrupted operation usage
-consumes its authorized upper bound. Settlement is idempotent; a crashed child
-keeps its slice reserved until explicit reconciliation rather than freeing funds.
+is recorded at its upper bound. Settlement is idempotent; a crashed child keeps
+its reservation until explicit reconciliation. Reservations and their numbers
+exist because every operation and charge hangs off one; they are set high enough
+never to refuse anything. A run ends when the model answers, on error, or when a
+person stops it.
 """
 
 from dataclasses import dataclass
@@ -11,7 +14,7 @@ from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import case, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from agentforge.database.models import (
@@ -44,11 +47,8 @@ class Reservation:
 
 
 class BudgetService:
-    def __init__(self, session_factory: SessionFactory, *, max_task_spawns: int = 8):
-        if not 1 <= max_task_spawns <= 100:
-            raise ValueError("invalid_task_spawn_limit")
+    def __init__(self, session_factory: SessionFactory):
         self.session_factory = session_factory
-        self.max_task_spawns = max_task_spawns
 
     @staticmethod
     def _value(row: BudgetReservation) -> Reservation:
@@ -75,13 +75,10 @@ class BudgetService:
 
     @staticmethod
     def _active(task: Task, row: BudgetReservation) -> None:
-        now = datetime.now(timezone.utc)
         if task.cancel_requested_at is not None or task.status in _TERMINAL:
             raise BudgetExceeded("task_not_active")
         if row.settled_at is not None:
             raise BudgetExceeded("reservation_settled")
-        if now >= row.deadline or now >= task.created_at + timedelta(seconds=task.max_wall_time_sec):
-            raise BudgetExceeded("wall_time_exceeded")
 
     @staticmethod
     def _consumed(session: Session, reservation_id: UUID) -> Decimal:
@@ -101,8 +98,6 @@ class BudgetService:
             raise BudgetExceeded("reservation_below_currency_precision")
         if depth != 1:
             raise BudgetExceeded("nested_spawn_denied")
-        if not (1 <= max_steps <= 50 and 1 <= max_tool_calls <= 100 and 1 <= max_wall_time_sec <= 1200):
-            raise BudgetExceeded("invalid_execution_limits")
         now = datetime.now(timezone.utc)
         with self.session_factory() as session, session.begin():
             task = self._task(session, task_id)
@@ -112,28 +107,12 @@ class BudgetService:
                 raise BudgetExceeded("task_not_authorized")
             if task.cancel_requested_at is not None or task.status in _TERMINAL:
                 raise BudgetExceeded("task_not_active")
-            deadline = min(now + timedelta(seconds=max_wall_time_sec),
-                           task.created_at + timedelta(seconds=task.max_wall_time_sec))
-            if deadline <= now:
-                raise BudgetExceeded("wall_time_exceeded")
-            # Ledger sums outstanding reserves and charges under the same task lock.
-            committed = session.scalar(select(func.coalesce(func.sum(case(
-                (BudgetTransaction.kind == "RELEASE", -BudgetTransaction.amount_usd),
-                else_=BudgetTransaction.amount_usd)), 0)).where(
-                    BudgetTransaction.task_id == task_id)) or Decimal(0)
-            # Sequential MVP: an abandoned or concurrent run fails closed.
+            deadline = now + timedelta(seconds=max_wall_time_sec)
+            # Sequential: an abandoned or concurrent run fails closed.
             active = session.scalar(select(BudgetReservation.id).where(
                 BudgetReservation.task_id == task_id, BudgetReservation.settled_at.is_(None)).limit(1))
             if active is not None:
                 raise BudgetExceeded("concurrent_spawn_denied")
-            spawn_count = session.scalar(select(func.count()).select_from(BudgetReservation).where(
-                BudgetReservation.task_id == task_id)) or 0
-            if spawn_count >= self.max_task_spawns:
-                raise BudgetExceeded("task_spawn_limit_exceeded")
-            remaining = task.max_cost_usd - committed
-            if remaining <= 0:
-                raise BudgetExceeded("task_budget_exceeded")
-            amount = min(amount, remaining)
             row = BudgetReservation(id=uuid4(), task_id=task_id, run_id=run_id,
                 amount_usd=amount, max_steps=max_steps, max_tool_calls=max_tool_calls,
                 depth=depth, deadline=deadline)
@@ -148,15 +127,7 @@ class BudgetService:
         with self.session_factory() as session, session.begin():
             task, row = self._locked(session, reservation_id)
             self._active(task, row)
-            if self._consumed(session, row.id) > row.amount_usd:
-                raise BudgetExceeded("child_budget_exceeded")
             return self._value(row)
-
-    def remaining_usd(self, reservation_id: UUID) -> Decimal:
-        """What the run may still spend, counting every in-flight operation at its authorized cap."""
-        with self.session_factory() as session, session.begin():
-            _, row = self._locked(session, reservation_id)
-            return row.amount_usd - self._consumed(session, row.id)
 
     def authorize_operation(self, reservation_id: UUID, operation_key: str,
                             max_cost_usd: Decimal, kind: str = "model") -> None:
@@ -166,17 +137,9 @@ class BudgetService:
         with self.session_factory() as session, session.begin():
             task, row = self._locked(session, reservation_id)
             self._active(task, row)
-            operations = session.scalars(select(BudgetOperation).where(
-                BudgetOperation.reservation_id == row.id)).all()
-            if any(op.operation_key == operation_key for op in operations):
+            if session.scalar(select(BudgetOperation.id).where(BudgetOperation.reservation_id == row.id,
+                    BudgetOperation.operation_key == operation_key)) is not None:
                 raise BudgetExceeded("operation_already_authorized")
-            limit = row.max_steps if kind == "model" else row.max_tool_calls
-            if sum(op.kind == kind for op in operations) >= limit:
-                raise BudgetExceeded("step_limit_exceeded" if kind == "model" else "tool_limit_exceeded")
-            consumed = sum((op.cost_usd if op.cost_usd is not None else op.max_cost_usd
-                            for op in operations), Decimal(0))
-            if consumed + cost > row.amount_usd:
-                raise BudgetExceeded("child_budget_exceeded")
             session.add(BudgetOperation(reservation_id=row.id, operation_key=operation_key,
                                         kind=kind, max_cost_usd=cost))
 

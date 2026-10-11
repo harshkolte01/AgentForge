@@ -1,9 +1,9 @@
 """Validate and reauthorize every call, commit intent, then execute a bounded adapter.
 
 Beyond authorization the gateway is what makes calls precise: it binds identifiers the task already
-fixes (repository, ref, sandbox), tells the model exactly which field of a call was wrong, refuses a
-repeat of a call that already succeeded, tracks consecutive failures so the runtime can stop a loop,
-and lets independent read-only calls run side by side while effectful ones stay strictly serial.
+fixes (repository, ref, sandbox), tells the model exactly which field of a call was wrong, and lets
+independent read-only calls run side by side while effectful ones stay strictly serial. It does not
+count, cap or deduplicate calls: how many a run makes is the model's decision.
 """
 
 import asyncio
@@ -23,15 +23,14 @@ from agentforge.subagents.budget import BudgetExceeded, BudgetService
 from agentforge.subagents.resources import ResourceResolver
 from agentforge.subagents.scope import EffectiveScope, ScopeDenied, TaskContext
 
-from .catalog import BINDABLE_FIELDS, EFFECT_TOOLS, ToolCatalog, ToolUnavailable, safe_arguments
+from .catalog import (
+    ASKS_BEFORE, BINDABLE_FIELDS, EFFECT_TOOLS, ToolCatalog, ToolUnavailable, activity_detail, approval_summary, safe_arguments,
+)
 from .contracts import ARGUMENT_MODELS, ToolOutcome
 from .errors import ToolError, render_issues, validation_issues
+from .lifecycle import CallLifecycle, LifecycleSink, execution_labels, outcome_from_row
 
 READ_CONCURRENCY = 4
-MAX_CONSECUTIVE_ERRORS = 5
-REPEATED_FAILURE_NOTICE = 3
-# Authorization refusals that mean "this run cannot afford the call" rather than "the run is over".
-SOFT_BUDGET_CODES = frozenset({"child_budget_exceeded", "tool_limit_exceeded"})
 
 
 class UnknownToolOutcome(RuntimeError):
@@ -55,8 +54,12 @@ class ToolGateway:
                  budgets: BudgetService, resources: ResourceResolver,
                  reauthorize: Callable[[], Awaitable[None]], ctx: TaskContext,
                  scope: EffectiveScope, run_id: UUID, reservation_id: UUID,
-                 strict_tools: bool = False) -> None:
+                 strict_tools: bool = False, lifecycle: LifecycleSink | None = None, approvals=None) -> None:
         self.catalog, self.calls, self.budgets, self.resources = catalog, calls, budgets, resources
+        # Asks the person before a tool that changes something runs (see tools/approvals.py); None: nothing asks.
+        self.approvals = approvals
+        # Receives tool.started / tool.finished (see tools/lifecycle.py); without one the gateway reports nothing.
+        self.lifecycle = lifecycle
         self.reauthorize, self.ctx, self.scope = reauthorize, ctx, scope
         self.run_id, self.reservation_id = run_id, reservation_id
         self.strict_tools = strict_tools
@@ -64,14 +67,6 @@ class ToolGateway:
         # Effectful calls are serialized; independent reads may overlap up to READ_CONCURRENCY.
         self._lock = asyncio.Lock()
         self._reads = asyncio.Semaphore(READ_CONCURRENCY)
-        # A successful read is remembered until something could have changed what it returns.
-        self._epoch = 0
-        self._seen: dict[tuple[str, str, int], int] = {}
-        self._by_call: dict[str, tuple[str, str, int]] = {}
-        self.consecutive_errors = 0
-        self.failures: dict[str, int] = {}
-        # Set when a tool call was refused for lack of budget; the runtime then wraps the run up.
-        self.budget_exhausted = False
 
     # --- what the model sees --------------------------------------------------------------
     def bindings(self, name: str) -> dict[str, str]:
@@ -102,33 +97,8 @@ class ToolGateway:
             return False
 
     def is_parallel_safe(self, name: str) -> bool:
-        """Read-only and free. A paid call holds its full cost cap against the run's budget while it is in
-        flight, so several at once can overdraw a budget that the same calls made one by one would not."""
+        """Read-only and free, so it may run alongside other reads."""
         return name in self.scope.allowed_tools and name not in EFFECT_TOOLS and not self._is_paid(name)
-
-    @property
-    def max_tool_cost(self) -> Decimal:
-        """The largest cost cap among the tools this run may call."""
-        return max((tool.max_cost_usd for tool in self.catalog.available(self.scope.allowed_tools)), default=Decimal(0))
-
-    @property
-    def calls_left(self) -> int:
-        return max(0, self.scope.budget.max_tool_calls - self._attempts)
-
-    def forget(self, provider_call_ids) -> None:
-        """The conversation no longer holds these calls' results (they were compacted), so the same call
-        may be made again to fetch them back."""
-        for call_id in provider_call_ids:
-            key = self._by_call.pop(call_id, None)
-            if key is not None:
-                self._seen.pop(key, None)
-
-    def repeated_failure_notice(self, name: str) -> str | None:
-        count = self.failures.get(name, 0)
-        if count >= REPEATED_FAILURE_NOTICE:
-            return (f"{name} has failed {count} times in a row. Stop retrying it: change approach, "
-                    "or finish with what you have and record the gap.")
-        return None
 
     # --- argument handling ------------------------------------------------------------------
     def _parse(self, name: str, tool, raw_args: str):
@@ -155,11 +125,7 @@ class ToolGateway:
     async def execute(self, name: str, raw_args: str, provider_call_id: str) -> ToolOutcome:
         if name in EFFECT_TOOLS or self._is_paid(name):
             async with self._lock:
-                try:
-                    return await self._run(name, raw_args, provider_call_id)
-                finally:
-                    if name in EFFECT_TOOLS:
-                        self._epoch += 1  # whatever a write or run touched, earlier reads are stale
+                return await self._run(name, raw_args, provider_call_id)
         async with self._reads:
             return await self._run(name, raw_args, provider_call_id)
 
@@ -175,22 +141,18 @@ class ToolGateway:
         # Private argument content is represented by an immutable digest;
         # no source code, .env data or prompt fragments enter audit metadata.
         digest = hashlib.sha256(raw_args.encode("utf-8")).hexdigest()
+        # A name the run may not call is stored (and shown) as "unknown": the model's text never becomes a tool name.
+        stored_name = name if name in self.scope.allowed_tools else "unknown"
         call_id = self.calls.record_intent(
-            task_id=self.ctx.task_id, run_id=self.run_id,
-            tool_name=name if name in self.scope.allowed_tools else "unknown",
+            task_id=self.ctx.task_id, run_id=self.run_id, tool_name=stored_name,
             args_digest=digest, intent_json_sanitized={"arguments_sha256": digest},
             operation_key=operation_key,
         )
-        if attempt > self.scope.budget.max_tool_calls:
-            outcome = ToolOutcome(status="error", cost_usd=Decimal(0), error_code="TOOL_LIMIT_REACHED",
-                error_detail="No tool calls are left for this run. Call submit_result now with the best honest result.")
-            self.calls.record_outcome(call_id=call_id, status="BLOCKED", error_code="TOOL_LIMIT_REACHED",
-                result_json={"attempt": attempt})
-            return self._note(name, outcome)
+        events = CallLifecycle(self.lifecycle, tool=stored_name, tool_call_id=call_id,
+                               agent_run_id=self.run_id, operation_key=operation_key)
         authorized = False
         entered_adapter = False
         tool = None
-        reserved_key: tuple[str, str, int] | None = None
         arguments: dict = {}
         try:
             await self.reauthorize()
@@ -200,6 +162,7 @@ class ToolGateway:
                 raise ScopeDenied("tool is not authorized for this run")
             args = self._parse(name, tool, raw_args)
             arguments = safe_arguments(args)
+            events.detail = activity_detail(name, args)
             web_url, web_hosts = None, ()
             if name in ("fetch_webpage", "browser_public_page"):
                 resolver = getattr(self.resources, "resolve_web_url", None)
@@ -209,13 +172,14 @@ class ToolGateway:
                     web_url, web_hosts = await resolver(self.ctx, name, args, self.scope)
             authorize_tool(name, args, self.ctx, self.scope, resolved_web_url=web_url)
             await self.resources.verify_tool_inputs(self.ctx, name, args)
-            if not tool.has_effects:
-                key = (name, args.model_dump_json(), self._epoch)
-                if key in self._seen:
-                    raise ToolError("DUPLICATE_CALL", f"This is identical to your call number {self._seen[key]}, "
-                                    "which succeeded. Reuse its result or change the arguments.")
-                self._seen[key] = attempt
-                self._by_call[provider_call_id] = reserved_key = key
+            if self.approvals is not None and name in ASKS_BEFORE:
+                if not await self.approvals.allows(self.ctx, operation_key=operation_key, tool=name,
+                        summary=approval_summary(name, args), detail=arguments, check=self.reauthorize):
+                    raise ToolError("DECLINED", "The person declined this action, so nothing was run. Do not do it another way "
+                                    "without asking: say what you were about to do and ask how they want to continue.")
+            # Announced just before the budget is claimed so a failed event write costs nothing; a refusal
+            # from here on shows as a blocked step.
+            events.start()
             self.budgets.authorize_operation(self.reservation_id, operation_key,
                                             tool.max_cost_usd, kind="tool")
             authorized = True
@@ -228,6 +192,10 @@ class ToolGateway:
             if not isinstance(raw_result, ToolOutcome):
                 raise ValueError("invalid_adapter_result")
             result = ToolOutcome.model_validate_json(raw_result.model_dump_json())
+            saver = getattr(self.calls, "store_result", None)
+            if saver is not None and name != "read_context_resource":
+                reference = saver(self.ctx.task_id, operation_key, result)
+                result = result.model_copy(update={"data": {**result.data, "resource_id": reference}})
             self.budgets.record_usage(self.reservation_id, operation_key, result.cost_usd)
             authorized = False  # usage was durably recorded
             if result.cost_usd is not None and result.cost_usd > tool.max_cost_usd:
@@ -236,21 +204,25 @@ class ToolGateway:
                                                    artifact_ids=result.artifact_ids)
             if len(json.dumps(result.data, ensure_ascii=False).encode()) > 16000 and not (result.evidence_ids or result.artifact_ids):
                 raise ValueError("large_adapter_output_requires_durable_reference")
-            if result.status != "ok" and reserved_key is not None:
-                self._seen.pop(reserved_key, None)  # a failed read may be retried
+            duration_ms = int((time.monotonic() - started) * 1000)
+            labels = execution_labels(name, result.data)
+            status = "SUCCEEDED" if result.status == "ok" else "FAILED"
             self.calls.record_outcome(
-                call_id=call_id, status="SUCCEEDED" if result.status == "ok" else "FAILED",
+                call_id=call_id, status=status,
                 result_json={"status": result.status,
                              "data_sha256": hashlib.sha256(json.dumps(result.data, sort_keys=True).encode()).hexdigest(),
                              "artifact_ids": list(result.artifact_ids), "attempt": attempt,
-                             "arguments": arguments, "duration_ms": int((time.monotonic() - started) * 1000)},
+                             "arguments": arguments, "duration_ms": duration_ms,
+                             # Exit code, timeout and qualification only (ints and bools), never output text.
+                             **({"execution": labels} if labels else {})},
                 error_code=result.error_code, evidence_ids=result.evidence_ids,
             )
-            return self._note(name, result)
+            events.finish(outcome_from_row(status, result.error_code), evidence_ids=result.evidence_ids,
+                          artifact_ids=result.artifact_ids, error_code=result.error_code,
+                          duration_ms=duration_ms, labels=labels)
+            return result
         except BaseException as exc:
             definite = isinstance(exc, ToolError)
-            if reserved_key is not None:
-                self._seen.pop(reserved_key, None)
             if authorized:
                 # Cancellation/timeouts cannot be treated as free remote work; a typed adapter
                 # rejection happened before any effect and is free.
@@ -266,7 +238,8 @@ class ToolGateway:
             elif isinstance(exc, ToolUnavailable):
                 code = "TOOL_UNAVAILABLE"
             elif isinstance(exc, (ValidationError, ValueError)) and not isinstance(exc, BudgetExceeded):
-                code = "SCHEMA_INVALID"
+                # Bad arguments are the model's to correct; an adapter that rejects its own result is a failure.
+                code = "TOOL_FAILED" if entered_adapter else "SCHEMA_INVALID"
             elif isinstance(exc, BudgetExceeded):
                 code = "BUDGET_EXCEEDED"
             elif isinstance(exc, TimeoutError):
@@ -277,31 +250,20 @@ class ToolGateway:
                 code = "TOOL_FAILED"
             if unknown:
                 code = "UNKNOWN_REMOTE_OUTCOME"
-            self.calls.record_outcome(call_id=call_id,
-                status="UNKNOWN" if unknown else ("BLOCKED" if not entered_adapter else "FAILED"),
-                error_code=code,
+            duration_ms = int((time.monotonic() - started) * 1000)
+            status = "UNKNOWN" if unknown else ("BLOCKED" if not entered_adapter else "FAILED")
+            self.calls.record_outcome(call_id=call_id, status=status, error_code=code,
                 result_json={"attempt": attempt, "arguments": arguments, "issues": issues or [],
-                             "duration_ms": int((time.monotonic() - started) * 1000)})
-            soft_budget = isinstance(exc, BudgetExceeded) and str(exc) in SOFT_BUDGET_CODES and not entered_adapter
-            if soft_budget:
-                self.budget_exhausted = True
-                detail = "This run's remaining budget cannot cover the call. Submit what you have."
-            elif not isinstance(exc, Exception) or isinstance(exc, (BudgetExceeded, UnknownToolOutcome)):
+                             "duration_ms": duration_ms})
+            # Reported only once the row is durable, including when the run is being cancelled (best effort).
+            events.finish(outcome_from_row(status, code), error_code=code, duration_ms=duration_ms)
+            if not isinstance(exc, Exception) or isinstance(exc, (BudgetExceeded, UnknownToolOutcome)):
                 raise
             if unknown:
                 raise UnknownToolOutcome(code) from None
             # No exception string or provider content crosses the boundary: detail is text our own
             # code wrote for the model, and validation issues describe constraints, never values.
-            return self._note(name, ToolOutcome(
+            return ToolOutcome(
                 status="error", data={"issues": issues} if issues else {},
                 cost_usd=Decimal(0) if (not entered_adapter or definite) else None,
-                error_code=code, error_detail=detail))
-
-    def _note(self, name: str, outcome: ToolOutcome) -> ToolOutcome:
-        if outcome.status == "ok":
-            self.consecutive_errors = 0
-            self.failures[name] = 0
-        elif outcome.error_code != "DUPLICATE_CALL":
-            self.consecutive_errors += 1
-            self.failures[name] = self.failures.get(name, 0) + 1
-        return outcome
+                error_code=code, error_detail=detail)

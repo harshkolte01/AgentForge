@@ -45,7 +45,7 @@ def main():
     directory = ROOT / ".local" / "releases" / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid4().hex[:8])
     directory.mkdir(parents=True, mode=0o700)
     commands = [("api-unit", [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"], ROOT / "apps/api")]
-    for filename in ("phase4_offline_smoke.py", "phase5_identity_smoke.py", "phase6_sessions_smoke.py", "phase6_research_general_smoke.py", "phase7_operations_smoke.py", "settings_agents_smoke.py"):
+    for filename in ("phase5_identity_smoke.py", "phase6_sessions_smoke.py", "conversation_delivery_smoke.py", "phase7_operations_smoke.py", "settings_agents_smoke.py", "phase8_streaming_smoke.py", "activity_api_smoke.py", "conversation_title_smoke.py", "conversation_status_smoke.py"):
         example = ROOT / "apps/api/examples" / filename
         if example.is_file():
             commands.append((example.stem, [sys.executable, str(example)], ROOT / "apps/api"))
@@ -58,7 +58,8 @@ def main():
         if version.returncode or version.stdout.strip() != "10.34.6":
             raise SystemExit("Use pnpm 10.34.6 (corepack or npm install --global pnpm@10.34.6).")
         commands.extend((name, [*pnpm, *arguments], ROOT / "apps/web") for name, arguments in (
-            ("web-lint", ["lint"]), ("web-route-types", ["exec", "next", "typegen"]),
+            ("web-conversation", ["exec", "node", "--experimental-strip-types", "--import", "./tests/alias.mjs", "--test", "tests/conversation.test.mjs", "tests/conversation-outbox.test.mjs", "tests/conversation-status.test.mjs"]),
+            ("web-context", ["test:context"]), ("web-activity", ["test:activity"]), ("web-lint", ["lint"]), ("web-route-types", ["exec", "next", "typegen"]),
             ("web-types", ["exec", "tsc", "--noEmit"]), ("web-build", ["build"])))
     revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()
     dirty = bool(subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, capture_output=True, text=True, check=True).stdout)

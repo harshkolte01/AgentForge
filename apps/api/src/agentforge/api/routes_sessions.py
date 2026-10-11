@@ -5,16 +5,16 @@ from starlette.concurrency import run_in_threadpool
 from agentforge.api.dependencies import sessions
 from agentforge.api.routes_tasks import prepare_task
 from agentforge.auth.session import current_user
-from agentforge.contracts.sessions import AutoTurnCreate, MessageView, SessionCreate, SessionPatch, SessionTurnCreate, SessionView, TurnView
+from agentforge.contracts.sessions import AutoTurnCreate, MessageView, QueueCommand, ReadReceipt, SessionCreate, SessionPatch, SessionTurnCreate, SessionView, TurnView
 from agentforge.contracts.tasks import TaskCreate
 from agentforge.database.models import User
-from agentforge.repositories.sessions import SessionRepository
+from agentforge.repositories.sessions import SessionRepository, context_budget_chars
 from agentforge.repositories.tasks import TaskNotFound, TaskConflict
 
 router = APIRouter(prefix="/api/v1/sessions", tags=["sessions"])
 
 def repository(request: Request):
-    return SessionRepository(sessions(request))
+    return SessionRepository(sessions(request), context_budget=context_budget_chars(request.app.state.settings))
 
 def error(exc):
     if isinstance(exc, TaskNotFound):
@@ -48,6 +48,14 @@ def patch(session_id: UUID, body: SessionPatch, user: User = Depends(current_use
     except (TaskNotFound, TaskConflict) as exc:
         raise error(exc) from None
 
+@router.post("/{session_id}/read", response_model=SessionView)
+def mark_read(session_id: UUID, body: ReadReceipt, user: User = Depends(current_user), repo=Depends(repository)):
+    """The owner has seen the conversation up to `sequence`. Clears its "unread"/"failed" sidebar status; changes nothing else."""
+    try:
+        return repo.mark_read(session_id, user.id, body.sequence)
+    except TaskNotFound as exc:
+        raise error(exc) from None
+
 @router.get("/{session_id}/messages", response_model=list[MessageView])
 def messages(session_id: UUID, user: User = Depends(current_user), repo=Depends(repository),
              after_sequence: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=100)):
@@ -66,16 +74,7 @@ async def turn(session_id: UUID, body: AutoTurnCreate | SessionTurnCreate, reque
             return replay
         owned = await run_in_threadpool(repo.get, session_id, user.id)
         if isinstance(body, AutoTurnCreate):
-            selection = body.repository if "repository" in body.model_fields_set else owned.repository
-            # Selection supplies read context only. A later validated model decision
-            # may request coding; profile/sandbox/source grants are resolved by worker.
-            explicit = SessionTurnCreate(**body.model_dump(exclude={"routing", "repository", "continue_from_task_id"}), kind="general")
-            metadata = {"repository": selection.model_dump(mode="json") if selection else None,
-                "inherit_repository": "repository" not in body.model_fields_set,
-                "inherit_continuation": "continue_from_task_id" not in body.model_fields_set,
-                "continue_from_task_id": str(body.continue_from_task_id) if body.continue_from_task_id else None}
-            return await run_in_threadpool(repo.turn, session_id, user.id, explicit,
-                original_digest=repo.request_digest(body), automatic=metadata)
+            return await run_in_threadpool(repo.enqueue, session_id, user.id, body)
         task_body = TaskCreate.model_validate({**body.model_dump(exclude={"project_id", "idempotency_key"}), "project_id": owned.project_id})
         prepared = await prepare_task(task_body, request, user, repo.tasks)
         resolved = body.model_copy(update={"coding": prepared.coding})
@@ -91,3 +90,32 @@ async def turn(session_id: UUID, body: AutoTurnCreate | SessionTurnCreate, reque
         if isinstance(exc, AdmissionDenied):
             raise HTTPException(429, str(exc)) from None
         raise
+
+
+@router.get("/{session_id}/turns", response_model=list[TurnView])
+def turns(session_id: UUID, user: User = Depends(current_user), repo=Depends(repository),
+          after_ordinal: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=100), waiting: bool = False):
+    try:
+        return repo.turns(session_id, user.id, after_ordinal=after_ordinal, limit=limit, waiting=waiting)
+    except TaskNotFound as exc:
+        raise error(exc) from None
+
+
+@router.post("/{session_id}/queue/{action}", response_model=SessionView)
+def queue_action(session_id: UUID, action: str, body: QueueCommand, user: User = Depends(current_user), repo=Depends(repository)):
+    if action not in {"stop", "resume"}:
+        raise HTTPException(404, "queue_action_not_found")
+    if action == "stop" and body.task_id is None:
+        raise HTTPException(422, "stop_target_required")
+    try:
+        return repo.queue_command(session_id, user.id, action, task_id=body.task_id)
+    except (TaskNotFound, TaskConflict) as exc:
+        raise error(exc) from None
+
+
+@router.post("/{session_id}/turns/{turn_id}/cancel", response_model=SessionView)
+def cancel_waiting(session_id: UUID, turn_id: UUID, user: User = Depends(current_user), repo=Depends(repository)):
+    try:
+        return repo.queue_command(session_id, user.id, "cancel", turn_id=turn_id)
+    except (TaskNotFound, TaskConflict) as exc:
+        raise error(exc) from None

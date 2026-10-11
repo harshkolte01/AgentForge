@@ -18,11 +18,12 @@ class ContextStatus(BaseModel):
     provider: str | None = None
     window_tokens: int | None = None
     max_output_tokens: int | None = None
+    input_limit_tokens: int | None = None
     # unknown: no window is configured. ok < 50%, notice < 80%, high otherwise.
     level: Literal["ok", "notice", "high", "unknown"]
     percent: float = Field(ge=0, le=100)
     used_tokens: int = Field(ge=0)
-    # What used_tokens measures: the larger of the next turn's starting context and the latest run's peak.
+    # Next message's estimated starting input. A previous run's peak is separate historical data.
     used_basis: Literal["next_turn", "last_run_peak"]
     # Estimated at about four characters per token; the last run's peak is measured.
     baseline_tokens: int = Field(ge=0)
@@ -33,3 +34,7 @@ class ContextStatus(BaseModel):
     messages_in_full: int = Field(ge=0)
     messages_condensed: int = Field(ge=0)
     messages_omitted: int = Field(ge=0)
+    summary_through_ordinal: int = 0
+    uncovered_turns: int = 0
+    retrieval_available: bool = False
+    snapshot_revision: int = 0

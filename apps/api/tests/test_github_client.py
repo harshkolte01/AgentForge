@@ -171,9 +171,13 @@ class ReadBoundaryTests(unittest.TestCase):
             e2b_template_id=None, e2b_template_qualified=False)
         result = configuration(SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(settings=settings))), SimpleNamespace(github_user_id=123))
         self.assertTrue(result["research_configured"])
-        self.assertFalse(result["coding_configured"])
-        self.assertEqual(result["coding_missing_settings"], ["E2B_TEMPLATE_ID", "E2B_TEMPLATE_QUALIFIED=true"])
+        self.assertTrue(result["coding_configured"])  # the sandbox needs only its API key; no template qualification
+        self.assertEqual(result["coding_missing_settings"], [])
         self.assertNotIn("private-", str(result))
+        settings.e2b_api_key = None
+        result = configuration(SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(settings=settings))), SimpleNamespace(github_user_id=123))
+        self.assertFalse(result["coding_configured"])
+        self.assertEqual(result["coding_missing_settings"], ["E2B_API_KEY"])
 
 
 if __name__ == "__main__":
