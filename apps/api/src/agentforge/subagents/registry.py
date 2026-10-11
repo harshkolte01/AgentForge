@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from agentforge.contracts.agent_definition import AgentDefinition, Budget, Permissions
-from agentforge.database.models import AgentDefinition as DefinitionRow, AgentDefinitionVersion, Project
+from agentforge.database.models import AgentDefinition as DefinitionRow, Project
 from agentforge.repositories.definitions import DefinitionRepository
 from agentforge.security.policies import AuthorizationService
 from agentforge.subagents.scope import ScopeDenied, TaskContext
@@ -59,51 +59,10 @@ class ResolvedDefinition:
     sha256: str
 
 
-@dataclass(frozen=True)
-class AgentCatalogEntry:
-    key: str
-    version: int
-    name: str
-    description: str
-    allowed_tools: tuple[str, ...]
-
-
 class AgentRegistry:
     def __init__(self, session_factory: Callable[[], Session], authorizer: AuthorizationService | None = None):
         self.session_factory = session_factory
         self.authorizer = authorizer or AuthorizationService(session_factory)
-
-    async def list_for_task(self, ctx: TaskContext) -> tuple[AgentCatalogEntry, ...]:
-        """Short authorized selection metadata; never feed full prompts to a planner."""
-        await self.authorizer.check_context(ctx)
-        latest = {"agent": AGENT_VERSION}
-        keys =[(f"builtin/{name}", latest[name]) for name in sorted(BUILTIN_KEYS)]
-        with self.session_factory() as session:
-            custom = session.execute(select(DefinitionRow.agent_key, DefinitionRow.current_version, AgentDefinitionVersion).outerjoin(
-                AgentDefinitionVersion,
-                (AgentDefinitionVersion.definition_id == DefinitionRow.id)
-                & (AgentDefinitionVersion.version == DefinitionRow.current_version),
-            ).where(
-                DefinitionRow.namespace == "project", DefinitionRow.project_id == ctx.project_id,
-                DefinitionRow.disabled_at.is_(None),
-            ).order_by(DefinitionRow.agent_key).limit(201)).all()
-            if len(custom) > 200:
-                raise ScopeDenied("project definition catalog exceeds the selection limit")
-            for name, version, row in custom:
-                if row is None:
-                    raise ScopeDenied("project definition has no current version snapshot")
-                definition = AgentDefinition.model_validate_json(json.dumps(row.definition_json, allow_nan=False))
-                snapshot, digest = canonical_snapshot(definition)
-                if definition.name != name or definition.version != version or snapshot != row.definition_json or digest != row.sha256:
-                    raise ScopeDenied("stored definition snapshot integrity check failed")
-                if definition.enabled:
-                    keys.append((f"project/{ctx.project_id}/{name}", version))
-        entries = []
-        for key, version in keys:
-            resolved = await self.resolve_for_task(key, version, ctx)
-            definition = resolved.definition
-            entries.append(AgentCatalogEntry(key, version, definition.name, definition.description, definition.allowed_tools))
-        return tuple(entries)
 
     async def resolve_for_task(self, key: str, version: int, ctx: TaskContext) -> ResolvedDefinition:
         await self.authorizer.check_context(ctx)

@@ -126,6 +126,27 @@ class DelegateTests(IsolatedAsyncioTestCase):
         passed = await self.call(NS(spawn_subagent=spawn, lifecycle=None))
         self.assertNotIn("progress_notes", passed.data)
 
+    async def test_a_research_child_is_left_no_plugin_tool_that_changes_something(self):
+        # The catalog decides what has an effect: a plugin tool not marked read-only does, whatever its name.
+        from agentforge.tools.catalog import PluginTool
+        catalog = ToolCatalog()
+        async def handler(args, ctx):
+            return None
+        catalog.register_plugin("tracker__create_issue", handler, PluginTool("p", "Tracker", "create_issue", "", "", {"type": "object"}, False), timeout_sec=5)
+        catalog.register_plugin("tracker__search", handler, PluginTool("p", "Tracker", "search", "", "", {"type": "object"}, True), timeout_sec=5)
+        catalog.register("use_skill", handler, max_cost_usd=Decimal(0))
+        service = NS(spawn_subagent=AsyncMock(return_value=SubagentResult(status="PASS", summary="ok")), lifecycle=None)
+        register_delegation(catalog, service)
+        parent = execution()
+        extras = ("tracker__create_issue", "tracker__search", "use_skill")
+        parent.scope = replace(parent.scope, allowed_tools=(*parent.scope.allowed_tools, *extras))
+        for mode, kept in (("research", {"tracker__search", "use_skill"}), ("work", set(extras))):
+            await catalog.get("delegate_task").handler(DelegateTaskArgs(title="Look", prompt="Find the open issues", mode=mode), parent)
+            child = service.spawn_subagent.await_args.args[1]
+            with self.subTest(mode=mode):
+                self.assertEqual(set(child.parent_tools) & set(extras), kept)
+                self.assertEqual("write" in child.parent_tools, mode == "work")
+
     async def test_stop_propagates_to_parent(self):
         service = NS(spawn_subagent=AsyncMock(side_effect=asyncio.CancelledError()), lifecycle=None)
         with self.assertRaises(asyncio.CancelledError):

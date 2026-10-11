@@ -565,7 +565,7 @@ class LoopTests(ServerCase):
     """The agent loop with a scripted model calling plugin tools through the real gateway and a real (local) MCP server."""
 
     async def test_the_model_uses_plugin_tools_and_reads_their_results(self):
-        from test_child_runtime import Ledger, ScriptedModel, body, calls, run, text, tool_messages
+        from test_child_runtime import ScriptedModel, body, calls, run, text, tool_messages
         server = self.serve()
         catalog = ToolCatalog()
         runtime = register_plugins(catalog, [connection(server)], SETTINGS)

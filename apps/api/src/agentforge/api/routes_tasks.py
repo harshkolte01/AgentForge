@@ -37,7 +37,6 @@ async def create_task(body: TaskCreate, request: Request, user: User = Depends(c
                 repository: TaskRepository = Depends(task_repository)) -> TaskView:
     try:
         from agentforge.integrations.attachment_storage import validate_uploads, InvalidAttachment
-        from starlette.concurrency import run_in_threadpool
         try:
             await run_in_threadpool(validate_uploads, body.attachments, user.id, request.app.state.settings)
         except InvalidAttachment as failure:

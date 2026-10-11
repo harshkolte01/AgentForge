@@ -109,7 +109,8 @@ credentials; GitHub writes happen in the backend.
   While it runs, its output (both streams) is shown live, redacted, from the end (the saved result is unchanged).
 - **Connections**: reconnecting to an existing VM is retried after a transient failure; creating one is never retried
   (a failed create may still have allocated a VM). A dropped connection during a command or a write is a
-  `SANDBOX_DISCONNECTED` result, not a failed run, and the next call reconnects.
+  `SANDBOX_DISCONNECTED` result, not a failed run, and the next call reconnects. A read or edit the sandbox does not
+  answer is `SANDBOX_UNAVAILABLE`, never `FILE_NOT_FOUND`, so a real file is not mistaken for a missing one.
 - **Setup**: the first call of a conversation also starts the VM and uploads the selected repository's pinned commit
   (tagged `agentforge-base`), so every tool deadline includes ten minutes for that setup.
 - **Replaced VMs**: when the conversation's earlier VM no longer exists, a new one is created and the next tool result
@@ -122,7 +123,8 @@ credentials; GitHub writes happen in the backend.
   [live activity](live-activity.md#tool-calls-shown-live)); what is reported never changes the response that is returned.
 - Retries (`LLM_MAX_RETRIES`, default 4) with jittered exponential backoff from 1 s, honouring `retry-after` and
   `retry-after-ms` up to 30 s, for rate limits, 5xx/overloaded, timeouts and dropped connections, including a stream
-  that broke after it started (the loop clears what that attempt showed first). Quota and credential errors are never
+  that broke after it started, sent a transient error frame, or ended without a finish reason (the loop clears what that
+  attempt showed first). Quota and credential errors are never
   retried. The provider's own message is what the person reads; credentials are removed.
 - `LLM_TIMEOUT_SEC` (default 180) bounds each wait for data; connecting has its own 15 s limit.
 - `LLM_MAX_OUTPUT_TOKENS` defaults to 16,384 (never more than half the window).

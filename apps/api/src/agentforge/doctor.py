@@ -24,7 +24,7 @@ def check_database(settings):
     """Reachability, migration head and the local identity, in one short read-only connection."""
     from sqlalchemy import create_engine
     results, revision, local_user = [], None, None
-    engine = create_engine(settings.database_url, connect_args={"connect_timeout": 5})
+    engine = create_engine(settings.database_url, hide_parameters=True, connect_args={"connect_timeout": 5})
     try:
         with engine.connect() as connection:
             connection.execute(text("SELECT 1"))

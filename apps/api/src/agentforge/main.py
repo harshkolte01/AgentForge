@@ -1,5 +1,6 @@
 """FastAPI application factory, CORS, and route mounting."""
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -30,9 +31,20 @@ from agentforge.settings import Settings, get_settings, validation_summary
 from agentforge.security.request_limits import RequestBodyLimitMiddleware
 
 
+def configure_logging() -> None:
+    """Gives the root logger a handler when nothing else has. Uvicorn configures only its own loggers, so without this the
+    app's loggers (`agentforge.*`) reach no handler and Python prints bare WARNING+ messages with no time or source, and
+    INFO not at all. A handler someone already installed (a test runner, an embedding process) is left alone."""
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings: Settings = app.state.settings
+    if settings.app_env != "test":
+        # Not under tests and smoke runs: their own clients' request logging would flood the output.
+        configure_logging()
     owns_engine = not hasattr(app.state, "engine")
     if owns_engine:
         app.state.engine = create_db_engine(settings.database_url, pool_size=settings.database_pool_size,

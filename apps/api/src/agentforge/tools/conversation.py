@@ -10,6 +10,7 @@ from agentforge.repositories.conversation_context import ConversationContextRepo
 from agentforge.repositories.research_inputs import ResearchInputRepository
 from agentforge.subagents.scope import ScopeDenied
 from .contracts import ToolOutcome
+from .errors import ToolError
 
 
 def register_conversation(catalog, sessions, settings, resources):
@@ -38,7 +39,9 @@ def register_conversation(catalog, sessions, settings, resources):
             document["content"] = original["content"]
         content = document["content"]
         if args.offset > len(content):
-            raise ScopeDenied("context page outside original")
+            # A wrong cursor, not a forbidden resource: the model can correct it.
+            raise ToolError("INVALID_RANGE", f"offset {args.offset} is past the end: the content has {len(content)} characters. "
+                            "Read from offset 0, or from the next_offset a previous page returned.")
         page = content[args.offset:args.offset + args.max_chars]
         while len(json.dumps(page, ensure_ascii=False).encode()) > 10000:
             page = page[:max(1, len(page) * 3 // 4)]

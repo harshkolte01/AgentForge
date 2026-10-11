@@ -132,7 +132,7 @@ class AutoTurnCreate(BaseModel):
     allowed_web_hosts: tuple[str, ...] = Field(default=(), max_length=20)
     attachments: tuple[TextAttachment, ...] = Field(default=(), max_length=4)
     agent_key: str | None = Field(default=None, max_length=160, pattern=r"^project/[0-9a-f-]{36}/[a-z][a-z0-9-]+$")
-    agent_version: int | None = Field(default=None, ge=1)
+    agent_version: int | None = Field(default=None, ge=1, le=2_147_483_647)
 
     @model_validator(mode="after")
     def validate_bounds(self):

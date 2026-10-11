@@ -1,8 +1,6 @@
 """Plugin sign-in with OAuth: discovery, registration, PKCE and tokens against a fake authorization server, the MCP client's token
 source, the catalog, and the network rule that lets a NAT64 address through only when the address inside it is public."""
-import asyncio
 import re
-import time
 from urllib.parse import parse_qsl, urlsplit
 from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import AsyncMock
@@ -16,7 +14,7 @@ from agentforge.plugins.oauth import (
 )
 from agentforge.tools.catalog import ERROR_GUIDANCE, error_guidance
 
-from oauth_fakes import OAuthWorld, challenge_of
+from oauth_fakes import OAuthWorld
 
 
 class WorldCase(IsolatedAsyncioTestCase):

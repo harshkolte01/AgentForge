@@ -49,7 +49,9 @@ services:
       db: {condition: service_healthy}
   api:
     <<: *app
-    command: [uvicorn, "agentforge.main:app", --host, "0.0.0.0", --port, "8000", --proxy-headers, --forwarded-allow-ips, "172.29.237.10", --no-access-log]
+    # Open event streams would otherwise hold shutdown until the stop grace period ends in SIGKILL; after 10s they are
+    # closed, and browsers reconnect (EventSource) to the new container.
+    command: [uvicorn, "agentforge.main:app", --host, "0.0.0.0", --port, "8000", --proxy-headers, --forwarded-allow-ips, "172.29.237.10", --no-access-log, --timeout-graceful-shutdown, "10"]
     depends_on:
       db: {condition: service_healthy}
     healthcheck:
@@ -68,7 +70,8 @@ services:
       context: ../..
       dockerfile: infra/deploy/web.Dockerfile
       args:
-        SITE_URL: ${SITE_URL:-}
+        # Public pages are prerendered with it (social cards, sitemap, robots), so a build without it is refused.
+        SITE_URL: ${SITE_URL:?set SITE_URL to the public origin}
     restart: unless-stopped
     init: true
     read_only: true

@@ -58,7 +58,7 @@ def mark_read(session_id: UUID, body: ReadReceipt, user: User = Depends(current_
 
 @router.get("/{session_id}/messages", response_model=list[MessageView])
 def messages(session_id: UUID, user: User = Depends(current_user), repo=Depends(repository),
-             after_sequence: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=100)):
+             after_sequence: int = Query(0, ge=0, le=9_007_199_254_740_991), limit: int = Query(100, ge=1, le=100)):
     try:
         return repo.messages(session_id, user.id, after_sequence=after_sequence, limit=limit)
     except TaskNotFound as exc:
@@ -99,7 +99,7 @@ async def turn(session_id: UUID, body: AutoTurnCreate | SessionTurnCreate, reque
 
 @router.get("/{session_id}/turns", response_model=list[TurnView])
 def turns(session_id: UUID, user: User = Depends(current_user), repo=Depends(repository),
-          after_ordinal: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=100), waiting: bool = False):
+          after_ordinal: int = Query(0, ge=0, le=9_007_199_254_740_991), limit: int = Query(100, ge=1, le=100), waiting: bool = False):
     try:
         return repo.turns(session_id, user.id, after_ordinal=after_ordinal, limit=limit, waiting=waiting)
     except TaskNotFound as exc:

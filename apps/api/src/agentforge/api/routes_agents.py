@@ -1,11 +1,9 @@
 """Project-private immutable agents; test uses the real bounded task queue."""
-from datetime import datetime
 from decimal import Decimal
-import json
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, Query
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from agentforge.api.dependencies import sessions
 from agentforge.auth.session import current_user
 from agentforge.contracts.agent_definition import AgentDefinition as DefinitionContract, Permissions
@@ -24,7 +22,7 @@ class AgentSave(BaseModel):
 
 class AgentTest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    version: int = Field(ge=1)
+    version: int = Field(ge=1, le=2_147_483_647)
     goal: str = Field(min_length=1, max_length=8000)
     max_cost_usd: Decimal = Field(default=Decimal("0.25"), gt=0, le=1, allow_inf_nan=False)
     max_wall_time_sec: int = Field(default=180, ge=30, le=300)
@@ -40,9 +38,11 @@ def owned(session, agent_id, owner_id, *, lock=False):
     return row
 
 
-def view(session, row):
-    snapshot = session.scalar(select(AgentDefinitionVersion).where(
-        AgentDefinitionVersion.definition_id == row.id, AgentDefinitionVersion.version == row.current_version))
+def view(session, row, snapshot=None):
+    """`snapshot` is the row's current version when the caller already loaded it (the list loads a page's in one query)."""
+    if snapshot is None:
+        snapshot = session.scalar(select(AgentDefinitionVersion).where(
+            AgentDefinitionVersion.definition_id == row.id, AgentDefinitionVersion.version == row.current_version))
     return {"id": row.id, "project_id": row.project_id, "key": f"project/{row.project_id}/{row.agent_key}",
         "name": row.agent_key, "current_version": row.current_version, "disabled_at": row.disabled_at,
         "definition": snapshot.definition_json, "current_sha256": snapshot.sha256, "created_at": row.created_at}
@@ -77,8 +77,12 @@ def list_agents(request: Request, project_id: UUID | None = None,
             AgentDefinition.namespace == "project")
         if project_id is not None:
             query = query.where(AgentDefinition.project_id == project_id)
-        return [view(session, row) for row in session.scalars(query
-            .order_by(AgentDefinition.agent_key, AgentDefinition.id).limit(limit).offset(offset))]
+        rows = list(session.scalars(query.order_by(AgentDefinition.agent_key, AgentDefinition.id).limit(limit).offset(offset)))
+        # Every row's current version in one query, not one per row.
+        current = {(item.definition_id, item.version): item for item in session.scalars(select(AgentDefinitionVersion).where(
+            tuple_(AgentDefinitionVersion.definition_id, AgentDefinitionVersion.version).in_(
+                [(row.id, row.current_version) for row in rows])))} if rows else {}
+        return [view(session, row, current.get((row.id, row.current_version))) for row in rows]
 
 
 @router.post("", status_code=201)

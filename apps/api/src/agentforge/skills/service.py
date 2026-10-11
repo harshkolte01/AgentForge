@@ -45,6 +45,7 @@ def parse_key(key: str) -> tuple[str, str]:
 
 
 def custom_view(row: UserSkill, *, detail: bool = False) -> dict[str, Any]:
+    """`row` is a UserSkill, or (without `detail`) any row with its id, name, description, enabled and updated_at."""
     view = {"key": f"{CUSTOM}:{row.id}", "source": CUSTOM, "name": row.name, "description": row.description, "enabled": row.enabled,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None}
     if detail:
@@ -80,7 +81,9 @@ class SkillService:
     def overview(self, user_id: UUID) -> dict[str, Any]:
         with self.sessions() as db:
             off = self._disabled_builtins(db, user_id)
-            rows = list(db.scalars(select(UserSkill).where(UserSkill.user_id == user_id).order_by(UserSkill.created_at, UserSkill.id)))
+            # Only the columns the list shows: never the instructions (up to 100KB each), which only `detail` returns.
+            rows = db.execute(select(UserSkill.id, UserSkill.name, UserSkill.description, UserSkill.enabled, UserSkill.updated_at)
+                              .where(UserSkill.user_id == user_id).order_by(UserSkill.created_at, UserSkill.id)).all()
             return {"enabled": self.settings.skills_enabled, "max_custom": self.settings.skill_max_per_user,
                     "builtin": [builtin_view(skill, skill.name not in off) for skill in builtin_skills()],
                     "custom": [custom_view(row) for row in rows]}

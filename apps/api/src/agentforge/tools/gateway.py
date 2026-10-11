@@ -35,6 +35,8 @@ from .errors import ToolError, render_issues, validation_issues
 from .lifecycle import CallLifecycle, LifecycleSink, execution_labels, outcome_from_row
 
 READ_CONCURRENCY = 4
+# The most a call's JSON arguments may hold; larger calls are refused before they run (see `_run`).
+MAX_ARGUMENT_BYTES = 131072
 # The tools whose output is shown while they run: a command can take minutes, the others finish at once.
 STREAMED_OUTPUT = frozenset({"bash"})
 # Effect tools that do not wait for the run's other effects. A delegation runs under its own gateway, ledger and approvals, so
@@ -140,8 +142,10 @@ class ToolGateway:
     def _parse(self, name: str, tool, raw_args: str):
         try:
             data = self._loads(raw_args)
-        except ValueError:
-            raise ToolError("SCHEMA_INVALID", "The arguments are not valid JSON. Send one JSON object.") from None
+        except ValueError as exc:
+            # Where the parser gave up, never the text around it: the arguments may hold file content.
+            where = f" ({exc.msg} at character {exc.pos})" if isinstance(exc, json.JSONDecodeError) else ""
+            raise ToolError("SCHEMA_INVALID", f"The arguments are not valid JSON{where}. Send one JSON object.") from None
         if not isinstance(data, dict):
             raise ToolError("SCHEMA_INVALID", "The arguments must be one JSON object.")
         fields = tool.input_model.model_fields
@@ -189,8 +193,6 @@ class ToolGateway:
         self._attempts += 1
         if not provider_call_id or len(provider_call_id) > 100:
             raise ValueError("invalid_provider_call_id")
-        if len(raw_args.encode("utf-8")) > 131072:
-            raise ValueError("tool_arguments_too_large")
         attempt = self._attempts
         operation_key = f"{self.run_id}:tool:{provider_call_id}"
         # Private argument content is represented by an immutable digest;
@@ -219,6 +221,11 @@ class ToolGateway:
             tool = self.catalog.get(name)
             if name not in self.scope.allowed_tools:
                 raise ScopeDenied("tool is not authorized for this run")
+            if len(raw_args.encode("utf-8")) > MAX_ARGUMENT_BYTES:
+                # Refused like any other bad argument, before anything runs, so the model learns to send less at once.
+                raise ToolError("INVALID_ARGUMENT", f"The arguments are larger than {MAX_ARGUMENT_BYTES // 1024} KB, so the call was "
+                                "not run. Split the work into parts: write the first part of a large file, then add the rest "
+                                "with further edits, or use several smaller files.")
             args = self._parse(name, tool, raw_args)
             arguments = safe_arguments(args)
             plugin = tool.plugin

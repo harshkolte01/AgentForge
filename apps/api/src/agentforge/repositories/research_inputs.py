@@ -108,19 +108,6 @@ class ResearchInputRepository(ResearchRepository):
                     spans[key].append((p["start"], p["end"]))
             return {key for key, ranges in spans.items() if ranges and full_range(ranges, requirements[key][1])}
 
-    def run_payload(self, ctx, run_id):
-        with self.session_factory() as db:
-            self._owned(db, **self._scope(ctx))
-            row = db.scalar(select(AgentRun).where(AgentRun.id == run_id, AgentRun.task_id == ctx.task_id))
-            return row.result_json if row and row.finished_at else None
-
-    def research_runs(self, ctx):
-        with self.session_factory() as db:
-            self._owned(db, **self._scope(ctx))
-            return [(row.id, row.result_json) for row in db.scalars(select(AgentRun).where(
-                AgentRun.task_id == ctx.task_id, AgentRun.result_json.is_not(None)).order_by(AgentRun.started_at, AgentRun.id))
-                if row.definition_snapshot.get("output_schema_id") in {"research_result_v1", "general_result_v1"}]
-
     def task_kind(self, ctx):
         with self.session_factory() as db:
             return (self._owned(db, **self._scope(ctx)).permissions_json or {}).get("kind", "research")

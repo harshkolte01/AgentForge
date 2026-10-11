@@ -105,12 +105,14 @@ class EventRepository:
     def live_snapshot(self, task_id: UUID, owner_id: UUID) -> LiveStreamSnapshot:
         """The whole current live text with the task's event watermark, for a client that lost its place."""
         from .tasks import TaskNotFound
+        # The live text first, then the task: a clear seen here was written after the task ended, so the status and event
+        # watermark read next already include that end (see the SSE loop in api/routes_events.py).
+        live = self.stream_snapshot(task_id, owner_id)
         with self.session_factory() as session:
             task = session.execute(select(Task.event_sequence, Task.status).join(Project).where(
                 Task.id == task_id, Task.created_by == owner_id, Project.owner_id == owner_id)).first()
         if task is None:
             raise TaskNotFound("task_not_found")
-        live = self.stream_snapshot(task_id, owner_id)
         epoch, revision, kind, text, tool = live if live is not None else (0, 0, "progress", "", None)
         name, call_id, detail = tool or (None, None, None)
         return LiveStreamSnapshot(task_id=task_id, epoch=epoch, revision=revision, kind=kind, text=text, tool=name, call_id=call_id,

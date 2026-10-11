@@ -207,6 +207,32 @@ class ReadTests(IsolatedAsyncioTestCase):
         self.assertEqual(caught.exception.code, "FILE_NOT_FOUND")
         self.assertIn("ls or find", caught.exception.detail)
 
+    async def test_only_a_file_that_is_not_there_is_reported_missing(self):
+        from e2b import FileNotFoundException, InvalidArgumentException, TimeoutException
+        for failure, code in ((FileNotFoundException("no such file"), "FILE_NOT_FOUND"),
+                              (InvalidArgumentException("path is a directory"), "FILE_NOT_FOUND"),
+                              (IsADirectoryError("src"), "FILE_NOT_FOUND"),
+                              (TimeoutException("deadline"), "SANDBOX_UNAVAILABLE"),
+                              (RuntimeError("502: sandbox unavailable"), "SANDBOX_UNAVAILABLE")):
+            for tool, args in (("read", FileReadArgs(path="app.py")), ("edit", FileEditArgs(path="app.py", old_string="a", new_string="b"))):
+                env = Env()
+                await env.call("ls", LsArgs(path="."))  # the sandbox is open
+                env.put("app.py", "a\n")
+                env.sandbox.files.read = AsyncMock(side_effect=failure)
+                with self.subTest(failure=type(failure).__name__, tool=tool), self.assertRaises(ToolError) as caught:
+                    await env.call(tool, args)
+                self.assertEqual(caught.exception.code, code)
+                self.assertEqual(env.sandbox.written, {})
+                # A sandbox that did not answer is reconnected on the next call; a missing file says nothing about the sandbox.
+                self.assertEqual(env.conversation._workspace is None, code == "SANDBOX_UNAVAILABLE")
+
+    async def test_a_stop_while_reading_is_not_turned_into_an_error_result(self):
+        import asyncio
+        env = Env()
+        env.sandbox.files.read = AsyncMock(side_effect=asyncio.CancelledError())
+        with self.assertRaises(asyncio.CancelledError):
+            await env.call("read", FileReadArgs(path="app.py"))
+
     async def test_an_offset_past_the_end_is_an_invalid_range(self):
         env = Env()
         env.put("app.py", "one\ntwo\n")

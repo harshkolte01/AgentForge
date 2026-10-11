@@ -1,7 +1,6 @@
 """One optional, ledger-accounted summary update before freezing a turn's input."""
 import asyncio
 import hashlib
-import json
 from decimal import Decimal
 from uuid import NAMESPACE_URL, uuid4, uuid5
 from pydantic import BaseModel, ConfigDict, Field
@@ -26,6 +25,11 @@ class SummaryEntry(BaseModel):
 class SummaryResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
     entries: list[SummaryEntry] = Field(max_length=24)
+
+
+# The reply's output cap, which also bounds the request's worst-case cost. A summary is at most 8000 UTF-8 bytes of JSON:
+# about 2000 tokens of English and some 3000 of Devanagari-like scripts, with room left for a little reasoning first.
+OUTPUT_TOKENS = 4096
 
 
 SUMMARY_PROMPT = """Maintain a compact summary of a conversation for a later assistant.
@@ -70,7 +74,13 @@ async def update_summary(store, runtime, settings, authority, execution):
             return
         old_entries = previous.content_json["entries"] if previous else []
         previous_id = previous.id if previous else None
-    model = runtime.service.models.choose("default")
+    # The provider's own adapter, as for the title (workers/conversation_title.py): this side request is accounted for in
+    # the ledger below but is not part of the reply's activity, and capping its output is what lets its worst-case cost
+    # fit the small allowance (with a full answer's output limit it never would). A runtime without one uses the agent's.
+    model = (getattr(runtime, "models", None) or runtime.service.models).choose("default")
+    limited = getattr(model, "with_output_limit", None)
+    if limited is not None:
+        model = limited(OUTPUT_TOKENS)
     messages = [{"role": "developer", "content": SUMMARY_PROMPT}, {"role": "user", "content":
         encoded({"previous_entries": old_entries, "turns": selected})}]
     from agentforge.tools.catalog import clean_schema

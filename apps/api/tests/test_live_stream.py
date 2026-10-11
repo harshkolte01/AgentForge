@@ -6,7 +6,6 @@ issues (upsert, epoch+revision fenced update, clear). The same SQL is exercised 
 """
 import asyncio
 import json
-from decimal import Decimal
 from types import SimpleNamespace as NS
 from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import patch
@@ -17,7 +16,7 @@ from langgraph.errors import NodeCancelledError
 
 from agentforge.api import routes_events
 from agentforge.contracts.activity import LiveStreamSnapshot
-from agentforge.llm.models import ModelProviderError, ModelResponse, ModelUsage
+from agentforge.llm.models import ModelProviderError
 from agentforge.orchestration.stream import FLUSH_SECONDS, ReplyStream, clear_stream
 from agentforge.repositories.events import EventRepository, LiveRead
 from agentforge.repositories.tasks import TaskNotFound
@@ -323,17 +322,17 @@ class RepositoryTests(TestCase):
         task = NS(event_sequence=42, status="RUNNING")
         live = NS(epoch=2, revision=1, kind="progress", text="Working", status="RUNNING")
         task_id = uuid4()
-        snapshot = EventRepository(ScriptedRows(task, live)).live_snapshot(task_id, uuid4())
+        snapshot = EventRepository(ScriptedRows(live, task)).live_snapshot(task_id, uuid4())
         self.assertEqual(snapshot, LiveStreamSnapshot(task_id=task_id, epoch=2, revision=1, kind="progress", text="Working",
                                                       event_sequence=42, terminal=False))
 
     def test_a_task_without_a_live_row_has_an_empty_snapshot(self):
-        snapshot = EventRepository(ScriptedRows(NS(event_sequence=7, status="COMPLETED"), None)).live_snapshot(uuid4(), uuid4())
+        snapshot = EventRepository(ScriptedRows(None, NS(event_sequence=7, status="COMPLETED"))).live_snapshot(uuid4(), uuid4())
         self.assertEqual((snapshot.epoch, snapshot.revision, snapshot.text, snapshot.terminal), (0, 0, "", True))
 
     def test_a_foreign_or_missing_task_is_not_found(self):
         with self.assertRaises(TaskNotFound):
-            EventRepository(ScriptedRows(None)).live_snapshot(uuid4(), uuid4())
+            EventRepository(ScriptedRows(None, None)).live_snapshot(uuid4(), uuid4())
 
 
 class SnapshotEndpointTests(TestCase):
@@ -389,7 +388,7 @@ class SnapshotEndpointTests(TestCase):
 
 
 class FakeRequest:
-    """Disconnects once the script of snapshots is used up; records nothing else."""
+    """Disconnects once the script of snapshots is used up (at the end of the pass that used the last one); records nothing else."""
 
     def __init__(self, repository):
         self.repository, self.app = repository, NS(state=NS(engine=None))
@@ -401,11 +400,15 @@ class FakeRequest:
 class StreamRepository:
     """Scripted live rows, given whole as (epoch, revision, kind, text); `stream_since` answers as the SQL does, with
     only the unsent rest of the text when the reader's (epoch, revision) still matches. `terminal` scripts the task's
-    status and watermark per pass ((terminal, event_sequence)); by default the task keeps running."""
+    status and watermark per pass ((terminal, event_sequence)); by default the task keeps running. The live text is read first
+    in a pass, so using up the script only ends the stream once that pass is over (`finished`, called between passes)."""
 
     def __init__(self, snapshots, pages=(), terminal=()):
         self.snapshots, self.pages, self.terminal, self.done = list(snapshots), list(pages), list(terminal), False
-        self.reads = []
+        self.reads, self.last_pass = [], False
+
+    def finished(self):
+        self.done = self.done or self.last_pass
 
     def list_after(self, task_id, owner_id, after_sequence=0, limit=100):
         return self.pages.pop(0) if self.pages else []
@@ -414,11 +417,11 @@ class StreamRepository:
         self.reads.append((state, sent))
         terminal, sequence = self.terminal.pop(0) if self.terminal else (False, 100)
         if not self.snapshots:
-            self.done = True
+            self.last_pass = True
             return LiveRead(terminal, sequence, None)
         value = self.snapshots.pop(0)
         if not self.snapshots:
-            self.done = True  # the loop ends after this pass
+            self.last_pass = True  # the loop ends after this pass
         if value is None:
             return LiveRead(terminal, sequence, None)
         epoch, revision, kind, text = value
@@ -441,6 +444,7 @@ class StreamTests(IsolatedAsyncioTestCase):
         async def fast(seconds):
             if sleeps is not None:
                 sleeps.append(seconds)
+            repository.finished()
             await real_sleep(0)
         patches = [patch.object(routes_events, "EventRepository", lambda factory: repository),
                    patch.object(routes_events, "sessions", lambda request: None),
@@ -518,6 +522,35 @@ class StreamTests(IsolatedAsyncioTestCase):
         _, frames = await self.open(StreamRepository([(1, 0, "progress", "Same")] * 3))
         self.assertEqual(len(self.deltas(frames)), 1)
 
+    async def test_the_end_of_a_task_reaches_the_reader_before_its_live_text_is_cleared(self):
+        # The worker commits task.finished, then clears the live copy. Here it does so right after the first read of a pass,
+        # between that pass's two reads: whatever the order of the reads, the reader must learn that the task ended before it
+        # sees the text go, or it takes the clear for text thrown away mid-run and blanks the answer until the saved one loads.
+        class Racing:
+            def __init__(self):
+                self.reads, self.done, self.passes = 0, False, 0
+
+            def finished(self):
+                self.passes += 1
+                self.done = self.passes >= 3
+
+            def over(self):
+                self.reads += 1
+                return self.reads > 1  # the worker finishes right after the first read
+
+            def stream_since(self, task_id, owner_id, state=None, sent=0):
+                if self.over():
+                    return LiveRead(True, 9, (2, 2, "progress", 0, ""))
+                return LiveRead(False, 8, (2, 1, "answer", 5, "Done."))
+
+            def list_after(self, task_id, owner_id, after_sequence=0, limit=100):
+                return [event(9, "task.finished")] if self.over() and after_sequence < 9 else []
+        _, frames = await self.open(Racing(), after=8)
+        finished = [i for i, frame in enumerate(frames) if "event: task.finished" in frame]
+        cleared = [i for i, frame in enumerate(frames) if frame.startswith("event: message.delta") and '"text": ""' in frame]
+        self.assertTrue(finished and cleared, frames)
+        self.assertLess(finished[0], cleared[0], "the end of the task is sent before the cleared text")
+
     async def test_durable_events_keep_their_sequence_as_the_sse_id(self):
         repository = StreamRepository([(1, 0, "progress", "Hi")], pages=[[event(7), event(8, "tool.finished")]])
         _, frames = await self.open(repository, after=6)
@@ -584,6 +617,28 @@ class StreamTests(IsolatedAsyncioTestCase):
         _, frames = await self.open(repository, after=6)
         self.assertNotIn("retry: 60000\n\n", frames)
         self.assertEqual(len(repository.reads), 3)
+
+    async def test_an_idle_pass_reads_no_event_page(self):
+        class Counting(StreamRepository):
+            def list_after(self, *args, **kwargs):
+                self.listed = getattr(self, "listed", 0) + 1
+                return super().list_after(*args, **kwargs)
+        # Watermark 6 with the cursor at 6: nothing new can be in the event log, so the page is never read.
+        repository = Counting([(1, 0, "progress", "A")] * 3, terminal=[(False, 6)] * 3)
+        await self.open(repository, after=6)
+        self.assertEqual((getattr(repository, "listed", 0), len(repository.reads)), (0, 3))
+        # A newer watermark reads the page, once per pass until the events are sent.
+        repository = Counting([None] * 2, pages=[[event(7)]], terminal=[(False, 7)] * 2)
+        _, frames = await self.open(repository, after=6)
+        self.assertEqual(repository.listed, 1)
+        self.assertEqual([f.split("\n")[0] for f in frames if f.startswith("id: ")], ["id: 7"])
+
+    async def test_a_failed_or_unowned_read_still_reads_the_page_and_closes_the_stream(self):
+        class Gone(StreamRepository):
+            def list_after(self, *args, **kwargs):
+                raise TaskNotFound("task_not_found")
+        _, frames = await self.open(Gone([None], terminal=[(False, None)]), after=6)
+        self.assertEqual(frames[-1], "event: session.closed\ndata: {}\n\n")
 
     async def test_a_cursor_ahead_of_the_task_is_refused(self):
         with self.assertRaises(HTTPException) as caught:

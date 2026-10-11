@@ -247,6 +247,33 @@ class ToolTurnTests(IsolatedAsyncioTestCase):
         data = body(tool_messages(model, 1)[0])["data"]
         self.assertEqual((data["preview_truncated"], data["resource_id"]), (True, "res-1"))
 
+    async def test_an_oversized_result_keeps_every_key_and_cuts_only_its_longest_text(self):
+        data = {"resource_id": "tool:abc", "path": "big.py", "content": "line\n" * 8000, "summary": "s" * 300,
+                "total_lines": 8000, "next_offset": 4001}
+        model = ScriptedModel([calls(("read_repo_file", {"path": "big.py"})), text("done")])
+        await run(model, FakeGateway(outcome=lambda n, r: ToolOutcome(status="ok", data=data, evidence_ids=("e1",), cost_usd=Decimal(0))))
+        message = tool_messages(model, 1)[0]
+        self.assertLessEqual(len(message["content"].encode()), 16000 + len(RESULT_PREFIX))
+        payload = body(message)
+        shown = payload["data"]
+        # Cursors and ids that come after the long text survive, and the short field is left whole.
+        self.assertEqual((shown["next_offset"], shown["total_lines"], shown["path"], shown["summary"]), (4001, 8000, "big.py", "s" * 300))
+        self.assertEqual((shown["resource_id"], shown["preview_truncated"], payload["evidence_ids"]), ("tool:abc", True, ["e1"]))
+        self.assertTrue(shown["content"].startswith("line\nline\n"))
+        self.assertRegex(shown["content"], r"…\[\d+ characters omitted\]$")
+        self.assertGreater(len(shown["content"]), 10000)  # nearly all the room left is used, not a fixed small preview
+        self.assertIn('read_context_resource(resource_id="tool:abc", offset=0)', shown["preview_note"])
+
+    async def test_an_oversized_result_of_many_short_values_falls_back_to_a_marked_preview(self):
+        data = {"resource_id": "res-1", "hits": [{"title": f"t{index}", "url": f"https://e.com/{index}"} for index in range(2000)]}
+        model = ScriptedModel([calls(("read_repo_file", {"path": "a"})), text("done")])
+        await run(model, FakeGateway(outcome=lambda n, r: ToolOutcome(status="ok", data=data, cost_usd=Decimal(0))))
+        message = tool_messages(model, 1)[0]
+        self.assertLessEqual(len(message["content"].encode()), 16000 + len(RESULT_PREFIX))
+        shown = body(message)["data"]
+        self.assertEqual((shown["preview_truncated"], shown["resource_id"]), (True, "res-1"))
+        self.assertIn("preview", shown)
+
     async def test_a_tool_call_with_text_beside_it_keeps_the_text_in_history(self):
         model = ScriptedModel([calls(("read_repo_file", {"path": "a"}), content="I'll read the file first."), text("done")])
         await run(model, FakeGateway())

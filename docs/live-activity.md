@@ -125,6 +125,11 @@ The components only render its snapshots.
 - **When "Thinking" shows.** Right after a message is sent, until the run reports anything. After that only when nothing else
   shows life: no step is running, no text is being written, no connection notice, and the run has been quiet for 2 seconds
   (`QUIET_MS`), so it never sits next to text the agent has just written. Phase markers do not count as "running".
+  A run that ends before any of its answer was shown keeps its "Thinking" line until the saved answer replaces it, so the turn
+  is never blank in between.
+- **The end of a task arrives before its live text is cleared.** The SSE loop (`api/routes_events.py`) and the snapshot read the
+  live text before the events: the worker records the task's end before it clears the live copy, so a reader always learns the
+  task ended before it sees the text go, and keeps the last words on screen until the saved answer takes over.
 - **Live text to saved text.** The live tail (a progress note being written, then the answer) is shown unchanged until its
   durable copy exists: a saved note of its epoch or later (it is then a row in the timeline), or the saved answer
   (`savedReady`, from the thread). The tail then renders nothing in the same commit that the thread renders the saved message,

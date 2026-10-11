@@ -81,8 +81,6 @@ def complete_task_conversation(session, task_id):
 STEP_LIMIT = 40
 
 
-
-
 def tool_steps(session, task_ids):
     """Finished tool calls per task in the order they ran, for rendering a reply's work step by step."""
     steps = {task_id: [] for task_id in task_ids}
@@ -666,6 +664,8 @@ class SessionRepository:
                 task_id=task.id, state="running"))
             row.active_task_id = task.id
             self.update_title(row, request.goal)
+            # Readers of the conversation's change feed learn of the new running turn, as with every other state change.
+            bump_conversation(session, row)
             row.updated_at = datetime.now(timezone.utc)
             session.flush()
             shown = [AttachmentView(name=item.name, characters=len(item.content)) for item in request.attachments]

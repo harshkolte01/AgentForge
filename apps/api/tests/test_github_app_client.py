@@ -5,10 +5,8 @@ Offline: GitHub is an httpx.MockTransport and the identity/database side of `_au
 import asyncio
 import base64
 import hashlib
-import json
 import unittest
 from types import SimpleNamespace as NS
-from unittest.mock import patch
 
 import httpx
 from pydantic import SecretStr

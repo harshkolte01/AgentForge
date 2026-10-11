@@ -9,7 +9,7 @@ import shlex
 from datetime import datetime, timezone
 from typing import NamedTuple
 
-from agentforge.integrations.e2b_sandbox import WORKSPACE, SandboxUnavailable, Workspace
+from agentforge.integrations.e2b_sandbox import SandboxUnavailable, Workspace
 from agentforge.integrations.github_app import SHA
 from agentforge.integrations.github_delivery import MAX_CHANGED_FILES
 from agentforge.sandbox.workspace import validate_path

@@ -7,7 +7,7 @@ from agentforge.tools.catalog import ToolCatalog
 from agentforge.tools.contracts import TaskInputArgs
 from agentforge.tools.general import register_general
 from agentforge.subagents.registry import load_builtin
-from agentforge.subagents.scope import ScopeDenied
+from agentforge.tools.errors import ToolError
 
 
 class BoundTests(TestCase):
@@ -70,5 +70,22 @@ class PageTests(IsolatedAsyncioTestCase):
             offset = result.data["next_offset"]
         self.assertEqual("".join(pages), content)
         self.assertTrue(full_range([(item["start"], item["end"]) for item in receipts], len(content)))
-        with self.assertRaises(ScopeDenied):
+        # A cursor past the end is the model's to correct, not a forbidden resource: it is told the real length.
+        with self.assertRaises(ToolError) as caught:
             await handler(TaskInputArgs(input_kind="attachment", offset=len(content) + 1), SimpleNamespace(task=None, authorize_current=None))
+        self.assertEqual(caught.exception.code, "INVALID_RANGE")
+        self.assertIn(f"{len(content)} characters", caught.exception.detail)
+
+    async def test_a_context_resource_offset_past_the_end_names_the_content_length(self):
+        from agentforge.tools.contracts import ARGUMENT_MODELS
+        from agentforge.tools.conversation import register_conversation
+        document = {"repository": None, "content": "twelve chars", "name": "notes"}
+        repository = SimpleNamespace(resource=lambda task, resource_id: dict(document))
+        catalog = ToolCatalog()
+        with patch("agentforge.tools.conversation.ConversationContextRepository", return_value=repository):
+            register_conversation(catalog, None, SimpleNamespace(research_storage_path="/tmp/unused", auth_mode="disabled"), None)
+        arguments = ARGUMENT_MODELS["read_context_resource"].model_validate({"resource_id": "r1", "offset": 40})
+        with self.assertRaises(ToolError) as caught:
+            await catalog.get("read_context_resource").handler(arguments, SimpleNamespace(task=None, authorize_current=None))
+        self.assertEqual(caught.exception.code, "INVALID_RANGE")
+        self.assertIn("12 characters", caught.exception.detail)

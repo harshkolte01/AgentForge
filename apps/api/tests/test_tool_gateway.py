@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 from agentforge.contracts.agent_definition import Budget
-from agentforge.subagents.scope import ScopeDenied
 from agentforge.tools.catalog import ToolCatalog
 from agentforge.tools.contracts import ToolOutcome
 from agentforge.tools.errors import ToolError
@@ -133,6 +132,28 @@ class GatewayTests(IsolatedAsyncioTestCase):
         for raw in ("{not json", "[1, 2]", '"text"'):
             outcome = await gateway.execute("read_repo_file", raw, f"c{raw[:3]}")
             self.assertEqual(outcome.error_code, "SCHEMA_INVALID", raw)
+
+    async def test_invalid_json_says_where_the_parser_stopped_without_echoing_the_arguments(self):
+        gateway, _, _ = make()
+        outcome = await gateway.execute("write", '{"path": "a.py", "content": "SECRET-VALUE" "more"}', "c1")
+        self.assertEqual(outcome.error_code, "SCHEMA_INVALID")
+        self.assertIn("Expecting ',' delimiter at character 43", outcome.error_detail)
+        self.assertNotIn("SECRET-VALUE", outcome.error_detail)
+
+    async def test_oversized_arguments_are_a_refusal_the_model_can_act_on_not_a_failed_run(self):
+        ran = []
+        async def write(args, ctx):
+            ran.append(args)
+            return ok()
+        gateway, calls, budgets = make({"write": write})
+        outcome = await gateway.execute("write", args(path="big.txt", content="x" * 140_000), "c1")
+        self.assertEqual((outcome.status, outcome.error_code, outcome.cost_usd), ("error", "INVALID_ARGUMENT", Decimal(0)))
+        self.assertIn("128 KB", outcome.error_detail)
+        self.assertIn("parts", outcome.error_detail)
+        self.assertEqual((ran, budgets.usage), ([], []))
+        self.assertEqual((calls.last()["status"], calls.last()["error_code"]), ("BLOCKED", "INVALID_ARGUMENT"))
+        # The same tool still works with a call of a reasonable size.
+        self.assertEqual((await gateway.execute("write", args(path="big.txt", content="x" * 1000), "c2")).status, "ok")
 
     async def test_null_for_an_optional_field_means_omitted(self):
         gateway, _, _ = make()

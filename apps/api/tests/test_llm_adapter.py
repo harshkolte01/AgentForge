@@ -8,7 +8,7 @@ import openai
 
 from agentforge.llm import models
 from agentforge.llm.models import ModelContextLimit, ModelProviderError, ModelRates, provider_detail, redact
-from agentforge.llm.openai_adapter import MAX_RETRY_WAIT_SEC, OpenAIAdapter
+from agentforge.llm.openai_adapter import BASE_RETRY_WAIT_SEC, MAX_RETRY_WAIT_SEC, OpenAIAdapter
 
 REQUEST = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
 TOOL = {"type": "function", "function": {"name": "read_repo_file", "parameters": {"type": "object"}}}
@@ -18,6 +18,11 @@ PROVIDER_TEXT = "You exceeded your current quota, please check your plan and bil
 
 def status_error(cls, status, body=None, headers=None, text=PROVIDER_TEXT):
     return cls(text, response=httpx.Response(status, request=REQUEST, headers=headers or {}), body=body)
+
+
+def frame_error(error, text="The server had an error while processing your request."):
+    """What `openai._streaming` raises for an error frame inside a stream: a bare APIError built from the frame's `error`."""
+    return openai.APIError(text, REQUEST, body=error)
 
 
 def completion(message=None, finish="stop"):
@@ -90,6 +95,13 @@ class RetryTests(IsolatedAsyncioTestCase):
         self.assertEqual(len(completions.requests), 2)
         self.assertEqual(len(sleeps), 1)
         self.assertLessEqual(sleeps[0], MAX_RETRY_WAIT_SEC)
+
+    async def test_without_retry_after_the_backoff_grows_with_equal_jitter(self):
+        model, _, sleeps = adapter([status_error(openai.RateLimitError, 429)] * 3 + [completion()], max_retries=3)
+        await model.complete(MESSAGES, [TOOL])
+        for attempt, waited in enumerate(sleeps):
+            base = BASE_RETRY_WAIT_SEC * 2 ** attempt
+            self.assertTrue(base / 2 <= waited <= base, (attempt, waited))
 
     async def test_retry_after_is_honoured_but_capped(self):
         model, _, sleeps = adapter([status_error(openai.RateLimitError, 429, headers={"retry-after": "3"}),
@@ -221,6 +233,33 @@ class StreamingTests(IsolatedAsyncioTestCase):
         self.assertEqual(retried, [1])  # told after the first attempt had shown "Hel"
         self.assertTrue(broken.closed)
 
+    async def test_a_transient_error_frame_midway_is_requested_again_after_the_caller_clears_it(self):
+        broken = FakeStream([chunk("Hel"), chunk("lo")], fail_at=1, error=frame_error({"type": "server_error", "code": None}))
+        model, completions, sleeps = adapter([broken, FakeStream([chunk("Hello"), chunk(finish="stop")])])
+        retried = []
+        response = await model.complete(MESSAGES, [], on_text=lambda _: None, on_retry=lambda: retried.append(True))
+        self.assertEqual((response.message["content"], len(completions.requests), retried), ("Hello", 2, [True]))
+        self.assertEqual(len(sleeps), 1)
+
+    async def test_a_stream_that_ends_without_a_finish_reason_is_requested_again(self):
+        cut = FakeStream([chunk("Hel"), chunk("lo")])  # closed cleanly, but the reply never finished
+        model, completions, _ = adapter([cut, FakeStream([chunk("Hello"), chunk(finish="stop")])])
+        retried = []
+        response = await model.complete(MESSAGES, [], on_text=lambda _: None, on_retry=lambda: retried.append(True))
+        self.assertEqual((response.message["content"], len(completions.requests), retried), ("Hello", 2, [True]))
+
+    async def test_a_stream_that_keeps_ending_early_fails_as_a_retriable_provider_error(self):
+        model, completions, _ = adapter([FakeStream([chunk("x")]) for _ in range(3)], max_retries=2)
+        with self.assertRaises(ModelProviderError) as caught:
+            await model.complete(MESSAGES, [], on_text=lambda _: None)
+        self.assertEqual((caught.exception.code, caught.exception.retriable, len(completions.requests)), ("MODEL_PROVIDER_ERROR", True, 3))
+
+    async def test_a_stream_with_no_output_and_no_finish_reason_is_still_not_retried(self):
+        model, completions, _ = adapter([FakeStream([]), FakeStream([chunk(finish="stop")])])
+        with self.assertRaises(ModelProviderError):
+            await model.complete(MESSAGES, [], on_text=lambda _: None)
+        self.assertEqual(len(completions.requests), 1)
+
     async def test_a_permanent_failure_midway_is_not_repeated(self):
         broken = FakeStream([chunk("{"), chunk("}")], fail_at=1, error=status_error(openai.AuthenticationError, 401))
         model, completions, _ = adapter([broken, FakeStream([chunk(finish="stop")])])
@@ -271,6 +310,23 @@ class ClassifyDetailTests(TestCase):
         for permanent in (status_error(openai.AuthenticationError, 401),
                           status_error(openai.RateLimitError, 429, body={"code": "insufficient_quota"}), RuntimeError("x")):
             self.assertFalse(self.classify(permanent).retriable, permanent)
+
+    def test_an_error_frame_sent_mid_stream_is_judged_by_its_code_and_type(self):
+        cases = [
+            ({"type": "server_error", "code": None}, "MODEL_PROVIDER_ERROR", True),
+            ({"type": "server_error", "code": "overloaded"}, "MODEL_PROVIDER_ERROR", True),
+            ({"type": "service_unavailable"}, "MODEL_PROVIDER_ERROR", True),
+            ({"message": "An error occurred"}, "MODEL_PROVIDER_ERROR", True),  # no kind at all: assumed transient
+            ("not a mapping", "MODEL_PROVIDER_ERROR", True),
+            ({"type": "tokens", "code": "rate_limit_exceeded"}, "RATE_LIMIT", True),
+            ({"type": "insufficient_quota", "code": "insufficient_quota"}, "MODEL_QUOTA_EXCEEDED", False),
+            ({"type": "invalid_request_error", "code": "invalid_value"}, "MODEL_PROVIDER_ERROR", False),
+        ]
+        for body, code, retriable in cases:
+            with self.subTest(body=body):
+                error = self.classify(frame_error(body))
+                self.assertEqual((error.code, error.retriable), (code, retriable))
+                self.assertEqual(error.detail, "The server had an error while processing your request.")
 
     def test_our_own_errors_pass_through_unchanged(self):
         own = ModelProviderError("model returned no completion", detail="empty")

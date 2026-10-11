@@ -2,7 +2,7 @@
 
 import json
 from decimal import Decimal
-from typing import Annotated, Any, Literal, Self
+from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 

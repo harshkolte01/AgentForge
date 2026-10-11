@@ -12,7 +12,6 @@ from uuid import uuid4
 
 from agentforge.tools.approvals import ApprovalNotFound, ToolApprovals, decide, get_mode, set_mode
 from agentforge.tools.errors import ToolError
-from agentforge.tools.gateway import ToolGateway
 
 from test_tool_gateway import make, args
 

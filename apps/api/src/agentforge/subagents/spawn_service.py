@@ -100,8 +100,10 @@ class SpawnService:
         resolved = await self.registry.resolve_for_task(request.type, request.version, ctx)
         scope = intersect_and_validate(resolved.definition, ctx, request.context_refs)
         # The tools of the plugins this conversation uses were registered for this run alone, from servers its owner connected
-        # and chose; they are offered to whichever agent runs, beside the tools its definition allows.
-        extra = tuple(name for name in self.catalog.extra_tool_names() if name not in scope.allowed_tools)
+        # and chose; they are offered to whichever agent runs, beside the tools its definition allows. A delegated child gets
+        # only those its parent left it (a research child is never handed a plugin tool that changes something).
+        extra = tuple(name for name in self.catalog.extra_tool_names()
+                      if name not in scope.allowed_tools and (not ctx.depth or name in (ctx.parent_tools or ())))
         if extra:
             scope = replace(scope, allowed_tools=(*scope.allowed_tools, *extra))
         available = self.catalog.available(scope.allowed_tools)

@@ -370,6 +370,34 @@ class WorkspaceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(outcome.truncated)
         self.assertTrue(outcome.output.endswith("THE END"))
 
+    async def test_very_long_output_is_cut_to_its_real_end_not_wherever_collection_stopped(self):
+        from agentforge.integrations import e2b_sandbox
+        with patch.object(e2b_sandbox, "COLLECT_CHARS", 30_000), patch.object(e2b_sandbox, "TAIL_CHARS", 5_000):
+            workspace, _ = self.workspace(lambda command: (1, "start\n" + "x" * 80_000 + "\nlast line", "y" * 50_000 + "\nERROR: the real failure"))
+            outcome = await workspace.run("make")
+            self.assertTrue(outcome.truncated)
+            self.assertTrue(outcome.output.startswith("start\n"))
+            self.assertTrue(outcome.output.endswith("ERROR: the real failure"))
+            # Each stream keeps its own head and its own real end.
+            collector = e2b_sandbox._Collector(tail=True)
+            for _ in range(4_000):
+                collector.add("abcdefghij")  # 40 000 characters in small pieces
+            collector.add("THE END")
+            text = collector.text()
+            self.assertTrue(text.startswith("abcdefghij" * 3) and text.endswith("abcdefghijTHE END"))
+            self.assertIn("[… 5007 characters omitted …]", text)
+            self.assertEqual(len(text.split("\n")[-1]), 5_000)
+            # Output that only just passes the head cap loses nothing.
+            exact = e2b_sandbox._Collector(tail=True)
+            exact.add("a" * 30_000 + "tail")
+            self.assertEqual(exact.text(), "a" * 30_000 + "tail")
+
+    async def test_capture_keeps_only_the_head_of_output_past_the_cap(self):
+        from agentforge.integrations import e2b_sandbox
+        with patch.object(e2b_sandbox, "COLLECT_CHARS", 1_000):
+            workspace, _ = self.workspace(lambda command: (0, "z" * 3_000, ""))
+            self.assertEqual(await workspace.capture("git diff"), (0, "z" * 1_000))
+
     async def test_capture_returns_exact_output_for_the_backends_own_use(self):
         secret = "ghp_abcdefghijklmnopqrstuvwxyz0123"
         workspace, sandbox = self.workspace(lambda command: (0, secret + "y" * 30_000, ""))

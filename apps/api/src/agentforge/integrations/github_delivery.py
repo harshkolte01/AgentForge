@@ -26,7 +26,6 @@ BLOB_CONCURRENCY = 6
 AUTHOR = {"name": "AgentForge", "email": "agentforge@users.noreply.github.com"}
 OPERATION_TRAILER = "AgentForge-Operation"
 MERGE_METHODS = ("squash", "merge", "rebase")
-ZERO_SHA = "0" * 40
 SUMMARY_CHARS = 600
 
 

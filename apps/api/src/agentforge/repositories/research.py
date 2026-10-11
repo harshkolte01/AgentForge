@@ -167,14 +167,6 @@ class ResearchRepository:
                     return f"UNTRUSTED EVIDENCE {evidence.id}\nSource: {source.id}\nStatus: {source.fetch_status}\n{preview}"
             raise ScopeDenied("context reference is not a readable task source")
 
-    def research_results(self, ctx: TaskContext) -> list[dict[str, Any]]:
-        with self.session_factory() as session:
-            self._owned(session, **self._scope(ctx))
-            rows = session.scalars(select(AgentRun).where(AgentRun.task_id == ctx.task_id,
-                AgentRun.result_json.is_not(None)).order_by(AgentRun.started_at, AgentRun.id).limit(100))
-            return [row.result_json for row in rows if row.result_json and
-                    row.definition_snapshot.get("output_schema_id") in {"research_result_v1", "general_result_v1"}]
-
     def goal(self, ctx: TaskContext) -> str:
         with self.session_factory() as session:
             return self._owned(session, **self._scope(ctx)).goal

@@ -5,9 +5,10 @@ https://developers.openai.com/api/reference/python
 https://developers.openai.com/api/reference/python/resources/chat/subresources/completions/methods/create
 
 The SDK's own retries stay disabled; this adapter does its own, bounded and visible. It retries failures that
-produced no completion (rate limits, 5xx, failed or dropped connections, timeouts), with jittered backoff that
-honours the provider's retry-after. A stream that breaks after it started is retried too, since repeating one
-request costs far less than failing the whole run; `on_retry` tells the caller to throw away what it showed.
+produced no completion (rate limits, 5xx, failed or dropped connections, timeouts, transient error frames sent
+mid-stream), with jittered backoff that honours the provider's retry-after. A stream that breaks (or simply ends
+without a finish reason) after it started is retried too, since repeating one request costs far less than failing
+the whole run; `on_retry` tells the caller to throw away what it showed.
 Quota and credential errors are never retried.
 """
 
@@ -38,6 +39,10 @@ class _StreamBroke(Exception):
 
 MAX_RETRY_WAIT_SEC = 30.0
 BASE_RETRY_WAIT_SEC = 1.0
+# The `code`/`type` of an error frame sent mid-stream that say a later attempt may succeed (see `_classify`).
+RATE_LIMIT_KINDS = frozenset({"rate_limit_exceeded", "rate_limit_error"})
+TRANSIENT_KINDS = frozenset({"server_error", "overloaded", "overloaded_error", "service_unavailable", "service_unavailable_error",
+                             "internal_error", "internal_server_error"})
 CONNECT_TIMEOUT_SEC = 15.0
 
 
@@ -157,6 +162,16 @@ class OpenAIAdapter:
             return ModelProviderError("model request timed out", retriable=True, detail=detail)
         if isinstance(exc, openai.APIConnectionError) or isinstance(exc, (httpx.TransportError, ConnectionError)):
             return ModelProviderError("model provider unreachable", retriable=True, detail=detail)
+        if isinstance(exc, openai.APIError) and not isinstance(exc, (openai.APIStatusError, openai.APIResponseValidationError)):
+            # An error frame inside a stream that had already answered 200 (`openai._streaming` raises it as a bare
+            # APIError whose code and type come from the frame's `error` object): no status, so judge it by its kind.
+            kinds = {getattr(exc, "code", None), getattr(exc, "type", None)} - {None}
+            if "insufficient_quota" in kinds:
+                return ModelProviderError("model quota exhausted", code="MODEL_QUOTA_EXCEEDED", detail=detail)
+            if kinds & RATE_LIMIT_KINDS:
+                return ModelProviderError("model rate limited", code="RATE_LIMIT", retriable=True, detail=detail)
+            if not kinds or kinds & TRANSIENT_KINDS:
+                return ModelProviderError("model provider unavailable", retriable=True, detail=detail)
         return ModelProviderError("model provider request failed", detail=detail)
 
     @staticmethod
@@ -195,7 +210,10 @@ class OpenAIAdapter:
                         pass
                 wait = self._retry_after(exc)
                 if wait is None:
-                    wait = BASE_RETRY_WAIT_SEC * (2 ** attempt) + random.uniform(0, 0.5)
+                    # Equal jitter: at least half the exponential step, so retries back off, and a random rest, so
+                    # requests that failed together do not all come back together.
+                    base = BASE_RETRY_WAIT_SEC * (2 ** attempt)
+                    wait = base / 2 + random.uniform(0, base / 2)
                 await self._sleep(min(max(wait, 0.0), MAX_RETRY_WAIT_SEC))
         raise ModelProviderError("model provider request failed")  # unreachable; keeps the type checker honest
 
@@ -296,6 +314,10 @@ class OpenAIAdapter:
                 except Exception:
                     pass
         if finish_reason is None:
+            if received:
+                # The stream closed cleanly but cut short: what it showed is void, so it is retried like one that broke.
+                raise _StreamBroke() from ModelProviderError(
+                    "model provider stream ended before the reply finished", retriable=True, detail="no finish_reason")
             raise ModelProviderError("model provider returned no completion")
         content = "".join(parts)
         message: dict[str, Any] = {"role": "assistant"}

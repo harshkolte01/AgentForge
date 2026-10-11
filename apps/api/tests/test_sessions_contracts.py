@@ -78,3 +78,41 @@ class MessageActivityContractTests(unittest.TestCase):
         from agentforge.repositories import sessions
         from agentforge.tools import visibility
         self.assertIs(sessions.SELF_CORRECTION_CODES, visibility.SELF_CORRECTION_CODES)
+
+
+class IntegerBoundTests(unittest.TestCase):
+    """A number past what its column (int4) or a JavaScript cursor (2^53 - 1) holds is a 422, never a database error (500)."""
+
+    def test_agent_versions_stop_at_the_int4_column_limit(self):
+        from pydantic import ValidationError
+        from agentforge.api.routes_agents import AgentTest
+        from agentforge.contracts.sessions import AutoTurnCreate
+        key = f"project/{uuid4()}/docs-writer"
+        base = {"project_id": uuid4(), "kind": "research", "goal": "Research concrete task with evidence", "agent_key": key}
+        self.assertEqual(TaskCreate(**base, agent_version=2_147_483_647).agent_version, 2_147_483_647)
+        for build in (lambda version: TaskCreate(**base, agent_version=version),
+                      lambda version: SessionTurnCreate(idempotency_key=uuid4(), goal="Research concrete task with evidence", agent_key=key, agent_version=version),
+                      lambda version: AutoTurnCreate(routing="auto", idempotency_key=uuid4(), goal="Research concrete task with evidence", agent_key=key, agent_version=version),
+                      lambda version: AgentTest(version=version, goal="Check it")):
+            with self.assertRaises(ValidationError):
+                build(2_147_483_648)
+
+    def test_oversized_message_and_turn_cursors_are_rejected_before_any_query(self):
+        from types import SimpleNamespace as NS
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from agentforge.api import routes_sessions
+        from agentforge.auth.session import current_user
+
+        class Untouched:
+            def __getattr__(self, name):
+                raise AssertionError(f"{name} must not run for an invalid cursor")
+
+        app = FastAPI()
+        app.include_router(routes_sessions.router)
+        app.dependency_overrides[current_user] = lambda: NS(id=uuid4())
+        app.dependency_overrides[routes_sessions.repository] = Untouched
+        client, session_id = TestClient(app), uuid4()
+        for path in (f"/api/v1/sessions/{session_id}/messages?after_sequence=9007199254740992",
+                     f"/api/v1/sessions/{session_id}/turns?after_ordinal=9007199254740992"):
+            self.assertEqual(client.get(path).status_code, 422, path)

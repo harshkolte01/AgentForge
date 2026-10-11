@@ -52,6 +52,9 @@ RESULT_PREVIEW_BYTES = 16000
 RESULT_TOKENS = RESULT_PREVIEW_BYTES + 1000  # includes dense Unicode, JSON escaping and tool-message overhead
 # LangGraph needs a finite recursion limit; this is far beyond any real run.
 RECURSION_LIMIT = 1_000_000
+# A text value cut to make a result fit keeps at least this much: below it, cutting loses more than it saves.
+MIN_KEPT_CHARS = 200
+OMITTED_MARK = "…[{} characters omitted]"
 
 
 class ChildState(TypedDict):
@@ -60,7 +63,6 @@ class ChildState(TypedDict):
     steps: int
     cuts: int      # replies cut off by the output limit so far
     empties: int   # empty replies so far
-    again: bool    # the last reply must be asked for again
     answer: str | None
     partial: str   # the start of an answer that reached the output limit and is being continued
     conts: int     # continuations asked for so far
@@ -71,6 +73,46 @@ def stalled(text: str) -> bool:
     """The reply ends by introducing something that never came: its last line ends with a colon."""
     last = text.rstrip().rsplit("\n", 1)[-1].strip()
     return last.endswith(":") and not last.startswith(("|", "#", "-", "*", ">")) and len(last) < 300
+
+
+def fit_result(payload: dict[str, Any]) -> str | None:
+    """`payload` rendered within RESULT_PREVIEW_BYTES by cutting its data's longest text values first, or None when that
+    cannot make it fit (many short values), for the caller's cruder preview.
+
+    Every key stays, so cursors (next_offset, next_line) and ids still work, and a note says where the full result is.
+    The outcome itself is not changed.
+    """
+    data = json.loads(json.dumps(payload["data"], ensure_ascii=False))
+    leaves: list[list[Any]] = []  # [container, key, original text, characters kept]
+
+    def collect(node: Any) -> None:
+        items = node.items() if isinstance(node, dict) else enumerate(node) if isinstance(node, list) else ()
+        for key, value in items:
+            if isinstance(value, str):
+                leaves.append([node, key, value, len(value)])
+            else:
+                collect(value)
+    collect(data)
+    reference = data.get("resource_id")
+    note = "This result was too long to show whole, so its longest text values were cut where marked."
+    if isinstance(reference, str):
+        note += (f' Read the full result with read_context_resource(resource_id="{reference}", offset=0) when that tool is '
+                 "available, continuing from its next_offset; this does not repeat the original call.")
+    for _ in range(200):
+        rendered = json.dumps({**payload, "data": {**data, "preview_truncated": True, "preview_note": note}},
+                              ensure_ascii=False, allow_nan=False)
+        excess = len(rendered.encode()) - RESULT_PREVIEW_BYTES
+        if excess <= 0:
+            return rendered
+        leaf = max(leaves, key=lambda item: item[3], default=None)
+        if leaf is None or leaf[3] <= MIN_KEPT_CHARS:
+            return None
+        container, key, original, kept = leaf
+        # Characters to drop for `excess` bytes at this value's own bytes per character (escaping, Unicode), plus the mark.
+        size = len(json.dumps(original[:kept], ensure_ascii=False).encode())
+        leaf[3] = kept = max(MIN_KEPT_CHARS, kept - int(excess * kept / max(1, size)) - 40)
+        container[key] = original[:kept] + OMITTED_MARK.format(len(original) - kept)
+    return None
 
 
 class ChildRuntime:
@@ -158,16 +200,22 @@ class ChildRuntime:
                 restart()
             try:
                 response = await model.complete(sent, schemas, **extra)
-                if stream is not None:
-                    stream.end()
             except BaseException:
                 budgets.record_usage(reservation.id, operation_key, None)
                 drop_live()
                 raise
+            # The call succeeded, so its real cost is recorded before anything else can fail: `end` may raise an event
+            # error the sink deferred (a stopped run, a lost lease), which must not charge the call's upper bound.
             budgets.record_usage(reservation.id, operation_key, response.usage.cost_usd,
                 usage={"input_tokens": response.usage.input_tokens,
                        "output_tokens": response.usage.output_tokens, "compacted_results": len(stubbed),
                        "configured_model": model.model_id, "reported_model": response.model_id})
+            if stream is not None:
+                try:
+                    stream.end()
+                except BaseException:
+                    drop_live()
+                    raise
             message = response.message
             if len(json.dumps(message, allow_nan=False).encode()) > 4 * MAX_ANSWER_CHARS or message.get("role") != "assistant":
                 raise ModelProviderError("invalid model response envelope")
@@ -183,7 +231,7 @@ class ChildRuntime:
                 if state["cuts"] >= MAX_CUTOFF_RETRIES:
                     raise ModelProviderError("The model kept running out of output space while calling tools.", detail="finish_reason: length")
                 return {"messages": [*conversation, {"role": "user", "content": CUTOFF_NOTICE}], "pending": [],
-                        "steps": steps + 1, "cuts": state["cuts"] + 1, "again": True}
+                        "steps": steps + 1, "cuts": state["cuts"] + 1}
             if reason not in ("stop", "tool_calls", "length"):
                 drop_live()
                 raise ModelProviderError(f"The model stopped before finishing its reply (finish reason: {reason}).", detail=f"finish_reason: {reason}")
@@ -191,7 +239,7 @@ class ChildRuntime:
                 # Text next to tool calls was a note for the person: keep it in the run's history, in order.
                 if stream is not None:
                     stream.commit_narration()
-                return {"messages": [*conversation, message], "pending": pending, "steps": steps + 1, "again": False,
+                return {"messages": [*conversation, message], "pending": pending, "steps": steps + 1,
                         "partial": "", "conts": 0}
             written = message.get("content") or ""
             if not written.strip() and not partial:
@@ -199,21 +247,21 @@ class ChildRuntime:
                 if state["empties"] >= 1:
                     raise ModelProviderError("The model returned an empty reply.", detail="empty completion")
                 return {"messages": [*conversation, {"role": "user", "content": EMPTY_NOTICE}], "pending": [],
-                        "steps": steps + 1, "empties": state["empties"] + 1, "again": True}
+                        "steps": steps + 1, "empties": state["empties"] + 1}
             if reason == "length" and state["conts"] < MAX_CONTINUATIONS and len(partial) + len(written) < MAX_ANSWER_CHARS:
                 # The answer ran into the output limit: keep what was written and ask for the rest.
                 return {"messages": [*conversation, message, {"role": "user", "content": CONTINUE_NOTICE}], "pending": [],
-                        "steps": steps + 1, "partial": partial + written, "conts": state["conts"] + 1, "again": True}
+                        "steps": steps + 1, "partial": partial + written, "conts": state["conts"] + 1}
             text = (partial + written).strip()
             if schemas and not partial and not state["nudged"] and reason == "stop" and stalled(text):
                 drop_live()
                 return {"messages": [*conversation, message, {"role": "user", "content": STALLED_NOTICE}], "pending": [],
-                        "steps": steps + 1, "nudged": True, "again": True}
+                        "steps": steps + 1, "nudged": True}
             if reason == "length":
                 text += CUT_OFF_NOTE
             if stream is not None:
                 stream.commit_reply()
-            return {"messages": [*conversation, message], "pending": [], "steps": steps + 1, "answer": text[:MAX_ANSWER_CHARS], "again": False}
+            return {"messages": [*conversation, message], "pending": [], "steps": steps + 1, "answer": text[:MAX_ANSWER_CHARS]}
 
         async def run_tool(call: dict[str, Any]):
             return await gateway.execute(call["function"]["name"], call["function"]["arguments"], call["id"])
@@ -226,8 +274,12 @@ class ChildRuntime:
                     payload["detail"] = outcome.error_detail
                 payload["guidance"] = error_guidance(outcome.error_code)
             rendered = json.dumps(payload, ensure_ascii=False, allow_nan=False)
-            # Full result is bounded by ToolOutcome. Use an explicitly marked preview when needed, keeping reference ids.
-            if len(rendered.encode()) > RESULT_PREVIEW_BYTES:
+            # Full result is bounded by ToolOutcome. Use an explicitly marked preview when needed, keeping reference ids:
+            # the same result with its longest texts cut, or, when that cannot fit, the start of its JSON.
+            fitted = fit_result(payload) if len(rendered.encode()) > RESULT_PREVIEW_BYTES else None
+            if fitted is not None:
+                rendered = fitted
+            elif len(rendered.encode()) > RESULT_PREVIEW_BYTES:
                 preview = json.dumps(outcome.data, ensure_ascii=False)
                 low, high = 0, min(len(preview), 8000)
                 while low < high:
@@ -302,7 +354,7 @@ class ChildRuntime:
         try:
             async with asyncio.timeout(scope.budget.max_wall_time_sec if getattr(ctx, "depth", 0) else None):
                 output = await child.ainvoke({"messages": messages, "pending": [], "steps": 0, "cuts": 0, "empties": 0,
-                                          "again": False, "answer": None, "partial": "", "conts": 0, "nudged": False},
+                                          "answer": None, "partial": "", "conts": 0, "nudged": False},
                                          invoke_config)
         except BaseException:
             # An error or a stop request ends the run without a reply: nothing may stay on screen.

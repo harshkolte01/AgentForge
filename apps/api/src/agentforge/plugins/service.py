@@ -2,8 +2,10 @@
 
 A connection is saved only after the server has answered: it must initialize and list at least one usable tool. The
 credential is stored encrypted and is never returned by any call; only whether one is set. Network work is async, database
-work is synchronous (called in a thread by the routes).
+work is synchronous: called in a thread by the routes, or, inside the async calls, through `asyncio.to_thread`, so a query never
+holds the event loop.
 """
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -152,7 +154,7 @@ class PluginService:
         return {"entry": entry, "name": name, "url": url, "token": token, "kind": kind, "header": header if kind == "header" else None}
 
     async def connect(self, user_id: UUID, body) -> dict:
-        plan = self._plan(user_id, body)
+        plan = await asyncio.to_thread(self._plan, user_id, body)
         cipher = cipher_for(self.settings) if plan["token"] else None
         headers = ({DEFAULT_HEADER: f"Bearer {plan['token']}"} if plan["kind"] == "bearer"
                    else {plan["header"]: plan["token"]} if plan["kind"] == "header" else {})
@@ -163,6 +165,9 @@ class PluginService:
                 await self._offer_oauth(plan["url"])
             raise _failure(error) from None
         encrypted = cipher.encrypt(plan["token"]) if cipher and plan["token"] else None
+        return await asyncio.to_thread(self._save_new, user_id, plan, encrypted, server_name, specs)
+
+    def _save_new(self, user_id: UUID, plan: dict[str, Any], encrypted: str | None, server_name: str | None, specs) -> dict:
         with self.sessions() as db, db.begin():
             # Rechecked under the user's row lock: two requests at once cannot connect the same plugin twice or pass the limit.
             db.scalar(select(User).where(User.id == user_id).with_for_update())
@@ -198,6 +203,19 @@ class PluginService:
     async def refresh(self, user_id: UUID, connection_id: UUID) -> dict:
         """Reads the server's tools again. A failure is recorded on the connection (the tools it had stay), not raised."""
         self._require_enabled()
+        target, failed = await asyncio.to_thread(self._refresh_target, user_id, connection_id)
+        if failed is not None:
+            return failed
+        url, headers, auth = target
+        try:
+            server_name, specs = await probe(url, headers, self.settings, auth)
+        except McpError as error:
+            return await asyncio.to_thread(self._record_failure, user_id, connection_id, error.code.lower(), error.message)
+        return await asyncio.to_thread(self._save_tools, user_id, connection_id, server_name, specs)
+
+    def _refresh_target(self, user_id: UUID, connection_id: UUID) -> tuple[tuple | None, dict | None]:
+        """The address, headers and OAuth tokens to reach a connection with, or (when its credential cannot be read) the
+        connection's view once that is recorded on it."""
         auth = None
         with self.sessions() as db:
             row = self._owned(db, user_id, connection_id)
@@ -205,14 +223,13 @@ class PluginService:
             try:
                 headers = auth_headers(row, cipher)
             except PluginError as error:
-                return self._record_failure(user_id, connection_id, error.code, error.message)
+                return None, self._record_failure(user_id, connection_id, error.code, error.message)
             if row.auth_kind == "oauth":
                 from .oauth_service import OAuthTokens
                 auth = OAuthTokens(self.sessions, self.settings, connection_id)
-        try:
-            server_name, specs = await probe(url, headers, self.settings, auth)
-        except McpError as error:
-            return self._record_failure(user_id, connection_id, error.code.lower(), error.message)
+        return (url, headers, auth), None
+
+    def _save_tools(self, user_id: UUID, connection_id: UUID, server_name: str | None, specs) -> dict:
         with self.sessions() as db, db.begin():
             row = self._owned(db, user_id, connection_id, lock=True)
             row.tools_json, row.server_name, row.status, row.last_error = specs, server_name, "connected", None
@@ -233,15 +250,9 @@ class PluginService:
         self._require_enabled()
         fields = patch.model_fields_set
         token = (patch.token or "").strip() if "token" in fields else None
+        probed = None
         if token:
-            with self.sessions() as db:
-                row = self._owned(db, user_id, connection_id)
-                if row.auth_kind == "oauth":
-                    raise PluginError(422, "plugin_token_not_used", "This plugin signs in with OAuth. Choose Reconnect to sign in again.")
-                listed = BY_KEY.get(row.plugin_key)
-                if listed is not None and listed.auth == "none" and not listed.oauth:
-                    raise PluginError(422, "plugin_token_not_used", "This plugin does not use a credential.")
-                url, kind, header = row.server_url, row.auth_kind, row.auth_header
+            url, kind, header = await asyncio.to_thread(self._token_target, user_id, connection_id)
             cipher = cipher_for(self.settings)
             if cipher is None:
                 raise PluginError(409, "plugin_encryption_not_configured", "Saving a credential needs an encryption key. Ask the operator to set PLUGIN_ENCRYPTION_KEY.")
@@ -251,6 +262,22 @@ class PluginService:
                 server_name, specs = await probe(url, headers, self.settings)
             except McpError as error:
                 raise _failure(error) from None
+            probed = {"kind": kind, "encrypted": cipher.encrypt(token), "server_name": server_name, "specs": specs}
+        return await asyncio.to_thread(self._apply_patch, user_id, connection_id, patch, fields, probed)
+
+    def _token_target(self, user_id: UUID, connection_id: UUID) -> tuple[str, str, str | None]:
+        """Where a new credential is tried, and how it is sent. Raises PluginError for a connection that takes none."""
+        with self.sessions() as db:
+            row = self._owned(db, user_id, connection_id)
+            if row.auth_kind == "oauth":
+                raise PluginError(422, "plugin_token_not_used", "This plugin signs in with OAuth. Choose Reconnect to sign in again.")
+            listed = BY_KEY.get(row.plugin_key)
+            if listed is not None and listed.auth == "none" and not listed.oauth:
+                raise PluginError(422, "plugin_token_not_used", "This plugin does not use a credential.")
+            return row.server_url, row.auth_kind, row.auth_header
+
+    def _apply_patch(self, user_id: UUID, connection_id: UUID, patch, fields, probed: dict[str, Any] | None) -> dict:
+        """Saves a change; `probed` is the new credential and what the server answered with it, when one was given."""
         with self.sessions() as db, db.begin():
             row = self._owned(db, user_id, connection_id, lock=True)
             if "enabled" in fields and patch.enabled is not None:
@@ -258,9 +285,10 @@ class PluginService:
             if "disabled_tools" in fields and patch.disabled_tools is not None:
                 known = {tool["name"] for tool in row.tools_json or []}
                 row.disabled_tools = sorted({name for name in patch.disabled_tools if name in known})
-            if token:
-                row.auth_kind, row.credential_encrypted = kind, cipher.encrypt(token)
-                row.server_name, row.tools_json, row.status, row.last_error = server_name, specs, "connected", None
+            if probed is not None:
+                specs = probed["specs"]
+                row.auth_kind, row.credential_encrypted = probed["kind"], probed["encrypted"]
+                row.server_name, row.tools_json, row.status, row.last_error = probed["server_name"], specs, "connected", None
                 row.tools_synced_at = datetime.now(timezone.utc)
                 row.disabled_tools = [name for name in row.disabled_tools or [] if name in {tool["name"] for tool in specs}]
             return view(row)

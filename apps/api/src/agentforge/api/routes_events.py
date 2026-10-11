@@ -98,8 +98,18 @@ async def events(task_id: UUID, request: Request, user: User = Depends(current_u
                     if authenticated.id != user.id:
                         return
                     authenticated_at = time.monotonic()
-                page = await run_in_threadpool(event_repository.list_after,
+                # The live text is read before the events and sent after them. The worker records the end of a task (its
+                # terminal event) before it clears the live text, so a clear seen here always has its terminal event in the
+                # page read next: a reader learns that the task ended before it sees the text go, and keeps the last words
+                # on screen until the saved message takes over instead of blanking the answer in between.
+                read = await run_in_threadpool(event_repository.stream_since, task_id, user.id, sent_state, sent_length)
+                # The task's event watermark is written in the same transaction as each event, so a watermark no newer than
+                # the cursor means there is no event to read: an idle pass is one query, not three. No watermark (a failed
+                # read, or a task that is no longer this person's) still reads the page, which raises TaskNotFound and
+                # closes the stream as before.
+                page = (await run_in_threadpool(event_repository.list_after,
                     task_id=task_id, owner_id=user.id, after_sequence=cursor, limit=100)
+                    if read.event_sequence is None or read.event_sequence > cursor else [])
                 for event in page:
                     if await request.is_disconnected():
                         return
@@ -113,7 +123,6 @@ async def events(task_id: UUID, request: Request, user: User = Depends(current_u
                 # from offset 0 with a reset; saved notes and the saved message stay authoritative. Whenever the text
                 # was replaced rather than extended (a newer epoch or revision, including a clear) the whole state is sent
                 # as a reset, so a reader is never left showing text that is gone. Only the unsent rest of the text is read.
-                read = await run_in_threadpool(event_repository.stream_since, task_id, user.id, sent_state, sent_length)
                 if read.live is not None:
                     epoch, revision, kind, length, text = read.live
                     if sent_state != (epoch, revision) or length < sent_length:

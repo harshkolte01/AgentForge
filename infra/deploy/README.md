@@ -5,6 +5,9 @@ one Linux EC2 instance. Managed E2B remains the coding execution boundary; the
 host never runs submitted repositories. No AWS account, instance, domain or
 deployment was created. Docker Compose rendering is locally checkable without a
 daemon; image builds, TLS and restart behavior need deployment-host qualification.
+The web image runs Next.js's standalone server (`node server.js`, from
+`output: "standalone"` in `apps/web/next.config.ts`) with only its traced
+dependencies, not the full `node_modules`.
 
 ## Host and storage prerequisites
 
@@ -38,6 +41,8 @@ Copy `deploy.env.example` to `/etc/agentforge/deploy.env` and
 `runtime.env.example` to `/etc/agentforge/runtime.env`, both mode `0600`. Replace
 every placeholder. The files deliberately fail to launch as shipped. Never bake
 provider keys, OAuth secrets, TLS keys or environment files into images.
+`SITE_URL` (the public origin) is required: Compose refuses to render without it,
+since the web image prerenders public pages with it.
 
 `deploy.env` contains Compose interpolation, database bootstrap/admin URLs and a
 distinct runtime password. It is **not** passed into API/worker containers.
@@ -110,8 +115,15 @@ worker logs and run a controlled authenticated canary task to establish processi
 This command does not claim table-schema compatibility or test artifact writes.
 
 nginx disables API response buffering/cache and preserves SSE cookies and cursor
-headers. The normal upstream idle timeout is 75s, above the stream keepalive
-interval. Upstream retries are disabled to avoid repeat writes. GitHub sign-in
+headers. It serves HTTP/2 to browsers (upstreams stay HTTP/1.1), gzips JSON, text,
+CSS and JavaScript (never `text/event-stream`), and adds `X-Frame-Options`,
+`Content-Security-Policy` (`frame-ancestors`, `base-uri`, `object-src`,
+`form-action` only) and `Permissions-Policy` to every response; a `location` that
+adds a header of its own must repeat the server's `add_header` lines. HTTP/2 needs
+nginx 1.25.1 or newer (`http2 on;`). The normal upstream idle timeout is 75s, above the stream keepalive
+interval. On stop or restart the API waits at most 10s
+(`--timeout-graceful-shutdown`) for open event streams, then closes them; browsers
+reconnect with their last cursor. Upstream retries are disabled to avoid repeat writes. GitHub sign-in
 (`/api/v1/auth/github/start|callback`) is rate limited per client IPv4 address or
 IPv6 /64; the API's own limit is a DB-wide backstop.
 Verify authenticated event arrival before task completion, reconnect with the

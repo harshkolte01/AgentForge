@@ -11,6 +11,7 @@ from urllib.parse import quote
 import httpx
 from agentforge.integrations.github_client import (GitHubClient, GitHubError, RepositorySnapshot,
     ResolvedRepository, validate_repo_id, _deadline)
+from agentforge.integrations.tls import outbound_tls
 
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 SNAPSHOT_CONCURRENCY = 8   # blobs fetched at once while loading a repository
@@ -41,7 +42,7 @@ class GitHubAppClient:
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         return httpx.AsyncClient(timeout=httpx.Timeout(20, connect=5), follow_redirects=False,
-            trust_env=False, transport=self.transport, headers=headers, **limits)
+            trust_env=False, verify=outbound_tls(), transport=self.transport, headers=headers, **limits)
 
     async def request(self, method, path, *, payload=None, allow_missing=False, http=None):
         if not path.startswith("/") or path.startswith("//"):
@@ -84,7 +85,7 @@ class GitHubAppClient:
         payload = {**payload, "client_id": self.settings.github_client_id,
             "client_secret": self.settings.github_client_secret.get_secret_value()}
         try:
-            async with httpx.AsyncClient(timeout=20, follow_redirects=False, trust_env=False,
+            async with httpx.AsyncClient(timeout=20, follow_redirects=False, trust_env=False, verify=outbound_tls(),
                     transport=self.transport) as client:
                 async with client.stream("POST", "https://github.com/login/oauth/access_token", data=payload,
                         headers={"Accept": "application/json", "User-Agent": "AgentForge"}) as response:

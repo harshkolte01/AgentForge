@@ -513,3 +513,35 @@ class RuntimeToolStreamTests(IsolatedAsyncioTestCase):
     async def test_a_model_that_does_not_report_calls_works_as_before(self):
         result = await self.run_loop(ScriptedModel([calls(("read_repo_file", {"path": "a"})), text("Done.")]), RecordingStream())
         self.assertEqual(result.summary, "Done.")
+
+    async def test_drafts_reach_the_stream_through_the_traced_model_the_worker_uses(self):
+        # bootstrap.py always wraps the model in ObservedModel: the wrapper must not hide that the model streams calls.
+        from contextlib import contextmanager
+        from agentforge.telemetry.runtime import ObservedModel
+
+        @contextmanager
+        def span(*args, **kwargs):
+            yield None
+        stream = RecordingStream()
+        inner = StreamingModel([calls(("write", {"path": "a.py", "content": "x"})), text("Done.")])
+        observed = ObservedModel(inner, NS(span=span), NS(progress=lambda *a: None, lease=NS(task_id="t")))
+        result = await self.run_loop(observed, stream)
+        self.assertEqual(result.summary, "Done.")
+        self.assertTrue([entry for entry in stream.log if entry[0] == "tool"])
+
+    async def test_an_event_error_raised_as_the_call_ends_still_records_the_call_at_its_real_cost(self):
+        class Failing(RecordingStream):
+            def end(self):
+                super().end()
+                raise RuntimeError("lease lost")
+        stream, ledger = Failing(), Ledger()
+        with self.assertRaises(RuntimeError):
+            await ChildRuntime().run(
+                definition=load_builtin("agent", AGENT_VERSION), ctx=NS(task_id=uuid4()),
+                scope=NS(budget=Budget(), allowed_tools=("read_repo_file",)), model=StreamingModel([text("Done.")]),
+                gateway=FakeGateway(), budgets=ledger, reservation=NS(id=uuid4(), run_id=uuid4()),
+                messages=[{"role": "user", "content": "go"}], resources=NS(), reauthorize=AsyncMock(), stream=stream)
+        # One entry for the call, with what the provider reported: the upper bound is never charged for a call that worked.
+        self.assertEqual([(cost, usage["output_tokens"]) for _key, cost, usage in ledger.usage], [(Decimal("0.0001"), 1)])
+        self.assertIn(("discard",), stream.log)
+        self.assertNotIn(("commit_reply",), stream.log)

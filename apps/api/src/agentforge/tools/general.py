@@ -26,7 +26,9 @@ def register_general(catalog, sessions, settings):
     async def page(args, execution, document, resource):
         content = document["content"]
         if args.offset > len(content):
-            raise ScopeDenied("page offset outside document")
+            # A wrong cursor, not a forbidden resource: the model can correct it.
+            raise ToolError("INVALID_RANGE", f"offset {args.offset} is past the end: the content has {len(content)} characters. "
+                            "Read from offset 0, or from the next_offset a previous page returned.")
         stop = min(len(content), args.offset + args.max_chars)
         # Keep transport bounded in UTF-8 as well as characters.
         text = content[args.offset:stop].encode()[:10000].decode("utf-8", errors="ignore")

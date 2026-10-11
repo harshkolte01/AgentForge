@@ -15,6 +15,7 @@ from agentforge.database.identity import OAuthTransaction, GitHubCredential, Git
 from agentforge.integrations.github_app import GitHubAppClient, valid_github_id
 from agentforge.integrations.github_app import github_for_user  # public shared task adapter
 from agentforge.integrations.github_client import GitHubError
+from agentforge.integrations.tls import outbound_tls
 
 # A DB-wide ceiling only; per-client limiting belongs to the proxy (infra/deploy/nginx.conf).
 OAUTH_STARTS_PER_MINUTE = 1000
@@ -43,7 +44,7 @@ class TokenEndpointProbe(httpx.AsyncBaseTransport):
     GitHub answer? Keeps only the status and GitHub's `error` code, never a token."""
 
     def __init__(self, inner=None):
-        self.inner = inner or httpx.AsyncHTTPTransport(trust_env=False)
+        self.inner = inner or httpx.AsyncHTTPTransport(trust_env=False, verify=outbound_tls())
         self.outcome, self.status, self.error = None, None, None
 
     async def handle_async_request(self, request):

@@ -190,6 +190,24 @@ class SetupTests(IsolatedAsyncioTestCase):
         self.assertEqual(recorder.reserved, [])
 
 
+    async def test_a_delegated_child_is_offered_only_the_extra_tools_its_parent_left_it(self):
+        from dataclasses import replace
+        from agentforge.tools.catalog import PluginTool
+        run = AsyncMock(return_value=SubagentResult(status="PASS", summary="ok"))
+        service, recorder = service_with(run, tools=("web_search", "use_skill"))
+        async def handler(args, ctx):
+            return ToolOutcome(status="ok", cost_usd=Decimal(0))
+        service.catalog.register_plugin("tracker__create_issue", handler, PluginTool("p", "Tracker", "create_issue", "", "", {"type": "object"}, False), timeout_sec=5)
+        service.catalog.register_plugin("tracker__search", handler, PluginTool("p", "Tracker", "search", "", "", {"type": "object"}, True), timeout_sec=5)
+        await service.spawn_subagent(request(), context())
+        self.assertTrue({"use_skill", "tracker__create_issue", "tracker__search"} <= set(run.await_args.kwargs["scope"].allowed_tools))
+        child = replace(context(), depth=1, parent_run_id=uuid4(), parent_tools=("web_search", "use_skill", "tracker__search"))
+        await service.spawn_subagent(request(), child)
+        allowed = run.await_args.kwargs["scope"].allowed_tools
+        self.assertEqual(set(allowed), {"web_search", "use_skill", "tracker__search"})
+        self.assertEqual(recorder.started[-1]["effective_permissions"]["allowed_tools"], list(allowed))
+
+
 class BuiltinResolutionTests(IsolatedAsyncioTestCase):
     """The built-in is re-resolved before every step; the shared definition row is not touched each time."""
 

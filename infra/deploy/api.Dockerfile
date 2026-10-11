@@ -13,4 +13,4 @@ COPY apps/api/alembic ./alembic
 ENV PATH="/app/apps/api/.venv/bin:$PATH" RESEARCH_STORAGE_PATH=/data/artifacts
 USER 10001:10001
 EXPOSE 8000
-CMD ["uvicorn", "agentforge.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-proxy-headers", "--no-access-log"]
+CMD ["uvicorn", "agentforge.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-proxy-headers", "--no-access-log", "--timeout-graceful-shutdown", "10"]

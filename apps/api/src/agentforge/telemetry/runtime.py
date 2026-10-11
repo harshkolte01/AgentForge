@@ -60,7 +60,7 @@ class ObservedModel:
     def maximum_request_cost(self, messages, tools):
         return self.model.maximum_request_cost(messages, tools)
 
-    async def complete(self, messages, tools, on_text=None, tool_choice=None, on_narration=None, on_retry=None):
+    async def complete(self, messages, tools, on_text=None, tool_choice=None, on_narration=None, on_retry=None, on_tool=None):
         self.store.progress("model.started", {"model": self.model_id})
         capture = bool(getattr(self.telemetry, "capture_content", False))
         failed_attempts: list[str] = []
@@ -77,6 +77,9 @@ class ObservedModel:
             parameters = inspect.signature(self.model.complete).parameters
             if on_retry is not None and "on_retry" in parameters:
                 extra["on_retry"] = on_retry
+            if on_tool is not None and "on_tool" in parameters:
+                # Tool calls drafted as the model writes them (subagents/runtime.py offers this only when `complete` takes it).
+                extra["on_tool"] = on_tool
             if span is not None and "on_attempt_failed" in parameters:
                 # Every failed request that is sent again: rate limits and outages are the retries worth seeing in a trace.
                 extra["on_attempt_failed"] = failed_attempts.append

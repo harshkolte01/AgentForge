@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 
 from agentforge.auth.crypto import CredentialCipher

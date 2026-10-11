@@ -8,6 +8,8 @@ from typing import Any
 
 import httpx
 
+from agentforge.integrations.tls import outbound_tls
+
 
 class SearchFailure(ValueError):
     """Safe error code only; never includes provider bodies, prompts or API keys."""
@@ -42,7 +44,7 @@ class TavilyClient:
         # Endpoint is constant. Credentials cannot follow redirects or enter
         # ambient proxies/.netrc. A fresh client retains no provider cookies.
         async with asyncio.timeout(self.timeout_sec):
-            async with httpx.AsyncClient(trust_env=False, follow_redirects=False,
+            async with httpx.AsyncClient(trust_env=False, verify=outbound_tls(), follow_redirects=False,
                                          timeout=self.timeout_sec) as client:
                 async with client.stream("POST", "https://api.tavily.com/search", json=payload,
                     headers={"Authorization": f"Bearer {self.api_key}", "Accept-Encoding": "identity"}) as response:

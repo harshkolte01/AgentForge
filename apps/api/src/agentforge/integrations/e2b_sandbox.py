@@ -23,6 +23,9 @@ WORKSPACE = "/home/user/workspace"
 OUTPUT_CHARS = 12000
 JSON_BYTES = 12500
 COLLECT_CHARS = 2_000_000
+# Past COLLECT_CHARS, a command's output keeps its last this many characters too, so the end it is cut to (usually the
+# error) is the real end and not wherever the cap fell.
+TAIL_CHARS = 100_000
 KEEP_ALIVE_EVERY_SEC = 60
 # Commands run without a terminal and nobody can answer a prompt: anything that would wait for input, open a pager or ask
 # for credentials should fail fast or take the default instead. None of these is a secret.
@@ -93,15 +96,29 @@ class CommandOutcome:
 
 
 class _Collector:
-    def __init__(self, observer: Callable[[str], None] | None = None) -> None:
+    """A stream's output: its first COLLECT_CHARS characters and, with `tail`, a rolling window of its last TAIL_CHARS."""
+
+    def __init__(self, observer: Callable[[str], None] | None = None, *, tail: bool = False) -> None:
         self.parts: list[str] = []
         self.size = 0
         self.observer = observer
+        self.keep_tail = tail
+        self.tail: list[str] = []
+        self.tail_size = 0
 
     def add(self, chunk: str) -> None:
         if self.size < COLLECT_CHARS:
             self.parts.append(chunk[:COLLECT_CHARS - self.size])
-            self.size += len(chunk)
+            rest = chunk[COLLECT_CHARS - self.size:]
+        else:
+            rest = chunk
+        self.size += len(chunk)
+        if self.keep_tail and rest:
+            self.tail.append(rest)
+            self.tail_size += len(rest)
+            if self.tail_size > 2 * TAIL_CHARS:  # trimmed in batches, so a long stream of small chunks stays linear
+                kept = "".join(self.tail)[-TAIL_CHARS:]
+                self.tail, self.tail_size = [kept], len(kept)
         if self.observer is not None:
             try:
                 self.observer(chunk)
@@ -109,7 +126,12 @@ class _Collector:
                 pass  # Showing progress must never fail the command.
 
     def text(self) -> str:
-        return "".join(self.parts)
+        head = "".join(self.parts)
+        if not self.tail:
+            return head
+        tail = "".join(self.tail)[-TAIL_CHARS:]
+        omitted = self.size - len(head) - len(tail)
+        return f"{head}\n[… {omitted} characters omitted …]\n{tail}" if omitted else head + tail
 
 
 class Workspace:
@@ -155,7 +177,7 @@ class Workspace:
         showing progress: it gets the raw text, and anything that raises is ignored.
         """
         from e2b import CommandExitException, TimeoutException
-        out, err = _Collector(on_output), _Collector(on_output)
+        out, err = _Collector(on_output, tail=True), _Collector(on_output, tail=True)
         exit_code: int | None = None
         timed_out = False
         limit = max(1, int(timeout_sec))

@@ -16,6 +16,8 @@ from urllib.parse import quote
 
 import httpx
 
+from agentforge.integrations.tls import outbound_tls
+
 MAX_COMPRESSED_BYTES = 10_000_000
 MAX_ARCHIVE_BYTES = 30_000_000
 MAX_FILE_BYTES = 1_000_000
@@ -153,7 +155,7 @@ class GitHubClient:
 
     def _client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(timeout=httpx.Timeout(20, connect=5), follow_redirects=False,
-            trust_env=False, transport=self.transport, headers={"Accept": "application/vnd.github+json",
+            trust_env=False, verify=outbound_tls(), transport=self.transport, headers={"Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "AgentForge-public-source"})
 
     @staticmethod
@@ -243,7 +245,3 @@ class GitHubClient:
             archive = await self._read(client,
                 f"https://codeload.github.com/{resolved.repo_id}/tar.gz/{resolved.commit_sha}", MAX_COMPRESSED_BYTES)
         return RepositorySnapshot(resolved.repo_id, resolved.commit_sha, unpack_archive(archive))
-
-
-async def fetch_repository_archive(repo_id: str, commit_sha: str) -> dict[str, bytes]:
-    return (await GitHubClient().snapshot(repo_id, commit_sha)).files

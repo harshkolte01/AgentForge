@@ -94,13 +94,16 @@ class WorkerProcessTests(unittest.IsolatedAsyncioTestCase):
             return engine
 
         def claim(worker_id):
-            if not claims:
+            # Loops claim from threads at the same time: take the job in one step (as SKIP LOCKED does), never check then pop.
+            try:
+                task_id = claims.pop(0)
+            except IndexError:
                 return None
             claimed.append(worker_id)
             if self.stop_on_claim:
                 # SIGTERM arrives while the claim is in flight (claim runs in a thread; the signal handler on the loop).
                 loop.call_soon_threadsafe(self.stopped.set)
-            return NS(task_id=claims.pop(0))
+            return NS(task_id=task_id)
 
         def release(lease):
             self.released.append(lease.task_id)

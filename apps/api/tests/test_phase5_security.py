@@ -2,7 +2,6 @@
 
 The old post-run pull request approval flow (prepare, approve, execute) is gone: approvals now happen inline in the chat
 before a tool runs (see test_tool_approvals.py)."""
-import asyncio
 import hashlib
 import hmac
 import json

@@ -7,6 +7,7 @@ client, ambient proxy, cookies, netrc, Authorization or Referer follows redirect
 
 import asyncio
 from dataclasses import dataclass
+import functools
 from html.parser import HTMLParser
 import socket
 import ssl
@@ -16,6 +17,13 @@ import httpx
 
 from agentforge.security.policies import PublicURL, validate_public_url, validate_public_url_syntax
 from agentforge.subagents.scope import ScopeDenied
+
+
+@functools.lru_cache(maxsize=1)
+def _tls() -> ssl.SSLContext:
+    """One verifying context on the system trust store for every fetch (building one per fetch cost ~25ms of CPU on the event loop).
+    Shared read-only: verification still binds to each request's own sni_hostname."""
+    return ssl.create_default_context()
 
 
 class FetchFailure(ValueError):
@@ -148,7 +156,7 @@ class SafeWebFetcher:
             headers={"Host": public.hostname, "User-Agent": "AgentForgeResearch/0.1",
                      "Accept": "text/html,text/plain;q=0.9", "Accept-Encoding": "identity"},
             extensions={"sni_hostname": public.hostname})
-        transport = httpx.AsyncHTTPTransport(verify=ssl.create_default_context(), retries=0,
+        transport = httpx.AsyncHTTPTransport(verify=_tls(), retries=0,
                                              trust_env=False, limits=httpx.Limits(max_connections=1, max_keepalive_connections=0))
         async with httpx.AsyncClient(transport=transport, trust_env=False,
                                      timeout=self.timeout_sec, follow_redirects=False) as client:

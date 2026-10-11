@@ -1,4 +1,5 @@
 """Observed wrappers: every tool call that starts also finishes on the timeline, even when it is rejected."""
+import inspect
 from contextlib import contextmanager
 from decimal import Decimal
 from types import SimpleNamespace as NS
@@ -183,3 +184,25 @@ class ObservedModelTests(IsolatedAsyncioTestCase):
                 return ModelResponse({"role": "assistant", "content": "done"}, ModelUsage(1, 1, Decimal(0)), "m", "stop")
         await ObservedModel(Inner(), telemetry, store).complete([], [], on_retry=lambda: retries.append(True))
         self.assertEqual(retries, [True])
+
+    async def test_tool_call_drafts_reach_a_model_that_streams_them_and_only_that_one(self):
+        # The child runtime offers `on_tool` only when the model's `complete` takes it, and this wrapper always sits in
+        # between in production: without the pass-through a call would never be shown while it is being written.
+        events, store, telemetry = harness()
+        drafts, seen = [], []
+        class Streaming:
+            model_id = "m"
+            async def complete(self, messages, tools, on_tool=None):
+                on_tool(0, "call_1", "write_file", '{"pa')
+                return ModelResponse({"role": "assistant", "content": "x"}, ModelUsage(1, 1, Decimal(0)), "m", "stop")
+        class Plain:
+            model_id = "m"
+            async def complete(self, messages, tools, **kwargs):
+                seen.append(kwargs)
+                return ModelResponse({"role": "assistant", "content": "x"}, ModelUsage(1, 1, Decimal(0)), "m", "stop")
+        observed = ObservedModel(Streaming(), telemetry, store)
+        self.assertIn("on_tool", inspect.signature(observed.complete).parameters)
+        await observed.complete([], [], on_tool=lambda *draft: drafts.append(draft))
+        self.assertEqual(drafts, [(0, "call_1", "write_file", '{"pa')])
+        await ObservedModel(Plain(), telemetry, store).complete([], [], on_tool=lambda *draft: None)
+        self.assertEqual(seen, [{}])

@@ -21,12 +21,12 @@ from sqlalchemy.orm import sessionmaker
 
 from agentforge.database.delivery import ConversationDelivery, DeliveryCommit
 from agentforge.database.models import Project, User
-from agentforge.database.sessions import Conversation, ConversationChange, ConversationMessage, SessionTurn, TurnExecution
+from agentforge.database.sessions import Conversation, ConversationMessage, SessionTurn, TurnExecution
 from agentforge.delivery import workspace as ws
 from agentforge.delivery.service import DeliveryError, DeliveryService
 from agentforge.integrations.github_client import GitHubError
 
-from delivery_fakes import OWNER_REPO, FakeGitHub, FakeProvider, LocalWorkspace, git, settings
+from delivery_fakes import OWNER_REPO, FakeGitHub, FakeProvider, LocalWorkspace, settings
 
 URL = os.environ.get("AGENTFORGE_TEST_DATABASE_URL")
 FILES = {"a.py": b"one\ntwo\n", "b.py": b"keep\n"}

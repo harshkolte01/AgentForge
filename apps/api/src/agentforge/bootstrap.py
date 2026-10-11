@@ -95,7 +95,7 @@ def compose_runtime(settings, sessions, telemetry, store) -> Runtime:
     catalog = ToolCatalog()
     for tool in base_catalog.available(DESCRIPTIONS):
         catalog.register(tool.name, observed_tool(tool, telemetry, store),
-            max_cost_usd=tool.max_cost_usd, timeout_sec=tool.timeout_sec)
+            max_cost_usd=tool.max_cost_usd, timeout_sec=tool.timeout_sec, preview=tool.preview)
     skills = ()
     if conversation_task and settings.skills_enabled:
         # The skills this person has switched on (see skills/service.py). Their absence must not stop a conversation.

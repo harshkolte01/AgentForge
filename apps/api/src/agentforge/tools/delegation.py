@@ -8,7 +8,7 @@ from agentforge.contracts.subagent import SpawnRequest
 from agentforge.subagents.budget import BudgetExceeded
 from agentforge.subagents.registry import AGENT_KEY, AGENT_VERSION
 from agentforge.subagents.scope import ScopeDenied
-from .catalog import EFFECT_TOOLS
+from .catalog import EFFECT_TOOLS, ToolUnavailable
 from .contracts import DelegateTaskArgs, ToolOutcome
 from .errors import ToolError
 
@@ -55,7 +55,9 @@ def delegated_run_id(operation_key: str):
     return uuid5(NAMESPACE_URL, f"agentforge:delegation:{operation_key}")
 
 
-def delegation_context(execution, mode):
+def delegation_context(execution, mode, has_effects=lambda name: name in EFFECT_TOOLS):
+    """The child's grant ceiling. `has_effects(name)` says whether a tool changes something (the catalog's own answer,
+    which covers plugin tools too); a research child is left only the tools that do not."""
     if execution.task.depth or execution.task.parent_run_id is not None:
         raise ScopeDenied("subagents cannot delegate")
     permissions = execution.scope.permissions
@@ -64,13 +66,19 @@ def delegation_context(execution, mode):
     limits = {"max_steps": 40, "max_tool_calls": 80, "max_wall_time_sec": 600, "max_llm_cost_usd": 5.0}
     budget = Budget.model_validate({name: min(value, getattr(execution.scope.budget, name)) for name, value in limits.items()})
     return replace(execution.task, depth=1, parent_run_id=execution.agent_run_id,
-        parent_tools=tuple(name for name in execution.scope.allowed_tools if mode != "research" or name not in EFFECT_TOOLS),
+        parent_tools=tuple(name for name in execution.scope.allowed_tools if mode != "research" or not has_effects(name)),
         parent_permissions=permissions, parent_budget=budget)
 
 
 def register_delegation(catalog, service):
+    def has_effects(name):
+        try:
+            return catalog.get(name).has_effects
+        except ToolUnavailable:
+            return name in EFFECT_TOOLS  # not registered for this run, so never offered either way
+
     async def delegate(args: DelegateTaskArgs, execution):
-        ctx = delegation_context(execution, args.mode)
+        ctx = delegation_context(execution, args.mode, has_effects)
         run_id = delegated_run_id(execution.operation_key)
         stream = DelegatedStream(service.lifecycle, run_id, execution.agent_run_id)
         try:

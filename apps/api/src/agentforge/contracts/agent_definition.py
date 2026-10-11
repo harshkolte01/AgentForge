@@ -85,7 +85,7 @@ TOOL_CAPABILITIES: dict[str, tuple[str, ...]] = {
 class AgentDefinition(StrictContract):
     name: str = Field(min_length=3, max_length=64, pattern=r"^[a-z][a-z0-9-]+$")
     description: str = Field(min_length=10, max_length=400)
-    version: int = Field(ge=1)
+    version: int = Field(ge=1, le=2_147_483_647)  # an integer column: a larger value is a 422, not a database error
     system_prompt: str = Field(min_length=30, max_length=10000)
     allowed_tools: Annotated[tuple[ToolName, ...], Field(strict=False, min_length=1, max_length=40)]
     permissions: Permissions

@@ -211,12 +211,24 @@ def register_sandbox_shell(catalog, sandbox: ConversationSandbox, *, delivery=No
                             "Check its effects (files, processes) before running it again.") from None
         return ok(exit_code=outcome.exit_code, output=outcome.output, timed_out=outcome.timed_out, truncated=outcome.truncated)
 
+    async def read_file(workspace: Workspace, path: str, missing: str) -> str:
+        """The file's text. Only an answer that the file is not there (or is not a file) is FILE_NOT_FOUND: a sandbox that
+        timed out or failed says nothing about the file, and reading it as "missing" could lead the model to overwrite it."""
+        from e2b import FileNotFoundException, InvalidArgumentException
+        try:
+            return await workspace.read_text(path)
+        except asyncio.CancelledError:
+            raise
+        except (FileNotFoundException, InvalidArgumentException, FileNotFoundError, IsADirectoryError, UnicodeDecodeError):
+            raise ToolError("FILE_NOT_FOUND", missing) from None
+        except Exception:
+            sandbox.forget()
+            raise ToolError("SANDBOX_UNAVAILABLE", f"The sandbox did not answer, so {path} could not be read and nothing was changed. "
+                            "Try again; it reconnects on the next call.") from None
+
     async def read(args, execution):
         workspace = await opened(execution)
-        try:
-            text = await workspace.read_text(args.path)
-        except Exception:
-            raise ToolError("FILE_NOT_FOUND", f"{args.path} does not exist or is not a text file. Use ls or find to see what is there.") from None
+        text = await read_file(workspace, args.path, f"{args.path} does not exist or is not a text file. Use ls or find to see what is there.")
         lines = text.splitlines()
         if args.offset > max(1, len(lines)):
             raise ToolError("INVALID_RANGE", f"{args.path} has {len(lines)} lines; offset {args.offset} is past the end.")
@@ -252,10 +264,7 @@ def register_sandbox_shell(catalog, sandbox: ConversationSandbox, *, delivery=No
 
     async def edit(args, execution):
         workspace = await opened(execution)
-        try:
-            text = await workspace.read_text(args.path)
-        except Exception:
-            raise ToolError("FILE_NOT_FOUND", f"{args.path} does not exist or is not a text file.") from None
+        text = await read_file(workspace, args.path, f"{args.path} does not exist or is not a text file.")
         count = text.count(args.old_string)
         if count == 0:
             raise ToolError("EDIT_NO_MATCH", "old_string was not found. Read the file again and copy the text exactly, including whitespace.")
