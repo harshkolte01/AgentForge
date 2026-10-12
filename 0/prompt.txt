@@ -1,0 +1,7 @@
+<image name=[Image #1] path="/var/folders/rg/8014vzz55510kyfwgr810wjm0000gn/T/codex-clipboard-oGMkuD.png">
+
+</image>
+
+[Image #1] here we need to shows as an actual selected repo when ever user started conversation right not nin new chat right so pls deply think about and do it properly for me and make it perfect for me pls.
+
+as design we can build it - "repo name/conversation title right so do it properly amnd do not add header do it premium and compact and minimal and do not broke anything else okay so pls review and do everything properly for me and make it ful production ready and perfect.\
