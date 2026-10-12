@@ -18,10 +18,10 @@ import httpx
 
 from agentforge.integrations.tls import outbound_tls
 
-MAX_COMPRESSED_BYTES = 10_000_000
-MAX_ARCHIVE_BYTES = 30_000_000
-MAX_FILE_BYTES = 1_000_000
-MAX_FILES = 2_000
+# A repository has no limit on its number of files, the size of one file or its size in total. This is the one safety ceiling:
+# the whole snapshot is held in this server's memory (and then tarred), so a decompression bomb (a repository of a few MB that
+# unpacks to many GB) must not be able to take every other conversation down with it. It is far beyond any source tree.
+MAX_SNAPSHOT_BYTES = 1024 ** 3
 _REPO = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9_.-]{1,100}\Z")
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 
@@ -95,14 +95,12 @@ def skip_reason(path: str) -> str | None:
 
 
 def checked_workspace(files: dict[str, bytes]) -> dict[str, bytes]:
-    """The files as a validated workspace, or a GitHubError saying which limit the repository is over."""
+    """The files as a validated workspace, or a GitHubError when their paths cannot form one."""
     from agentforge.sandbox.workspace import validate_workspace
     try:
         return validate_workspace(files)
-    except ValueError as error:
-        limit = {"workspace_file_limit": "github_archive_file_count_limit",
-                 "workspace_byte_limit": "github_archive_decompressed_limit"}
-        raise GitHubError(limit.get(str(error), "github_archive_workspace_invalid")) from None
+    except ValueError:
+        raise GitHubError("github_archive_workspace_invalid") from None
 
 
 def is_transient(error: GitHubError) -> bool:
@@ -110,29 +108,38 @@ def is_transient(error: GitHubError) -> bool:
     return str(error) in {"github_rate_limited", "github_read_unavailable", "github_unavailable"}
 
 
+class _Counted:
+    """The unpacked tar stream, failing once it is longer than MAX_SNAPSHOT_BYTES (see there)."""
+
+    def __init__(self, source) -> None:
+        self.source, self.total = source, 0
+
+    def read(self, size: int = -1) -> bytes:
+        data = self.source.read(size)
+        self.total += len(data)
+        if self.total > MAX_SNAPSHOT_BYTES:
+            raise GitHubError("github_archive_decompressed_limit")
+        return data
+
+
 def read_archive(compressed: bytes) -> tuple[dict[str, bytes], list[tuple[str, str]]]:
     """The regular files of a GitHub source archive and the (path, reason) of each one left out.
 
-    Left out, not fatal: secrets, links, special files, unsafe names, files over MAX_FILE_BYTES and names that differ only by
-    letter case. Fatal: an archive that is malformed, empty, or over a size or count limit as a whole.
+    Left out, not fatal: secrets, links, special files, unsafe names and names that differ only by letter case. Fatal: an
+    archive that is malformed or empty, or one that unpacks past MAX_SNAPSHOT_BYTES. The archive is read as a stream, so
+    only the files that are kept are held in memory next to the compressed bytes.
     """
-    if len(compressed) > MAX_COMPRESSED_BYTES:
+    if len(compressed) > MAX_SNAPSHOT_BYTES:
         raise GitHubError("github_archive_compressed_limit")
     try:
-        with gzip.GzipFile(fileobj=io.BytesIO(compressed)) as stream:
-            archive = stream.read(MAX_ARCHIVE_BYTES + 1)
-        if len(archive) > MAX_ARCHIVE_BYTES:
-            raise GitHubError("github_archive_decompressed_limit")
         files: dict[str, bytes] = {}
         skipped: list[tuple[str, str]] = []
         root: str | None = None
         seen: set[str] = set()
         folded: set[str] = set()
-        total_bytes = 0
-        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
-            for count, member in enumerate(tar, start=1):
-                if count > MAX_FILES:
-                    raise GitHubError("github_archive_file_count_limit")
+        with gzip.GzipFile(fileobj=io.BytesIO(compressed)) as stream, \
+                tarfile.open(fileobj=_Counted(stream), mode="r|") as tar:
+            for member in tar:
                 name = member.name.rstrip("/") if member.isdir() else member.name
                 parts = name.split("/")
                 if root is None:
@@ -153,20 +160,17 @@ def read_archive(compressed: bytes) -> tuple[dict[str, bytes], list[tuple[str, s
                     reason = "special"
                 else:
                     reason = skip_reason(path)
-                    if reason is None and (member.size < 0 or member.size > MAX_FILE_BYTES):
-                        reason = "too_large"
-                    elif reason is None and path.casefold() in folded:
+                    if reason is None and path.casefold() in folded:
                         reason = "case_clash"
                 if reason:
                     skipped.append((path, reason))
                     continue
-                total_bytes += member.size
-                if total_bytes > MAX_ARCHIVE_BYTES:
-                    raise GitHubError("github_archive_decompressed_limit")
+                if member.size < 0:
+                    raise GitHubError("github_archive_invalid")
                 extracted = tar.extractfile(member)
                 if extracted is None:
                     raise GitHubError("github_archive_invalid")
-                data = extracted.read(MAX_FILE_BYTES + 1)
+                data = extracted.read(member.size)
                 if len(data) != member.size:
                     raise GitHubError("github_archive_invalid")
                 files[path] = data
@@ -287,7 +291,8 @@ class GitHubClient:
             return {"number": issue_number, "title": title, "body": body, "state": state,
                     "url": f"https://github.com/{repo_id}/issues/{issue_number}"}
 
-    @_deadline(90)
+    # Unpacking a large repository takes minutes of CPU, so the time allowed is generous and the work runs off the event loop.
+    @_deadline(600)
     async def snapshot(self, repo_id: str, ref: str) -> RepositorySnapshot:
         if not _SHA.fullmatch(ref):
             raise GitHubError("github_immutable_commit_required")
@@ -296,6 +301,6 @@ class GitHubClient:
             raise GitHubError("github_commit_mismatch")
         async with self._client() as client:
             archive = await self._read(client,
-                f"https://codeload.github.com/{resolved.repo_id}/tar.gz/{resolved.commit_sha}", MAX_COMPRESSED_BYTES)
-        files, skipped = read_archive(archive)
+                f"https://codeload.github.com/{resolved.repo_id}/tar.gz/{resolved.commit_sha}", MAX_SNAPSHOT_BYTES)
+        files, skipped = await asyncio.to_thread(read_archive, archive)
         return RepositorySnapshot(resolved.repo_id, resolved.commit_sha, files, skipped=tuple(skipped))

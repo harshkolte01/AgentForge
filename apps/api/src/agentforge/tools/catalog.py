@@ -161,7 +161,7 @@ ERROR_GUIDANCE = {
                             "if the sandbox keeps failing, tell the person.",
     "REPOSITORY_UNAVAILABLE": "The selected repository could not be loaded into the sandbox. Tell the person; work without it only if that makes sense.",
     "REPOSITORY_LOAD_FAILED": "The selected repository could not be unpacked in the sandbox. Tell the person.",
-    "REPOSITORY_TOO_LARGE": "The selected repository is over the size limit for the workspace. Do not retry; tell the person.",
+    "REPOSITORY_TOO_LARGE": "The selected repository is larger than the workspace can load (the server's 1 GB safety ceiling, or more files than GitHub can list at once). Do not retry; tell the person.",
     "NO_REPOSITORY": "There is no checkout of a selected repository to compare against. Tell the person a repository must be selected first.",
     "NOTHING_TO_COMMIT": "Nothing in the workspace differs from what is already published. Make the change first, or tell the person there is nothing new to push.",
     "UNSUPPORTED_CHANGE": "That kind of change cannot be sent to GitHub from here. Leave it out and tell the person.",

@@ -39,11 +39,11 @@ class ArchiveTests(unittest.TestCase):
     def test_files_that_cannot_be_loaded_are_skipped_and_the_rest_of_the_repository_still_loads(self):
         cases = {"../outside": "unsafe_name", "link": "symlink", "hard": "symlink", "fifo": "special", ".git/config": "sensitive",
                  ".env": "sensitive", ".env.local": "sensitive", ".ssh/config": "sensitive", "a\\b": "unsafe_name",
-                 "certs/server.key": "sensitive", "src/credentials/token.py": "sensitive", "big.bin": "too_large"}
+                 "certs/server.key": "sensitive", "src/credentials/token.py": "sensitive"}
         kinds = {"link": tarfile.SYMTYPE, "hard": tarfile.LNKTYPE, "fifo": tarfile.FIFOTYPE}
         entries = [("root/README.md", b"hi", tarfile.REGTYPE), ("root/.env.example", b"KEY=\n", tarfile.REGTYPE),
                    ("root/src/app.py", b"print(1)\n", tarfile.REGTYPE)]
-        entries += [("root/" + name, b"x" * 1_000_001 if name == "big.bin" else b"bad", kinds.get(name, tarfile.REGTYPE)) for name in cases]
+        entries += [("root/" + name, b"bad", kinds.get(name, tarfile.REGTYPE)) for name in cases]
         files, skipped = read_archive(archive(entries))
         self.assertEqual(set(files), {"README.md", ".env.example", "src/app.py"})  # a template env file is not a secret
         self.assertEqual(dict(skipped), cases)
@@ -60,17 +60,26 @@ class ArchiveTests(unittest.TestCase):
         with self.assertRaisesRegex(GitHubError, "duplicate"):
             unpack_archive(archive([("root/a", b"1", tarfile.REGTYPE), ("root/a", b"2", tarfile.REGTYPE)]))
 
-    def test_a_repository_over_the_total_size_is_refused_with_a_size_code_not_a_generic_one(self):
-        with patch("agentforge.sandbox.workspace.MAX_WORKSPACE_BYTES", 10), self.assertRaisesRegex(GitHubError, "decompressed_limit"):
-            unpack_archive(archive([("root/a", b"x" * 20, tarfile.REGTYPE)]))
+    def test_neither_the_number_of_files_nor_their_size_is_limited(self):
+        entries = [(f"root/src/file{index}.py", b"x" * 10, tarfile.REGTYPE) for index in range(2_500)]
+        entries.append(("root/assets/movie.mp4", b"\x00" * 12_000_000, tarfile.REGTYPE))  # one file well over 10 MB
+        files, skipped = read_archive(archive(entries))
+        self.assertEqual(len(files), 2_501)
+        self.assertEqual(len(files["assets/movie.mp4"]), 12_000_000)
+        self.assertEqual(skipped, [])
 
-    def test_collisions_and_limits_rejected(self):
+    def test_an_archive_that_unpacks_past_the_safety_ceiling_is_refused_with_a_size_code(self):
+        with patch("agentforge.integrations.github_client.MAX_SNAPSHOT_BYTES", 5_000):
+            with self.assertRaisesRegex(GitHubError, "decompressed_limit"):
+                unpack_archive(archive([("root/a", b"\0" * 20_000, tarfile.REGTYPE)]))  # a few dozen bytes compressed
+            with self.assertRaisesRegex(GitHubError, "compressed_limit"):
+                unpack_archive(b"\x1f\x8b" + bytes(6_000))
+
+    def test_collisions_rejected(self):
         with self.assertRaises(GitHubError):
             unpack_archive(archive([("root/a", b"1", tarfile.REGTYPE), ("root/a/b", b"2", tarfile.REGTYPE)]))
-        with patch("agentforge.integrations.github_client.MAX_ARCHIVE_BYTES", 1000), self.assertRaises(GitHubError):
+        with self.assertRaisesRegex(GitHubError, "archive_invalid"):
             unpack_archive(gzip.compress(b"x" * 1001))
-        with patch("agentforge.integrations.github_client.MAX_FILES", 1), self.assertRaises(GitHubError):
-            unpack_archive(archive([("root/a", b"1", tarfile.REGTYPE), ("root/b", b"2", tarfile.REGTYPE)]))
 
 
 class PublicClientTests(unittest.IsolatedAsyncioTestCase):

@@ -30,18 +30,17 @@ def main() -> None:
     if forge.pw_uid != 10001 or forge.pw_gid != 10001:
         raise RuntimeError("template_user_invalid")
     source = pathlib.Path("/tmp/agentforge-import.json")
-    if source.is_symlink() or source.stat().st_size > 15_000_000:
+    if source.is_symlink():
         raise ValueError("invalid_manifest")
     manifest = json.loads(source.read_bytes())
     if set(manifest) != {"version", "revision", "profile_id", "files"} or manifest["version"] != 1:
         raise ValueError("invalid_manifest")
     encoded = manifest["files"]
-    if not isinstance(encoded, dict) or len(encoded) > 2000:
+    if not isinstance(encoded, dict):
         raise ValueError("invalid_manifest")
     root = pathlib.Path("/workspace/repo")
     root.mkdir(parents=True, exist_ok=False, mode=0o755)
     digest = hashlib.sha256(b"agentforge-workspace-v1\0")
-    total = 0
     for path, value in sorted(encoded.items()):
         parts = path.split("/")
         if (not path or path.startswith("/") or "\\" in path
@@ -49,9 +48,6 @@ def main() -> None:
                 or any(ord(c) < 32 for c in path)):
             raise ValueError("invalid_workspace_path")
         data = base64.b64decode(value, validate=True)
-        total += len(data)
-        if len(data) > 1_000_000 or total > 10_000_000:
-            raise ValueError("workspace_limit")
         name = path.encode()
         digest.update(len(name).to_bytes(4, "big"))
         digest.update(name)

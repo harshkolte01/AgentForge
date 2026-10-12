@@ -142,6 +142,17 @@ class SnapshotTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(state["peak"], 1)
         self.assertLessEqual(state["peak"], SNAPSHOT_CONCURRENCY)
 
+    async def test_a_repository_of_thousands_of_files_loads_in_full(self):
+        files = {f"src/file{index:04}.py": f"{index}".encode() for index in range(2_300)}
+        result, state = await self.snapshot(files)
+        self.assertEqual(result.files, files)
+        self.assertEqual(state["blobs"], 2_300)
+
+    async def test_a_file_larger_than_the_usual_answer_still_loads(self):
+        data = bytes(range(256)) * 30_000  # about 7.7 MB, more than the 6 MB an ordinary API answer may take once encoded
+        result, _ = await self.snapshot({"data.bin": data})
+        self.assertEqual(result.files, {"data.bin": data})
+
     async def test_executable_files_keep_their_mode(self):
         files = {"run.sh": b"#!/bin/sh\necho hi\n", "README.md": b"hi\n"}
         result, _ = await self.snapshot(files, executable={"run.sh"})
@@ -159,7 +170,7 @@ class SnapshotTests(unittest.IsolatedAsyncioTestCase):
                 {"path": "keys/server.pem", "type": "blob", "mode": "100644", "size": 1, "sha": SHA},
                 {"path": "link", "type": "blob", "mode": "120000", "size": 1, "sha": SHA},
                 {"path": "vendor/lib", "type": "commit", "mode": "160000", "sha": SHA},
-                {"path": "big.bin", "type": "blob", "mode": "100644", "size": 1_000_001, "sha": SHA},
+                {"path": "big.bin", "type": "blob", "mode": "100644", "size": 5_000_000, "sha": git_sha(b"x")},
                 {"path": "Ok.txt", "type": "blob", "mode": "100644", "size": 1, "sha": SHA},
                 {"path": "src", "type": "tree", "mode": "040000", "sha": SHA}]
 
@@ -175,10 +186,10 @@ class SnapshotTests(unittest.IsolatedAsyncioTestCase):
             return app, {"id": 1, "full_name": "owner/repo"}, {"id": 1}
         github.authorize = authorize
         result = await github.snapshot("owner/repo", SHA)
-        self.assertEqual(list(result.files), ["ok.txt"])
+        self.assertEqual(sorted(result.files), ["big.bin", "ok.txt"])
         self.assertEqual(dict(result.skipped), {".env": "sensitive", "keys/server.pem": "sensitive", "link": "symlink",
-            "vendor/lib": "submodule", "big.bin": "too_large", "Ok.txt": "case_clash"})
-        self.assertEqual(len(fetched), 1)  # only the one file that is kept was downloaded
+            "vendor/lib": "submodule", "Ok.txt": "case_clash"})
+        self.assertEqual(len(fetched), 2)  # only the files that are kept were downloaded; a big one is kept like any other
 
     async def test_requests_share_one_client_and_keep_the_token(self):
         seen = []

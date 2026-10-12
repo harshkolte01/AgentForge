@@ -121,9 +121,10 @@ credentials; GitHub writes happen in the backend.
   the repository: anything that may hold secrets (`.env` and `.env.*` except `.env.example`/`.sample`/`.template`, keys
   and certificates such as `*.pem`/`*.key`/`*.p12`/`*.pfx`/`*.keystore`, `.git`, `.ssh`, `.aws`, `.npmrc`, `.netrc`,
   `id_rsa`, or any file or folder named `credentials`), symbolic links, submodules, special files, names the workspace
-  cannot hold, files over 1 MB and names that differ only by letter case. The agent is told which ones in a `notice` with
-  the first result. Skipped files are not in the baseline, so publishing never deletes them. A repository over the whole-size
-  limits (2,000 files, 10 MB) still fails, as `REPOSITORY_TOO_LARGE`; other repository failures are
+  cannot hold and names that differ only by letter case. There is no limit on the number of files or on the size of a file. The agent is told which ones in a `notice` with
+  the first result. Skipped files are not in the baseline, so publishing never deletes them. Only a repository that unpacks past the
+  server's 1 GB safety ceiling (`MAX_SNAPSHOT_BYTES` in `integrations/github_client.py`, there so a decompression bomb cannot
+  exhaust the API's memory) or one GitHub cannot list whole (about 100,000 files) fails, as `REPOSITORY_TOO_LARGE`; other repository failures are
   `REPOSITORY_UNAVAILABLE` with a plain reason, and one that cannot change (not found, too large) is not downloaded again
   for every call of the same run.
 - **Replaced VMs**: when the conversation's earlier VM no longer exists, a new one is created and the next tool result

@@ -18,9 +18,15 @@ class RepositoryErrorTests(unittest.TestCase):
                 self.assertNotIn("github_", error.detail)  # internal codes never reach the model
 
     def test_size_limits_have_their_own_code_and_guidance(self):
-        for code in ("github_archive_compressed_limit", "github_archive_decompressed_limit", "github_archive_file_count_limit"):
+        for code in ("github_archive_compressed_limit", "github_archive_decompressed_limit", "github_archive_file_count_limit",
+                     "github_response_size_limit"):
             self.assertEqual(repository_error(GitHubError(code)).code, "REPOSITORY_TOO_LARGE")
         self.assertIn("Do not retry", error_guidance("REPOSITORY_TOO_LARGE"))
+
+    def test_the_too_large_message_names_no_file_or_megabyte_limit(self):
+        detail = repository_error(GitHubError("github_archive_decompressed_limit")).detail
+        self.assertNotIn("2,000", detail)
+        self.assertNotIn("10 MB", detail)
 
     def test_only_a_busy_or_unreachable_github_is_worth_retrying(self):
         self.assertTrue(all(is_transient(GitHubError(c)) for c in ("github_rate_limited", "github_read_unavailable")))
@@ -38,10 +44,10 @@ class SkippedFilesTests(unittest.TestCase):
         self.assertIsNone(describe_skipped(()))
 
     def test_each_file_is_named_with_its_reason(self):
-        note = describe_skipped([(".env", "sensitive"), ("a.bin", "too_large"), ("link", "symlink")])
+        note = describe_skipped([(".env", "sensitive"), ("vendor/lib", "submodule"), ("link", "symlink")])
         self.assertIn("3 file(s)", note)
         self.assertIn(".env (may hold secrets)", note)
-        self.assertIn("a.bin (larger than 1 MB)", note)
+        self.assertIn("vendor/lib (git submodule)", note)
         self.assertIn("link (symbolic link)", note)
 
     def test_a_file_name_from_the_repository_cannot_inject_lines_or_flood_the_note(self):

@@ -77,8 +77,9 @@ class WorkspaceHelperTests(unittest.TestCase):
             entry.size = 2
             tar.addfile(entry, io.BytesIO(b"\x00\xff"))
         self.assertEqual(import_archive(archive.getvalue()), {"img.png": b"\x00\xff"})
-        with self.assertRaises(ValueError):
-            validate_workspace({"huge": b"x" * 1_000_001})
+        # Loading a repository has no limit on one file's size or on the number of files.
+        self.assertEqual(len(validate_workspace({"huge": b"x" * 1_000_001})["huge"]), 1_000_001)
+        self.assertEqual(len(validate_workspace({f"f{n}": b"" for n in range(2_500)})), 2_500)
         with self.assertRaisesRegex(ValueError, "expansion"):
             import_archive(gzip.compress(b"\0" * 12_000_001))
 

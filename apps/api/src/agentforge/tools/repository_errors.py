@@ -2,18 +2,18 @@
 
 Codes and wording are written here, never taken from GitHub or from the repository, so nothing untrusted reaches the model.
 """
-from agentforge.integrations.github_client import MAX_FILE_BYTES, MAX_FILES, GitHubError
+from agentforge.integrations.github_client import MAX_SNAPSHOT_BYTES, GitHubError
 
 from .errors import ToolError
 
-_MB = 1_000_000
 # Shown at most this many at a time; the rest is a count.
 LISTED_SKIPPED = 20
 
 _NO_ACCESS = ("The repository or commit could not be read: it may be private, renamed or deleted, or the person's GitHub connection "
               "no longer gives access to it. Tell the person to check the repository and their connection in Settings.")
-_TOO_LARGE = (f"The repository is too large to load into the workspace (at most {MAX_FILES:,} files and 10 MB in total). "
-              "Tell the person; a smaller repository or a smaller commit is needed.")
+# Only the server's safety ceiling or GitHub's own listing limit (about 100,000 files) can say this: there is no limit on files or MB.
+_TOO_LARGE = (f"The repository is too large to load into the workspace (over {MAX_SNAPSHOT_BYTES // 1024 ** 3} GB in total, or too many "
+              "files for GitHub to list at once). Tell the person; a smaller repository or a smaller commit is needed.")
 _UNAVAILABLE = {
     "github_rate_limited": "GitHub is rate limiting requests right now. Tell the person to try again in a few minutes.",
     "github_read_unavailable": "GitHub did not answer in time. Try once more; if it fails again, tell the person.",
@@ -27,10 +27,10 @@ _UNAVAILABLE = {
     "github_reauthorization_required": "The person's GitHub connection has ended. Tell them to reconnect GitHub in Settings.",
     "github_authorization_failed": "The person's GitHub connection has ended. Tell them to reconnect GitHub in Settings.",
     "github_app_user_token_required": "The person's GitHub connection has ended. Tell them to reconnect GitHub in Settings.",
-    "github_repository_empty": "The repository has no files that can be loaded (every file in it is left out as a secret, link or oversized file).",
+    "github_repository_empty": "The repository has no files that can be loaded (every file in it is left out as a secret, link or file that cannot be handled).",
 }
 _LIMITS = {"github_archive_compressed_limit", "github_archive_decompressed_limit", "github_archive_file_count_limit",
-           "github_repository_discovery_limit"}
+           "github_repository_discovery_limit", "github_response_size_limit"}
 
 REASONS = {
     "sensitive": "may hold secrets",
@@ -38,7 +38,6 @@ REASONS = {
     "symlink": "symbolic link",
     "submodule": "git submodule",
     "special": "not a regular file",
-    "too_large": f"larger than {MAX_FILE_BYTES // _MB} MB",
     "case_clash": "same name as another file apart from letter case",
 }
 

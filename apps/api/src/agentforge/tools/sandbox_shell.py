@@ -34,8 +34,10 @@ MARKER = ".agentforge/repo"
 # Folders no search or listing should wander into.
 NOISE = ("node_modules", ".git", ".agentforge", "__pycache__", ".venv", "dist", "build")
 READ_CHARS = 12000
-# Starting a VM and loading a repository snapshot into it (download, upload, git init) can take minutes for a large repository.
-SETUP_SEC = 600
+# Time the first sandbox call may spend opening the VM and loading the repository, which has no size limit: reading it from GitHub
+# (up to 900 s), uploading it (UPLOAD_TIMEOUT_SEC) and unpacking it into git (LOAD_SEC), plus the VM itself.
+LOAD_SEC = 600
+SETUP_SEC = 900 + UPLOAD_TIMEOUT_SEC + LOAD_SEC + 300
 
 
 def _tarball(files: dict[str, bytes], modes: dict[str, int] | None = None) -> bytes:
@@ -170,7 +172,7 @@ class ConversationSandbox:
                   "printf '.agentforge/\\n' >> .git/info/exclude; git add -A; git commit -q -m base --allow-empty; "
                   f"git tag -f {BASE_TAG} >/dev/null; "
                   f"printf '%s' {shlex.quote(repository['repo_id'] + '@' + snapshot.commit_sha)} > {MARKER}")
-        outcome = await workspace.run(script, timeout_sec=300, cwd="/")
+        outcome = await workspace.run(script, timeout_sec=LOAD_SEC, cwd="/")
         if outcome.exit_code != 0:
             log.warning("loading the repository into the sandbox failed (exit %s): %s", outcome.exit_code, outcome.output[-1000:])
             raise SandboxUnavailable("REPOSITORY_LOAD_FAILED")

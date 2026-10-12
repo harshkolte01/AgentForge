@@ -10,6 +10,8 @@ import unicodedata
 from collections.abc import Mapping
 from pathlib import PurePosixPath
 
+# Bounds of `import_archive` and `build_diff` only (an uploaded archive is untrusted input, and neither has a production caller
+# any more). Loading a repository into a conversation's sandbox has no file-count or size limit: see `validate_workspace`.
 MAX_FILES = 2000
 MAX_FILE_BYTES = 1_000_000
 MAX_WORKSPACE_BYTES = 10_000_000
@@ -37,22 +39,17 @@ def validate_path(path: str) -> str:
 
 
 def validate_workspace(files: Mapping[str, bytes]) -> dict[str, bytes]:
-    if len(files) > MAX_FILES:
-        raise ValueError("workspace_file_limit")
+    """The files with safe, distinct paths. How many there are, and how big, is not limited here."""
     result: dict[str, bytes] = {}
     canonical: set[str] = set()
-    total = 0
     for path, data in files.items():
         validate_path(path)
-        if not isinstance(data, bytes) or len(data) > MAX_FILE_BYTES:
-            raise ValueError("workspace_file_limit")
+        if not isinstance(data, bytes):
+            raise ValueError("invalid_workspace_file")
         key = path.casefold()
         if key in canonical:
             raise ValueError("workspace_path_collision")
         canonical.add(key)
-        total += len(data)
-        if total > MAX_WORKSPACE_BYTES:
-            raise ValueError("workspace_byte_limit")
         result[path] = data
     # A file cannot also be a parent directory, including case aliases.
     for path in canonical:

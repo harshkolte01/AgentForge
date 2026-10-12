@@ -430,12 +430,12 @@ class ConversationSandboxTests(IsolatedAsyncioTestCase):
         self.assertEqual(caught.exception.code, "REPOSITORY_UNAVAILABLE")
 
     async def test_the_agent_is_told_which_files_were_left_out_of_the_repository(self):
-        skipped = (("config/.env", "sensitive"), ("assets/movie.mp4", "too_large"), ("keys/server.key", "sensitive"))
+        skipped = (("config/.env", "sensitive"), ("vendor/lib", "submodule"), ("keys/server.key", "sensitive"))
         github = NS(snapshot=AsyncMock(return_value=NS(commit_sha=SHA, files={"README.md": b"hi"}, skipped=skipped)))
         env = Env(repository=REPO, github=github)
         await env.conversation.workspace(env.task_id)
         notice = env.conversation.take_notice()
-        for path in ("config/.env", "assets/movie.mp4", "keys/server.key"):
+        for path in ("config/.env", "vendor/lib", "keys/server.key"):
             self.assertIn(path, notice)
         self.assertIn("may hold secrets", notice)
         self.assertIn("will not delete", notice)

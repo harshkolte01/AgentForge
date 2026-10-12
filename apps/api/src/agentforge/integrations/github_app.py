@@ -9,7 +9,7 @@ import re
 import time
 from urllib.parse import quote
 import httpx
-from agentforge.integrations.github_client import (GitHubClient, GitHubError, RepositorySnapshot,
+from agentforge.integrations.github_client import (GitHubClient, GitHubError, MAX_SNAPSHOT_BYTES, RepositorySnapshot,
     ResolvedRepository, validate_repo_id, _deadline)
 from agentforge.integrations.tls import outbound_tls
 
@@ -17,6 +17,10 @@ SHA = re.compile(r"[0-9a-f]{40}\Z")
 SNAPSHOT_CONCURRENCY = 8   # blobs fetched at once while loading a repository
 LISTING_CONCURRENCY = 6    # requests in flight at once while listing a user's repositories
 MAX_PAGES = 10             # pages of 100 read from any one listing
+MAX_RESPONSE_BYTES = 6_000_000
+# A file comes back base64-encoded inside JSON; a listing of a very large repository is a few MB more than the usual answer.
+BLOB_RESPONSE_BYTES = MAX_SNAPSHOT_BYTES * 4 // 3 + 65_536
+TREE_RESPONSE_BYTES = 32_000_000
 
 def valid_github_id(value):
     return type(value) is int and 0 < value <= 9223372036854775807
@@ -44,14 +48,15 @@ class GitHubAppClient:
         return httpx.AsyncClient(timeout=httpx.Timeout(20, connect=5), follow_redirects=False,
             trust_env=False, verify=outbound_tls(), transport=self.transport, headers=headers, **limits)
 
-    async def request(self, method, path, *, payload=None, allow_missing=False, http=None):
+    async def request(self, method, path, *, payload=None, allow_missing=False, http=None, max_bytes=MAX_RESPONSE_BYTES):
+        """`max_bytes` bounds the answer read; only a caller that expects a large one (a file, a whole listing) raises it."""
         if not path.startswith("/") or path.startswith("//"):
             raise GitHubError("github_invalid_endpoint")
         try:
             if http is not None:
-                return await self._send(http, method, path, payload, allow_missing)
+                return await self._send(http, method, path, payload, allow_missing, max_bytes)
             async with self.http() as client:
-                return await self._send(client, method, path, payload, allow_missing)
+                return await self._send(client, method, path, payload, allow_missing, max_bytes)
         except (httpx.HTTPError, asyncio.TimeoutError):
             # A caller's durable ledger treats write failures as ambiguous.
             raise GitHubError("github_unavailable") from None
@@ -59,7 +64,7 @@ class GitHubAppClient:
             raise GitHubError("github_response_invalid") from None
 
     @staticmethod
-    async def _send(client, method, path, payload, allow_missing):
+    async def _send(client, method, path, payload, allow_missing, max_bytes=MAX_RESPONSE_BYTES):
         async with client.stream(method, "https://api.github.com" + path, json=payload) as response:
             if allow_missing and response.status_code == 404:
                 return None
@@ -77,7 +82,7 @@ class GitHubAppClient:
             data = bytearray()
             async for chunk in response.aiter_bytes():
                 data.extend(chunk)
-                if len(data) > 6_000_000:
+                if len(data) > max_bytes:
                     raise GitHubError("github_response_size_limit")
             return json.loads(data) if data else {}
 
@@ -286,7 +291,8 @@ class AuthorizedGitHubClient:
         return {"number": issue_number, "title": title, "body": body, "state": state,
             "url": f"https://github.com/{repo['full_name']}/issues/{issue_number}"}
 
-    @_deadline(180)
+    # Every file is its own request, so a big repository takes minutes; the time allowed is generous.
+    @_deadline(900)
     async def snapshot(self, repo_id, ref):
         if not SHA.fullmatch(ref):
             raise GitHubError("github_immutable_commit_required")
@@ -294,12 +300,13 @@ class AuthorizedGitHubClient:
         canonical = validate_repo_id(repo["full_name"])
         # Git blobs avoid redirecting a private token to codeload, and preserve
         # private content entirely in bounded memory/database, never host checkout.
-        tree = await client.request("GET", f"/repos/{canonical}/git/trees/{ref}?recursive=1")
-        if tree.get("truncated") or not isinstance(tree.get("tree"), list) or len(tree["tree"]) > 2000:
+        tree = await client.request("GET", f"/repos/{canonical}/git/trees/{ref}?recursive=1", max_bytes=TREE_RESPONSE_BYTES)
+        # GitHub itself cuts a listing of more than about 100,000 entries or 7 MB: a repository that big cannot be listed whole.
+        if tree.get("truncated") or not isinstance(tree.get("tree"), list):
             raise GitHubError("github_archive_file_count_limit")
-        from agentforge.integrations.github_client import MAX_FILE_BYTES, skip_reason
+        from agentforge.integrations.github_client import skip_reason
         # Every entry is checked before anything is fetched. A file that cannot be loaded (a secret, a link, a submodule, an
-        # unsafe name, one over the size limit) is left out and reported; it never fails the rest of the repository.
+        # unsafe name) is left out and reported; it never fails the rest of the repository. Size and number of files are not limits.
         blobs, skipped, folded = [], [], set()
         for entry in tree["tree"]:
             path, kind, mode = entry.get("path", ""), entry.get("type"), entry.get("mode")
@@ -313,9 +320,7 @@ class AuthorizedGitHubClient:
                 reason = "symlink" if mode == "120000" else "special"
             else:
                 reason = skip_reason(path)
-                if reason is None and (entry.get("size") or 0) > MAX_FILE_BYTES:
-                    reason = "too_large"
-                elif reason is None and path.casefold() in folded:
+                if reason is None and path.casefold() in folded:
                     reason = "case_clash"
             if reason:
                 skipped.append((path, reason))
@@ -330,7 +335,7 @@ class AuthorizedGitHubClient:
         async def fetch(entry, http):
             nonlocal size
             async with gate:
-                blob = await client.request("GET", f"/repos/{canonical}/git/blobs/{entry['sha']}", http=http)
+                blob = await client.request("GET", f"/repos/{canonical}/git/blobs/{entry['sha']}", http=http, max_bytes=BLOB_RESPONSE_BYTES)
             try:
                 if blob.get("encoding") != "base64":
                     raise ValueError()
@@ -338,7 +343,7 @@ class AuthorizedGitHubClient:
             except (KeyError, ValueError, AttributeError):
                 raise GitHubError("github_response_invalid") from None
             size += len(data)
-            if len(data) > 1_000_000 or size > 30_000_000:
+            if size > MAX_SNAPSHOT_BYTES:  # the one safety ceiling, see github_client.MAX_SNAPSHOT_BYTES
                 raise GitHubError("github_archive_decompressed_limit")
             if hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest() != entry["sha"]:
                 raise GitHubError("github_blob_integrity_failure")

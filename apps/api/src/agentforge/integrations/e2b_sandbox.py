@@ -42,8 +42,8 @@ OPEN_RETRY_SEC = 1.0
 # Creating is retried only when the provider says it refused the request (no capacity, rate limit): nothing was allocated then.
 CREATE_ATTEMPTS = 3
 CREATE_RETRY_SEC = 2.0
-# Uploading a repository can take much longer than a small request.
-UPLOAD_TIMEOUT_SEC = 180
+# Uploading a repository (which has no size limit) can take much longer than a small request.
+UPLOAD_TIMEOUT_SEC = 600
 
 
 class SandboxUnavailable(RuntimeError):
