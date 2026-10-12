@@ -1,0 +1,5 @@
+<image name=[Image #1] path="/var/folders/rg/8014vzz55510kyfwgr810wjm0000gn/T/codex-clipboard-upUvYE.png">
+
+</image>
+
+[Image #1] make this / more premium and perfect and also manage the edge cases if user is not working in the repo mso we can mention as chat/ etc etc think logical and do it
