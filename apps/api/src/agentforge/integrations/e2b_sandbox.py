@@ -108,6 +108,13 @@ class CommandOutcome:
     output: str
     timed_out: bool
     truncated: bool
+    # Where the whole output was saved in the sandbox when `output` had to be cut, so the agent can read, grep or tail the
+    # part it needs instead of running the command again. None when nothing was cut, or the file could not be written.
+    output_file: str | None = None
+
+
+# Where a command's whole output is kept when the result had to be cut: a plain file the agent can read with its own tools.
+OUTPUT_DIR = "/tmp/agentforge-output"
 
 
 class _Collector:
@@ -229,8 +236,23 @@ class Workspace:
             err.add(f"\n[The command was stopped after {limit} seconds. Run long jobs in the background or pass a larger timeout_sec.]")
         stdout, stderr = out.text(), err.text()
         text = stdout + (("\n" if stdout and not stdout.endswith("\n") else "") + stderr if stderr else "")
-        text, truncated = bound_output(redact_output(text, secrets=(self.config.api_key,)))
-        return CommandOutcome(exit_code, text, timed_out, truncated)
+        whole = redact_output(text, secrets=(self.config.api_key,))
+        text, truncated = bound_output(whole)
+        output_file = await self._keep_output(whole) if truncated else None
+        return CommandOutcome(exit_code, text, timed_out, truncated, output_file)
+
+    async def _keep_output(self, text: str) -> str | None:
+        """Saves a command's whole (redacted) output in the sandbox and returns its path, or None when that fails: cutting the
+        result loses the middle, and the agent otherwise has to run the command again to see it."""
+        path = f"{OUTPUT_DIR}/{uuid.uuid4().hex[:12]}.log"
+        try:
+            await self.write(path, text)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.debug("could not save a command's output in the sandbox", exc_info=True)
+            return None
+        return path
 
     async def capture(self, command: str, *, timeout_sec: float = 120) -> tuple[int | None, str]:
         """Exact stdout of a trusted command, neither redacted nor shortened. For the backend's own use, never shown as is."""

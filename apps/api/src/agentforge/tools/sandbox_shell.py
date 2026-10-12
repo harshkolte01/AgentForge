@@ -316,7 +316,10 @@ def register_sandbox_shell(catalog, sandbox: ConversationSandbox, *, delivery=No
             sandbox.forget()
             raise ToolError("SANDBOX_DISCONNECTED", "The connection to the sandbox dropped, so the command may or may not have run. "
                             "Check its effects (files, processes) before running it again.") from None
-        return ok(exit_code=outcome.exit_code, output=outcome.output, timed_out=outcome.timed_out, truncated=outcome.truncated)
+        saved = getattr(outcome, "output_file", None)
+        return ok(exit_code=outcome.exit_code, output=outcome.output, timed_out=outcome.timed_out, truncated=outcome.truncated,
+                  # The whole output, when the shown one had to be cut: the agent reads the part it needs instead of rerunning.
+                  **({"output_file": saved} if saved else {}))
 
     async def read_file(workspace: Workspace, path: str, missing: str) -> str:
         """The file's text. Only an answer that the file is not there (or is not a file) is FILE_NOT_FOUND: a sandbox that

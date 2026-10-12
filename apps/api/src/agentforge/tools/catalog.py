@@ -84,9 +84,10 @@ DESCRIPTIONS = {
     "bash": (
         "Run a shell command with bash in the workspace, a Linux sandbox that keeps its files between messages of this conversation and has "
         "internet access, git, Python and Node. Use it to install dependencies, build, run tests, run scripts and inspect git state. Returns "
-        "the exit code and the output (the middle is cut when it is very long). A nonzero exit is a normal result to read, not a tool "
-        "failure. Do not start commands that wait for input or never end; raise timeout_sec for slow ones. The person may be asked to "
-        "approve each command first."),
+        "the exit code and the output. When the output is very long its middle is cut and the whole of it is saved to a file in the "
+        "sandbox named in output_file: read, grep or tail that file instead of running the command again. A nonzero exit is a normal "
+        "result to read, not a tool failure. Do not start commands that wait for input or never end; raise timeout_sec for slow ones. "
+        "The person may be asked to approve each command first."),
     "read": (
         "Read a text file from the workspace, with line numbers. Returns up to limit lines from offset; if next_offset is not null, call "
         "again with offset=next_offset. Read a file before you change it."),

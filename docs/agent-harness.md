@@ -115,6 +115,9 @@ credentials; GitHub writes happen in the backend.
   process; the output so far comes back with `timed_out`. If the connection is lost, or the person presses Stop, the
   backend ends the command's whole process group in the VM. The VM's lifetime is extended to cover a long command.
   While it runs, its output (both streams) is shown live, redacted, from the end (the saved result is unchanged).
+  A result shows at most about 12,000 characters of output (the start and the end); when it had to be cut, the whole
+  redacted output is also saved in the VM under `/tmp/agentforge-output/` and the result names the file (`output_file`),
+  so the agent reads, greps or tails the part it needs instead of running the command again.
 - **Connections**: reconnecting to an existing VM is retried after a transient failure; creating one is retried only when
   the provider refused it (no capacity or rate limit: `SANDBOX_BUSY` after three tries), never after an unknown failure (a
   failed create may still have allocated a VM). A rejected API key is `SANDBOX_AUTH_FAILED` and is not retried. A new VM
