@@ -197,7 +197,6 @@ as something to verify.
 | Delegated assignments | [docs/subagents.md](docs/subagents.md) |
 | GitHub App setup | [docs/github-app.md](docs/github-app.md) |
 | Every setting and its default | [docs/configuration.md](docs/configuration.md) |
-| Neatlogs tracing | [docs/neatlogs.md](docs/neatlogs.md) |
 | Sandbox usage and cost reporting | [docs/sandbox-usage.md](docs/sandbox-usage.md) |
 | E2B sandbox template | [infra/e2b/README.md](infra/e2b/README.md) |
 | Single-host deployment | [infra/deploy/README.md](infra/deploy/README.md) |
