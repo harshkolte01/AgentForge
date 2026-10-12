@@ -1,0 +1,1 @@
+git pull from origin main and restart our serveres but do not restart tunnel okay'
