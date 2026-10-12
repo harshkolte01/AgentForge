@@ -1,0 +1,44 @@
+rename .env example to .env and make it perfect for me 
+
+
+and add this all to .env 
+
+# Copy this file to .env at the repository root for local development.
+# apps/api/.env can override these values; process environment takes precedence.
+APP_ENV='development'
+APP_BASE_URL='http://localhost:3000'
+API_PUBLIC_BASE_URL='http://localhost:8000'
+# Comma-separated origins, for example http://localhost:3000,http://localhost:3001.
+ALLOWED_ORIGINS='http://localhost:3000'
+
+# Local development placeholders; match the PostgreSQL credentials you configure.
+DATABASE_URL='REDACTED'
+# Checkpoint connections use the native PostgreSQL URI, without SQLAlchemy's dialect suffix.
+LANGGRAPH_CHECKPOINT_DB_URL='REDACTED'
+COOKIE_DOMAIN=''
+SESSION_SECRET='REDACTED'
+ENCRYPTION_KEY='REDACTED'
+LLM_PROVIDER='openai'
+LLM_MODEL=''
+LLM_API_KEY=''
+TAVILY_API_KEY=''
+E2B_API_KEY=''
+REDACTED''
+GITHUB_APP_ID=''
+GITHUB_CLIENT_ID=''
+GITHUB_CLIENT_SECRET=''
+GITHUB_PRIVATE_KEY_BASE64=''
+GITHUB_WEBHOOK_SECRET=''
+GITHUB_OAUTH_CALLBACK_URL='http://localhost:8000/api/v1/auth/github/callback'
+ARTIFACT_STORAGE_BACKEND='local'
+ARTIFACT_STORAGE_PATH='./.local/artifacts'
+ARTIFACT_BUCKET=''
+TASK_DEFAULT_MAX_COST_USD='2.50'
+TASK_DEFAULT_MAX_WALL_TIME_SEC='900'
+MAX_SUBAGENT_DEPTH='1'
+MAX_PARALLEL_READ_ONLY_AGENTS='2'
+MAX_TASK_SPAWNS='8'
+ENABLE_BROWSER_AGENT='false'
+ENABLE_PARALLEL_SUBAGENTS='false'
+ENABLE_GITHUB_WRITES='false'
+NEATLOGS_CAPTURE_SENSITIVE_CONTENT='false'
