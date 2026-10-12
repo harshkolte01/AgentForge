@@ -1,0 +1,7 @@
+<environment_context>
+  <cwd>/Users/ashish/code/AgentForge</cwd>
+  <shell>zsh</shell>
+  <current_date>2026-10-10</current_date>
+  <timezone>Asia/Kolkata</timezone>
+  <filesystem><workspace_roots><root>/Users/ashish/code/AgentForge</root></workspace_roots><permission_profile type="managed"><file_system type="restricted"><entry access="read"><special>:root</special></entry><entry access="write"><path>/Users/ashish/code/AgentForge</path></entry><entry access="write"><special>:slash_tmp</special></entry><entry access="write"><special>:tmpdir</special></entry><entry access="read"><path>/Users/ashish/code/AgentForge/.git</path></entry><entry access="read"><path>/Users/ashish/code/AgentForge/.agents</path></entry><entry access="read"><path>/Users/ashish/code/AgentForge/.codex</path></entry><entry access="read"><path>/Users/ashish/code/AgentForge/.aws</path></entry></file_system></permission_profile></filesystem>
+</environment_context>
