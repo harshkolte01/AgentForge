@@ -1,0 +1,1 @@
+do it properly and use github and start tunnel of cloudflared so i can setup githubapp as well
