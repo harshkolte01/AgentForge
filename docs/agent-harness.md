@@ -94,7 +94,14 @@ tool is `UNKNOWN_REMOTE_OUTCOME`, which ends the run rather than risk repeating 
 | `COMMAND_TOO_LONG` | write the script to a file, then run the file |
 | `SANDBOX_DISCONNECTED` | the connection dropped mid-call: inspect the effect before repeating |
 | `DEFERRED` | not run: too many results for the window this turn |
-| `TOOL_TIMEOUT`, `TOOL_FAILED`, `SEARCH_PROVIDER_ERROR`, `FETCH_*` | retry once differently, or report the gap |
+| `TOOL_TIMEOUT`, `TOOL_FAILED`, `SEARCH_PROVIDER_ERROR` | retry once differently, or report the gap |
+| `FETCH_*` | the page refused or is unusable: use the search results already held (`read_research_source`) or answer; do not search for the same page again |
+| `REPEATED_FAILED_CALL` | the identical call already failed in a way that cannot change (an HTTP refusal, wrong content type, too large, an off-host redirect) and was not sent again |
+
+`fetch_webpage` opens a URL that came back from one of the task's searches, or one the person wrote in the task's own
+message (matched exactly against the stored message, so no query string or host can be added to it); task host limits,
+public-address checks and redirect rules apply to both. The gateway does not count or cap calls; it only remembers the
+deterministic fetch failures above, per run. See [Neatlogs before/after](neatlogs-before-after.md) for why.
 
 ## The workspace (E2B)
 

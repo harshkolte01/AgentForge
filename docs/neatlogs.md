@@ -125,6 +125,9 @@ The loop the hackathon asks for is *measure, change one thing, measure again, ke
 5. **Compare** the same tasks: tokens, cost, duration, error spans, and `agentforge.task.tool_failures` per task. Save both
    trace links (or screenshots) with the numbers; that is the before/after evidence.
 
+This loop has been run once end to end: see [Neatlogs before/after](neatlogs-before-after.md) and
+`examples/neatlogs_eval.py`, which runs the fixed prompts and reads each task's numbers back from the database.
+
 A **failure-recovery** example: run a task that makes the agent hit a real failure (for instance ask it to read a file that
 does not exist, or decline an "Ask me" approval). In the trace the failing `TOOL`/`tool_policy`/`tool_approval` span is `ERROR`
 or blocked, the next span is what the agent did instead, and the root ends `COMPLETED` with `tool_failures` > 0.

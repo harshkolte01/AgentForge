@@ -17,8 +17,8 @@ does not submit the entry.
 |---|---|---|
 | Substantial task completes with evidence | Actual task receipt, source/test evidence and artifact download | Offline fixtures available; live end-to-end pending |
 | Failure recovery works | Disclosed failing attempt and subsequent legitimate action | Actual generated fixture exits available; live trace pending |
-| Neatlogs improved the agent | Before/after hosted trace links, comparable latency/tokens/cost and change | Integration implemented; hosted traces confirmed arriving (12 Oct, `docs/neatlogs.md`); before/after comparison runs still to do |
-| Entire used during implementation | Commits carrying Entire checkpoints (prompt, session, diff) from Claude Code sessions in this repository | Enabled (`.entire/settings.json`, git-refs checkpoints synced to origin); Claude Code hooks re-added 12 Oct; checkpointed fix commit pending |
+| Neatlogs improved the agent | Before/after hosted trace links, comparable latency/tokens/cost and change | Done 12 Oct: [neatlogs-before-after.md](neatlogs-before-after.md), tags `baseline` / `improved`; first-step refusals 5/5 → 0/5, tokens −30%, tool calls −32%, cost −28% (one run per side) |
+| Entire used during implementation | Commits carrying Entire checkpoints (prompt, session, diff) from Claude Code sessions in this repository | Fix commit `31eb2f4` carries checkpoint `01M4QGRYYNZKXFMPX3E9PEWBW3` (Claude Code session that read the Neatlogs traces and wrote the fix) |
 | Business plan uses cfo.ai | Export/screenshots covering pricing, costs, revenue and runway | CFO.ai is a catalog plugin (`plugins/catalog.py`), so AgentForge's agent builds the model in CFO.ai from the `business_metrics` export; model pending |
 | Built in public | Actual dated #neatHack posts | Pending |
 | Submitted | Public quote of official post with team/name/project/repo/demo | Pending; follow confirmed cutoff |
