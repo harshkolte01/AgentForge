@@ -1,0 +1,3 @@
+> Which sandbox approach should I implement for Phase 4? I recommend E2B now: keep AgentForge on AWS, use managed sandboxes for generated code, and retain a provider interface so self-hosting can be added later.
+
+but our codebase is a way big similer to cursor ai cloud agents we are building same things so how should we do it? just explain me everyhting in few lines
