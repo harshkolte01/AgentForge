@@ -1,0 +1,48 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "01M4QNX4Z3FKSSEW8Y0BN4R8F0",
+  "session_id": "1394cac7-b975-49a2-ac9e-2e4141a6791e",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-12T09:08:10.598148Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "apps/api/examples/neatlogs_eval.py",
+    "apps/api/src/agentforge/llm/models.py",
+    "apps/api/src/agentforge/llm/openai_adapter.py",
+    "apps/api/src/agentforge/llm/router.py",
+    "apps/api/src/agentforge/operations/business_metrics.py",
+    "apps/api/src/agentforge/settings.py",
+    "apps/api/src/agentforge/subagents/context.py",
+    "apps/api/src/agentforge/subagents/runtime.py",
+    "apps/api/src/agentforge/telemetry/runtime.py",
+    "apps/api/tests/test_tool_schemas.py",
+    "docs/agent-harness.md",
+    "docs/configuration.md",
+    "docs/context-management.md"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5-1",
+  "turn_id": "c99739d53005",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 1126,
+    "cache_creation_tokens": 447352,
+    "cache_read_tokens": 12577486,
+    "output_tokens": 111797,
+    "api_call_count": 39
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-10-12T09:08:10.515515Z",
+    "agent_lines": 308,
+    "agent_removed": 72,
+    "human_added": 338,
+    "human_modified": 20,
+    "human_removed": 0,
+    "total_committed": 666,
+    "total_lines_changed": 738,
+    "agent_percentage": 51.490514905149055,
+    "metric_version": 2
+  }
+}
