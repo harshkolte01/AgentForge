@@ -1,0 +1,3 @@
+<send_user_message_question_reply>
+[{"answer":"in chat content area out of sidebar and make it more minimal and perfet","question":"Where should “repo name / conversation title” appear for an existing conversation?","questionItemId":"[\"request_user_input_async\",\"call_b24013ceada14801800c82b915a6a365\",0]"}]
+</send_user_message_question_reply>
