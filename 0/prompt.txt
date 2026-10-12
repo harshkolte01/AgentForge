@@ -1,0 +1,9 @@
+Hey, now I need you to do a deep dive into the codebase and understand all the documentation and the code that we currently have, and understand all of them properly.
+
+Now I just need you to take a look at and review Phase 2 that we have in our plan and the roadmap file that you can see, and check it out. Accordingly I just need you to start working on Phase 2 and maintain tracking of what you are working on.
+
+Also I need you to do deep research on the web, find out best practices, and use sub-agents to implement. Do not implement directly. Use sub-agents with GPT 6.1 soul to implement all the functionality. You are just a coordinator but coordinate those agents properly and make it work faster so we can implement everything fast and properly.
+
+Do not drop any other functionality and make the code structure more perfect because we are going to make it a much larger codebase with a lot of functionality for the future. We need to take care of the file structure, file name, and overall code reusability and make that code simpler and proper.
+
+Please deeply think about it, understand everything, do deep research, understand the plan, and then just implement Phase 2, complete Phase 2, and do not do any type of hard testing. Just implement and stop. I will verify it myself. Do everything properly and carefully.
