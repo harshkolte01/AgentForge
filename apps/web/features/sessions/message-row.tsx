@@ -54,8 +54,13 @@ export const UserRow = memo(function UserRow({ ledger, rowKey, content, createdA
     <AttachmentChips attachments={attachments} />
     <div className={userBubbleClass} title={when || undefined}>{content}</div>
     {cancelled ? <p className="text-xs text-muted-foreground">Cancelled before execution</p> : null}
-    {/* Until it is saved the line is an empty placeholder, so saving it does not move anything below. */}
-    {createdAt ? <div className={actionsClass}><time dateTime={createdAt} className="px-1.5">{when}</time><CopyButton text={content} label="Copy message" /></div> : <div className="min-h-8" aria-hidden="true" />}
+    {/* One element for the row's whole life, hidden like every action line until hovered. Until the message is saved it is empty
+        and keeps its height, so saving fills it without moving anything below. It must not swap with a differently classed
+        placeholder: React would reuse the element, and its change to `opacity-0` would play as a visible fade-out of the new
+        time and copy button (a flash on every send, with no hover at all). */}
+    <div className={actionsClass} aria-hidden={createdAt ? undefined : true}>
+      {createdAt ? <><time dateTime={createdAt} className="px-1.5">{when}</time><CopyButton text={content} label="Copy message" /></> : null}
+    </div>
   </article>;
 });
 
