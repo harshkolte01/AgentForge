@@ -1,0 +1,3 @@
+<send_user_message_question_reply>
+[{"answer":"Only clean up Claude Code CLI","question":"I’m treating this as removing Claude Code CLI from your computer. Does “make it more premium” also mean improving the AgentForge app, or do you only want the Claude CLI cleanup?","questionItemId":"[\"request_user_input_async\",\"call_06663fbd384b4c00a066cbb8d8f840df\",0]"}]
+</send_user_message_question_reply>
