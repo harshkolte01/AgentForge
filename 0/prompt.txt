@@ -1,0 +1,3 @@
+Now I need you to review the current codebase and I just need to understand the chat area. In the chat area whenever AI streams the responses, sometimes the model supports the reasoning or thinking. In that case we need to create a thinking block where we need to show all the reasoning of the AI model, an LLM model.
+
+I just need you to create a perfect, clean, and super minimal component for me and implement this in a chat area. Where our specific model starts with the reasoning, we need to solve the reasoning through this block, fully responsive, minimal, and super clean for a better user experience. Just do it properly and do not do any other extra things
