@@ -75,13 +75,20 @@ An OpenAI-compatible provider. Verify the model's tool support, context window a
 | `LLM_CONTEXT_WINDOW_TOKENS` | none | The model's context window (8192 to 2,000,000). |
 | `LLM_INPUT_USD_PER_MILLION`, `LLM_OUTPUT_USD_PER_MILLION` | none | Current prices; cost accounting depends on them. |
 | `LLM_LONG_CONTEXT_INPUT_USD_PER_MILLION`, `LLM_LONG_CONTEXT_OUTPUT_USD_PER_MILLION` | none | Only for models priced differently above a long-context threshold. |
-| `LLM_REASONING_EFFORT` | provider default | `none`, `minimal`, `low`, `medium`, `high` or `xhigh`. |
 | `LLM_PROVIDER` | `openai` | The only provider kind. |
 | `LLM_MAX_OUTPUT_TOKENS` | `16384` | Room for a whole file in one tool call; a longer final answer is continued, not cut. |
 | `LLM_TIMEOUT_SEC` | `180` | The longest wait for the next piece of a reply. |
 | `LLM_MAX_RETRIES` | `4` | Retries for failures that produced no completion (rate limit, 5xx, connection refused). |
 | `LLM_PARALLEL_TOOL_CALLS` | `true` | Let the model request several independent read-only tools in one turn. |
 | `LLM_STRICT_TOOLS` | `false` | Send tool schemas in the provider's strict form; verify the model accepts it first. |
+
+**Reasoning effort is not configured here.** How much the model thinks before it answers is each person's choice in the model
+menu of the composer (None, Low, Medium, High, Extra high, Max for `gpt-6-luna`). It defaults to **High**, is kept on the
+server per person (`users.reasoning_effort`, endpoint `/api/v1/settings/reasoning-effort`) and is read when a run starts, so a
+change applies from the next message. A model that is not listed in `llm/effort.py` offers no choice and is called as before. A
+leftover `LLM_REASONING_EFFORT` in an environment file is ignored. Higher efforts spend more of `LLM_MAX_OUTPUT_TOKENS` on
+thinking (a reply that thinks through the whole allowance fails with a message that suggests a lower effort) and are given
+longer to start answering than `LLM_TIMEOUT_SEC` (2x for High, 3x Extra high, 4x Max, capped at 15 minutes).
 
 ## Plugins and skills
 

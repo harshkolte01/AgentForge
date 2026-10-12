@@ -27,6 +27,23 @@ def repository_client(settings, sessions, owner_id):
     return GitHubClient()
 
 
+def _thinking_as_chosen(model, settings, sessions, user_id):
+    """The model thinking as the task's owner chose in the composer, read once as the run starts (a change they make later
+    applies to the next run). A model that offers no choice, or a preference that cannot be read, leaves it as it is."""
+    from agentforge.repositories.model_preferences import effort_for_run
+    from agentforge.llm.effort import default_for
+    switch = getattr(model, "with_reasoning_effort", None)
+    if switch is None:
+        return model
+    try:
+        effort = effort_for_run(sessions, user_id, settings.llm_model)
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning("reasoning effort unreadable (is migration 0021_reasoning_effort applied?), using the default: user_id=%s", user_id)
+        effort = default_for(settings.llm_model)
+    return switch(effort) if effort is not None else model
+
+
 @dataclass
 class Runtime:
     service: SpawnService
@@ -47,6 +64,7 @@ class Runtime:
 def compose_runtime(settings, sessions, telemetry, store) -> Runtime:
     """Fresh task binding; registered handlers + actual configured provider only."""
     models = ModelRouter.from_settings(settings)
+    models = ModelRouter(_thinking_as_chosen(models.model, settings, sessions, store.task().created_by))
     base_catalog = ToolCatalog()
     repository_github = github = after_turn = None
     resources = register_research(base_catalog, sessions, settings)

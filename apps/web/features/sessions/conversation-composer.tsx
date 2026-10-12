@@ -8,6 +8,7 @@ import { ApprovalModePicker } from "@/features/sessions/approval-mode-picker";
 import { iconButtonClass } from "@/features/sessions/composer-styles";
 import { ContextStatusButton } from "@/features/sessions/context-status";
 import { ModelPicker } from "@/features/sessions/model-picker";
+import { useReasoningEffort } from "@/features/sessions/reasoning-effort";
 import { RepositoryPicker } from "@/features/sessions/repository-picker";
 import { estimateDraftTokens } from "@/lib/context";
 import { useConversationDraft } from "@/features/sessions/use-conversation-draft";
@@ -39,6 +40,7 @@ export function ConversationComposer({ queue, repository, onRepositoryChange, co
   // while that first message is still creating the conversation: the layout must not change once the thread opens.
   const conversation = !!sessionId || docked;
   const enterSends = useEnterSends();
+  const reasoning = useReasoningEffort();
   const [lastModel] = useState(readLastModel);
   const [error, setError] = useState("");
   // A link that fixes the send error on screen (for example "Reconnect GitHub"); it belongs to that error only.
@@ -203,7 +205,8 @@ export function ConversationComposer({ queue, repository, onRepositoryChange, co
         <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
           {conversation ? <ContextStatusButton sessionId={sessionId} revision={contextRevision} live={running} draftTokens={estimateDraftTokens(goal, attachments)} side="top" onNewConversation={onNewConversation} /> : null}
           {conversation ? <ApprovalModePicker side={menuSide} compact /> : null}
-          <ModelPicker models={modelId ? [{ id: modelId, provider: modelProvider }] : []} value={modelId} loading={!config} disabled={locked} side={menuSide} />
+          <ModelPicker models={modelId ? [{ id: modelId, provider: modelProvider }] : []} value={modelId} loading={!config} disabled={locked} side={menuSide}
+            effort={reasoning.efforts.length ? { value: reasoning.effort, options: reasoning.efforts, onChange: (next) => void reasoning.choose(next).catch(() => setError("Couldn’t change the reasoning effort, so the previous one is still in use. Try again.")) } : undefined} />
           <button type={stopAction ? "button" : "submit"} className={sendClass} aria-label={actionLabel} title={actionLabel}
             disabled={stopAction ? stopping || !onStop : blocked !== null}
             onClick={stopAction ? () => void stop() : undefined}

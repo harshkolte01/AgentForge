@@ -16,9 +16,11 @@ OpenAI's [Luna model documentation](https://developers.openai.com/api/docs/model
 specifies a 1,050,000-token total window, a 922,000-token input limit and a
 128,000-token maximum output. AgentForge reserves its configured output allowance
 and uses the smaller of the remaining window and the provider input limit. Smaller
-operator windows continue to work. The existing Chat Completions adapter remains
-in use with `LLM_REASONING_EFFORT=none`, as required for Luna function calls on
-that endpoint. This change does not silently migrate streaming or tool protocols.
+operator windows continue to work. Luna's Chat Completions endpoint takes function
+calls only without reasoning, so requests at effort `none` use it, as before, and every
+other effort (the person's choice in the composer, High by default) is sent through the
+Responses endpoint, which keeps tools with reasoning. The runtime still speaks the chat
+message format: the adapter translates the history and the reply (`llm/openai_adapter.py`).
 
 Luna installations with an input allowance above 272,000 require these explicit
 settings in addition to the standard input/output rates:

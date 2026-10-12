@@ -67,7 +67,8 @@ class ObservedModel:
         with self.telemetry.span("model_request", kind="LLM") as span:
             if span is not None:
                 set_attributes(span, {"task_id": str(self.store.lease.task_id), "llm.model": self.model_id,
-                    "llm.model_name": self.model_id, "llm.provider": getattr(self.model, "provider", "openai"),
+                    "llm.model_name": self.model_id,
+                    "agentforge.llm.reasoning_effort": getattr(self.model, "reasoning_effort", None), "llm.provider": getattr(self.model, "provider", "openai"),
                     "llm.system": getattr(self.model, "provider", "openai"),
                     "agentforge.llm.messages": len(messages), "agentforge.llm.tools_offered": len(tools or ())})
                 if capture:

@@ -42,6 +42,10 @@ class User(_UUIDTimestampMixin, Base):
     display_name: Mapped[str] = mapped_column(Text)
     # "ask": the agent asks before anything that changes something. "auto": it never asks.
     approval_mode: Mapped[str] = mapped_column(Text, server_default=text("'ask'"))
+    # How much the model thinks before it answers (llm/effort.py). NULL: never chosen, so the default applies. Deferred: loading
+    # a user (every sign-in does) never reads it, so an API that starts before migration 0021 is applied still signs people in
+    # and only the effort menu is missing until it is.
+    reasoning_effort: Mapped[str | None] = mapped_column(Text, nullable=True, deferred=True)
 
 
 class Project(_UUIDTimestampMixin, Base):

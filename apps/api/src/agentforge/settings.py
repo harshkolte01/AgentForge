@@ -62,7 +62,8 @@ class Settings(BaseSettings):
     llm_strict_tools: bool = False
     # Retries for failures that produced no completion (rate limit, 5xx, connection refused).
     llm_max_retries: int = Field(default=4, ge=0, le=8)
-    llm_reasoning_effort: Literal["none", "minimal", "low", "medium", "high", "xhigh"] | None = None
+    # Reasoning effort is each person's choice in the composer (llm/effort.py), not a deployment setting. A leftover
+    # LLM_REASONING_EFFORT in an environment file is ignored.
     worker_lease_sec: int = Field(default=90, ge=30, le=300)
     worker_heartbeat_sec: int = Field(default=10, ge=2, le=30)
     worker_poll_sec: float = Field(default=2, ge=0.2, le=30)

@@ -17,6 +17,7 @@ from agentforge.api.routes_configuration import router as configuration_router
 from agentforge.auth.routes import router as auth_router
 from agentforge.api.routes_github import router as github_router
 from agentforge.api.routes_approvals import router as approvals_router
+from agentforge.api.routes_model import router as model_router
 from agentforge.api.routes_sessions import router as sessions_router
 from agentforge.api.routes_conversation_events import router as conversation_events_router
 from agentforge.api.routes_context import router as context_router
@@ -96,6 +97,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(configuration_router)
     app.include_router(github_router)
     app.include_router(approvals_router)
+    app.include_router(model_router)
     app.include_router(sessions_router)
     app.include_router(conversation_events_router)
     app.include_router(context_router)

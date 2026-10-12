@@ -36,8 +36,6 @@ def configuration(request: Request, user: User = Depends(current_user)) -> dict:
                             getattr(settings, "llm_max_output_tokens", 8192))
     required["LLM_CONTEXT_WINDOW_TOKENS"] = bool(available) and (
         not is_luna(settings.llm_model) or settings.llm_context_window_tokens <= LUNA_WINDOW)
-    if is_luna(settings.llm_model):
-        required["LLM_REASONING_EFFORT=none"] = getattr(settings, "llm_reasoning_effort", None) == "none"
     if is_luna(settings.llm_model) and available and available > LUNA_LONG_CONTEXT_THRESHOLD:
         required.update({
             "LLM_LONG_CONTEXT_INPUT_USD_PER_MILLION": getattr(settings, "llm_long_context_input_usd_per_million", None) is not None,

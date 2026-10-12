@@ -10,6 +10,12 @@ mid-stream), with jittered backoff that honours the provider's retry-after. A st
 without a finish reason) after it started is retried too, since repeating one request costs far less than failing
 the whole run; `on_retry` tells the caller to throw away what it showed.
 Quota and credential errors are never retried.
+
+Reasoning effort is chosen per person and applied per run (`with_reasoning_effort`). Without reasoning the Chat
+Completions endpoint serves every request, exactly as it always did. A model whose Chat Completions endpoint takes function
+calls only without reasoning (gpt-6-luna, see `effort.py`) is sent through the Responses endpoint when an effort is asked
+for. The runtime keeps speaking the chat message format either way: this adapter translates the history it is given into
+Responses input and the reply back into one assistant message, so nothing above it changes.
 """
 
 import asyncio
@@ -29,6 +35,7 @@ from .models import (
     ModelRates, ModelResponse, ModelUsage, PER_MESSAGE_OVERHEAD_TOKENS,
     PROTOCOL_OVERHEAD_TOKENS, conservative_input_tokens, provider_detail,
 )
+from .effort import EFFORTS, efforts_for, read_timeout, support_for, uses_responses
 from .limits import LUNA_LONG_CONTEXT_THRESHOLD, LUNA_WINDOW, input_limit, is_luna
 
 
@@ -44,6 +51,130 @@ RATE_LIMIT_KINDS = frozenset({"rate_limit_exceeded", "rate_limit_error"})
 TRANSIENT_KINDS = frozenset({"server_error", "overloaded", "overloaded_error", "service_unavailable", "service_unavailable_error",
                              "internal_error", "internal_server_error"})
 CONNECT_TIMEOUT_SEC = 15.0
+
+
+# --- chat format <-> Responses format ---------------------------------------------------------
+# The runtime's history and tools are Chat Completions shaped. These are the only places that know the Responses shape.
+RESPONSES_URL = "https://api.openai.com/v1/responses"
+
+
+def _plain_text(content: Any) -> str:
+    """The text of a message's content: a string, or the text parts of a list."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(part.get("text", "") for part in content if isinstance(part, dict) and part.get("type") == "text")
+    return ""
+
+
+def _input_part(part: dict[str, Any]) -> dict[str, Any]:
+    kind = part.get("type")
+    if kind == "text":
+        return {"type": "input_text", "text": part.get("text", "")}
+    if kind == "image_url":
+        image = part.get("image_url")
+        image = image if isinstance(image, dict) else {"url": image}
+        return {"type": "input_image", "image_url": image.get("url", ""), "detail": image.get("detail", "auto")}
+    if kind == "file":
+        file = part.get("file") or {}
+        return {"type": "input_file", **{key: file[key] for key in ("filename", "file_data", "file_id") if file.get(key)}}
+    raise ModelConfigurationError(f"a {kind!r} message part cannot be sent to the Responses endpoint")
+
+
+def to_responses_input(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A chat history as Responses `input` items: an assistant's tool calls and their results become `function_call` and
+    `function_call_output` items tied by the call's id. Items carry no provider `id`, so nothing refers to a stored response."""
+    items: list[dict[str, Any]] = []
+    for message in messages:
+        role, content = message.get("role"), message.get("content")
+        if role == "tool":
+            items.append({"type": "function_call_output", "call_id": message["tool_call_id"], "output": _plain_text(content)})
+        elif role == "assistant":
+            text = _plain_text(content)
+            if text.strip():
+                items.append({"role": "assistant", "content": text})
+            for call in message.get("tool_calls") or []:
+                function = call["function"]
+                items.append({"type": "function_call", "call_id": call["id"], "name": function["name"], "arguments": function.get("arguments") or "{}"})
+        elif role == "user" and isinstance(content, list):
+            items.append({"role": "user", "content": [_input_part(part) for part in content]})
+        elif role in ("system", "developer"):
+            items.append({"role": "developer", "content": _plain_text(content)})
+        else:
+            items.append({"role": role, "content": content if isinstance(content, str) else _plain_text(content)})
+    return items
+
+
+def to_responses_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Chat function tools as Responses function tools. `strict` is always stated: the Responses endpoint turns it on when it
+    is left out, which would reject any schema that is not written for strict mode."""
+    converted = []
+    for tool in tools:
+        function = tool.get("function") if tool.get("type") == "function" else None
+        if function is None:
+            converted.append(tool)
+            continue
+        item = {"type": "function", "name": function["name"], "parameters": function.get("parameters") or {"type": "object", "properties": {}},
+                "strict": bool(function.get("strict", False))}
+        if function.get("description"):
+            item["description"] = function["description"]
+        converted.append(item)
+    return converted
+
+
+def to_responses_tool_choice(choice: dict[str, Any] | str | None) -> dict[str, Any] | str:
+    if isinstance(choice, dict) and isinstance(choice.get("function"), dict):
+        return {"type": "function", "name": choice["function"]["name"]}
+    return choice or "auto"
+
+
+def message_from_response(response: Any) -> tuple[dict[str, Any], str]:
+    """The reply of a finished Responses call as one chat-format assistant message, and its finish reason.
+
+    Reasoning items are not kept: nothing above this adapter could store them, and a request that carries none is valid.
+    """
+    if response.status == "failed":
+        raise _response_error(getattr(response, "error", None))
+    if response.status not in ("completed", "incomplete"):
+        raise ModelProviderError("model request did not finish", retriable=True, detail=f"response status: {response.status}")
+    parts: list[str] = []
+    calls: list[dict[str, Any]] = []
+    for item in response.output or []:
+        if item.type == "message":
+            for piece in item.content:
+                text = getattr(piece, "text", None) if piece.type == "output_text" else getattr(piece, "refusal", None)
+                if text:
+                    parts.append(text)
+        elif item.type == "function_call":
+            calls.append({"id": item.call_id, "type": "function", "function": {"name": item.name, "arguments": item.arguments}})
+    content = "".join(parts)
+    if response.status == "incomplete":
+        reason = getattr(response.incomplete_details, "reason", None)
+        if reason == "content_filter":
+            finish = "content_filter"
+        elif not content and not calls:
+            # Everything the model was allowed to write went into thinking: there is nothing to continue from.
+            raise ModelProviderError("model used its whole output allowance thinking",
+                                     detail="The model used its whole output allowance thinking and wrote no answer. Choose a lower effort and try again.")
+        else:
+            finish = "length"
+    else:
+        finish = "tool_calls" if calls else "stop"
+    message: dict[str, Any] = {"role": "assistant"}
+    if content or not calls:
+        message["content"] = content
+    if calls:
+        message["tool_calls"] = calls
+    return message, finish
+
+
+def _response_error(error: Any) -> Exception:
+    """A failed response (or an `error` event) as the error the adapter already knows how to classify and retry."""
+    code = getattr(error, "code", None)
+    text = getattr(error, "message", None) or "the model provider reported an error"
+    if code == "context_length_exceeded":
+        return ModelContextLimit(text)
+    return openai.APIError(text, httpx.Request("POST", RESPONSES_URL), body={"code": code, "message": text})
 
 
 class OpenAIAdapter:
@@ -62,14 +193,13 @@ class OpenAIAdapter:
         self.long_context_rates = long_context_rates
         self.context_window_tokens = context_window_tokens
         self.max_output_tokens = max_output_tokens
-        self.reasoning_effort = reasoning_effort
+        self.reasoning_effort = self._checked_effort(model_id, reasoning_effort)
+        self.timeout_sec = timeout_sec
         self.parallel_tool_calls = parallel_tool_calls
         self.strict_tools = strict_tools
         self.max_retries = max_retries
         self._sleep = sleep
         if is_luna(model_id):
-            if reasoning_effort != "none":
-                raise ModelConfigurationError("gpt-6-luna Chat Completions tool calls require reasoning_effort=none")
             if context_window_tokens > LUNA_WINDOW:
                 raise ModelConfigurationError("gpt-6-luna window exceeds its verified provider limit")
             if self.max_input_tokens > LUNA_LONG_CONTEXT_THRESHOLD and long_context_rates is None:
@@ -85,6 +215,26 @@ class OpenAIAdapter:
         # gets a short limit of its own so an unreachable provider fails fast and is retried.
         self._client = AsyncOpenAI(api_key=api_key, base_url="https://api.openai.com/v1",
                                    timeout=httpx.Timeout(timeout_sec, connect=min(CONNECT_TIMEOUT_SEC, timeout_sec)), max_retries=0)
+
+    @staticmethod
+    def _checked_effort(model_id: str, effort: str | None) -> str | None:
+        if effort is None:
+            return None
+        if effort not in EFFORTS or (support_for(model_id) and effort not in efforts_for(model_id)):
+            raise ModelConfigurationError(f"{model_id} does not take reasoning effort {effort!r}")
+        return effort
+
+    def with_reasoning_effort(self, effort: str | None) -> "OpenAIAdapter":
+        """This adapter thinking at `effort` (None: the provider's own default); `self` is not modified.
+
+        It shares the client, so the ledger, the pinned origin and the no-hidden-retries rule are unchanged.
+        """
+        chosen = self._checked_effort(self.model_id, effort)
+        if chosen == self.reasoning_effort:
+            return self
+        changed = copy.copy(self)
+        changed.reasoning_effort = chosen
+        return changed
 
     @property
     def max_input_tokens(self) -> int:
@@ -108,6 +258,9 @@ class OpenAIAdapter:
             raise ModelConfigurationError("an output limit must be positive")
         limited = copy.copy(self)
         limited.max_output_tokens = min(max_output_tokens, self.max_output_tokens)
+        # A few tokens of output cannot hold any thinking, and a title or a summary gains nothing from it.
+        if support_for(self.model_id) is not None:
+            limited.reasoning_effort = "none"
         return limited
 
     def maximum_request_cost(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]):
@@ -132,8 +285,11 @@ class OpenAIAdapter:
         kwargs: dict[str, Any] = {
             "model": self.model_id, "messages": cast(list[ChatCompletionMessageParam], messages),
             "max_completion_tokens": self.max_output_tokens, "store": False, "service_tier": "default"}
-        if self.reasoning_effort is not None:
-            kwargs["reasoning_effort"] = self.reasoning_effort
+        # gpt-6-luna reasons by default, and its Chat Completions endpoint takes function calls only without reasoning:
+        # whatever effort is asked for, a request that reaches this endpoint says none (asked-for efforts use `_responses`).
+        effort = "none" if is_luna(self.model_id) else self.reasoning_effort
+        if effort is not None:
+            kwargs["reasoning_effort"] = effort
         if tools:
             kwargs.update(tools=cast(list[ChatCompletionToolParam], tools),
                           tool_choice=tool_choice or "auto", parallel_tool_calls=self.parallel_tool_calls)
@@ -232,6 +388,11 @@ class OpenAIAdapter:
         before a broken stream is requested again, so the caller can clear what that attempt showed. `on_attempt_failed` is told
         the error code of every failed request that is about to be retried (rate limit, 5xx, timeout, broken stream)."""
         self.maximum_request_cost(messages, tools)
+        if uses_responses(self.model_id, self.reasoning_effort):
+            request = self._responses_request(messages, tools, tool_choice)
+            if on_text is not None or on_narration is not None or on_tool is not None:
+                return await self._with_retries(lambda: self._responses_streaming(request, bool(tools), on_text, on_narration, on_tool), on_retry, on_attempt_failed)
+            return await self._with_retries(lambda: self._responses_once(request), None, on_attempt_failed)
         request = self._request(messages, tools, tool_choice)
         if on_text is not None or on_narration is not None or on_tool is not None:
             return await self._with_retries(lambda: self._complete_streaming(request, bool(tools), on_text, on_narration, on_tool), on_retry, on_attempt_failed)
@@ -331,6 +492,92 @@ class OpenAIAdapter:
             measured = ModelUsage(usage.prompt_tokens, usage.completion_tokens,
                                   self._rates_for(usage.prompt_tokens).cost(usage.prompt_tokens, usage.completion_tokens))
         return ModelResponse(message, measured, reported_model, finish_reason)
+
+    # --- the Responses endpoint -------------------------------------------------------------
+    def _responses_request(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
+                           tool_choice: dict[str, Any] | str | None) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "model": self.model_id, "input": to_responses_input(messages), "max_output_tokens": self.max_output_tokens,
+            "reasoning": {"effort": self.reasoning_effort}, "store": False, "service_tier": "default",
+            # A model that thinks longer says nothing for longer before its first token.
+            "timeout": httpx.Timeout(read_timeout(self.timeout_sec, self.reasoning_effort), connect=min(CONNECT_TIMEOUT_SEC, self.timeout_sec))}
+        if tools:
+            kwargs.update(tools=to_responses_tools(tools), tool_choice=to_responses_tool_choice(tool_choice),
+                          parallel_tool_calls=self.parallel_tool_calls)
+        return kwargs
+
+    def _responses_result(self, response: Any, reported_model: str | None = None) -> ModelResponse:
+        message, finish = message_from_response(response)
+        usage = response.usage
+        if usage is None:
+            measured = ModelUsage(0, 0, None)
+        else:
+            measured = ModelUsage(usage.input_tokens, usage.output_tokens,
+                                  self._rates_for(usage.input_tokens).cost(usage.input_tokens, usage.output_tokens))
+        return ModelResponse(message, measured, getattr(response, "model", None) or reported_model or self.model_id, finish)
+
+    async def _responses_once(self, request: dict[str, Any]) -> ModelResponse:
+        try:
+            response = await self._client.responses.create(**request)
+        except Exception as exc:
+            raise self._classify(exc) from None
+        return self._responses_result(response)
+
+    async def _responses_streaming(self, request: dict[str, Any], has_tools: bool,
+                                   on_text: Callable[[str], None] | None,
+                                   on_narration: Callable[[str], None] | None = None,
+                                   on_tool: Callable[[int, str, str, str], None] | None = None) -> ModelResponse:
+        final = None
+        received = False
+        stream = None
+        slots: dict[int, tuple[int, str, str]] = {}  # output index -> (tool index, call id, name)
+
+        def show(*piece, sink: Callable[..., None] | None = on_text) -> None:
+            if sink is None:
+                return
+            try:
+                sink(*piece)
+            except Exception:
+                pass  # Showing progress must never fail the model call.
+
+        try:
+            stream = await self._client.responses.create(**request, stream=True)
+            async for event in stream:
+                kind = event.type
+                if kind in ("response.output_text.delta", "response.refusal.delta"):
+                    received = True
+                    # With tools offered, text is narration written next to the calls, not the reply.
+                    show(event.delta, sink=on_narration if has_tools else on_text)
+                elif kind == "response.output_item.added" and event.item.type == "function_call":
+                    received = True
+                    slots[event.output_index] = (len(slots), event.item.call_id, event.item.name)
+                    show(*slots[event.output_index], "", sink=on_tool)
+                elif kind == "response.function_call_arguments.delta" and event.output_index in slots:
+                    index, call_id, name = slots[event.output_index]
+                    show(index, call_id, name, event.delta, sink=on_tool)
+                elif kind in ("response.completed", "response.incomplete"):
+                    final = event.response
+                elif kind == "response.failed":
+                    raise _response_error(getattr(event.response, "error", None))
+                elif kind == "error":
+                    raise _response_error(event)
+        except Exception as exc:
+            if received and not isinstance(exc, (ModelProviderError, ModelContextLimit)):
+                raise _StreamBroke() from exc
+            raise self._classify(exc) from None
+        finally:
+            if stream is not None:
+                try:
+                    await stream.close()
+                except Exception:
+                    pass
+        if final is None:
+            if received:
+                # The stream closed cleanly but cut short: what it showed is void, so it is retried like one that broke.
+                raise _StreamBroke() from ModelProviderError(
+                    "model provider stream ended before the reply finished", retriable=True, detail="no completed event")
+            raise ModelProviderError("model provider returned no completion")
+        return self._responses_result(final)
 
     async def aclose(self) -> None:
         await self._client.close()

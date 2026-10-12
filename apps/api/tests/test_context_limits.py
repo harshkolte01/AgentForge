@@ -32,9 +32,12 @@ class CapacityTests(TestCase):
 
     def test_missing_long_prices_or_invalid_limits_fail_closed(self):
         for overrides in ({"long_context_rates": None}, {"context_window_tokens": 1_100_000},
-                          {"reasoning_effort": "low"}, {"long_context_rates": ModelRates(Decimal("0.01"), Decimal("0.10"))}):
+                          {"reasoning_effort": "minimal"}, {"long_context_rates": ModelRates(Decimal("0.01"), Decimal("0.10"))}):
             with self.subTest(overrides=overrides), self.assertRaises(ModelConfigurationError):
                 luna(**overrides)
+        # Luna takes every effort it lists (the ones above none go through the Responses endpoint).
+        for effort in ("none", "low", "medium", "high", "xhigh", "max"):
+            self.assertEqual(luna(reasoning_effort=effort).reasoning_effort, effort)
         # Existing capped installations do not need new price configuration.
         self.assertEqual(luna(context_window_tokens=262_144, long_context_rates=None).context_window_tokens, 262_144)
 
