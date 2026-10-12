@@ -1,0 +1,11 @@
+<image name=[Image #1] path="/var/folders/rg/8014vzz55510kyfwgr810wjm0000gn/T/codex-clipboard-lijzmF.png">
+
+</image>
+
+[Image #1]  Hey, now I need you to review and understand the context management for our agent harness in depth. After understanding everything I just need you to review the UI and improve the UI. I just need you to make it fully production-ready and perfect for me.
+
+We need to make the status of the context more minimal and more premium and we also don't need to break any other functionality. Currently we are not managing the context properly so I just need you to review and manage the prompts, context, and code properly for the best user experience.
+
+Currently we are managing GPT-6 Luna and the context window is 1 million. You can search on the web and find out the best practices, fix all of them, and make it fully production-ready and perfect for me. Make the status icon in the composer more minimal, with a clean hover effect, and make the context status card more premium and perfect because currently it looks like an AI shop.
+
+Please deeply think about it, review everything, and I just need you to make it fully production-ready and perfect for me. Do not break any other functionality. Just do a deep review and understand everything. I just need you to make it fully production-ready and perfect for me.  Just do everything carefully and perfectly, and make it fully production-ready and perfect for me. Do not drop any other functionality. Just review the context management end to end and do it properly for me
