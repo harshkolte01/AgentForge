@@ -58,6 +58,8 @@ export function SessionBoundary({ children }: { children: ReactNode }) {
     }).catch((error: unknown) => { if (!controller.signal.aborted) { setError(message(error)); setUnreachable(true); } });
     const onExpired = () => {
       forgetAccount();
+      // Per-person stores (plugins, skills, approval mode, reasoning effort) must not hand the next person this one's values.
+      window.dispatchEvent(new Event("agentforge-account-changed"));
       expired.current = true;
       setSession(null);
       setReload((value) => value + 1);
