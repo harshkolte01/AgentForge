@@ -1,0 +1,39 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "01M4QNX3NWBRZXABZJYH8NHH8K",
+  "session_id": "1394cac7-b975-49a2-ac9e-2e4141a6791e",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-12T09:08:09.53185Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "apps/api/src/agentforge/integrations/e2b_sandbox.py",
+    "apps/api/src/agentforge/tools/catalog.py",
+    "apps/api/src/agentforge/tools/sandbox_shell.py",
+    "docs/agent-harness.md"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5-1",
+  "turn_id": "c99739d53005",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 1126,
+    "cache_creation_tokens": 447352,
+    "cache_read_tokens": 12577486,
+    "output_tokens": 111797,
+    "api_call_count": 39
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-10-12T09:08:09.458417Z",
+    "agent_lines": 35,
+    "agent_removed": 6,
+    "human_added": 11,
+    "human_modified": 29,
+    "human_removed": 0,
+    "total_committed": 75,
+    "total_lines_changed": 81,
+    "agent_percentage": 50.617283950617285,
+    "metric_version": 2
+  }
+}
