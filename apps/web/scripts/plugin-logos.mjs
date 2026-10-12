@@ -11,7 +11,7 @@
  *   - "url"    The logo or app icon the vendor itself publishes (their favicon / apple-touch icon, or the project's own repository).
  * The marks are trademarks of their owners, shown only to name the service they belong to (see docs/plugins.md).
  */
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -24,6 +24,7 @@ const lobe = (name) => ({ from: "lobe", name });
 const url = (href, ext) => ({ from: "url", href, ext });
 
 const LOGOS = {
+  "cfo-ai": url("https://cfo.ai/apple-icon.png", "png"),
   github: si("github"), linear: si("linear"), sentry: si("sentry"), gitlab: si("gitlab"), buildkite: si("buildkite"),
   deepwiki: url("https://t0.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://deepwiki.com&size=128", "png"),
   context7: url("https://raw.githubusercontent.com/upstash/context7/master/public/context7-icon.svg", "svg"),
@@ -77,9 +78,15 @@ function tidy(svg, fill) {
 }
 
 await mkdir(out, { recursive: true });
-const icons = JSON.parse((await get(`https://cdn.jsdelivr.net/npm/simple-icons@${SIMPLE_ICONS}/data/simple-icons.json`)).toString());
-const manifest = {};
-for (const [key, source] of Object.entries(LOGOS)) {
+// Pass catalog keys to refresh just those marks, preserving unrelated vendor assets.
+const selected = process.argv.slice(2);
+if (selected.some((key) => !(key in LOGOS))) throw new Error("Unknown plugin logo key");
+const entries = Object.entries(LOGOS).filter(([key]) => !selected.length || selected.includes(key));
+const icons = entries.some(([, source]) => source.from === "si")
+  ? JSON.parse((await get(`https://cdn.jsdelivr.net/npm/simple-icons@${SIMPLE_ICONS}/data/simple-icons.json`)).toString()) : [];
+const previous = selected.length ? await readFile(path.join(root, "lib/plugin-logos.ts"), "utf8") : "";
+const manifest = Object.fromEntries([...previous.matchAll(/^\s*"([^"]+)":\s*(\{[^\n]+\}),?$/gm)].map((match) => [match[1], JSON.parse(match[2])]));
+for (const [key, source] of entries) {
   let file, fit, dark = false;
   if (source.from === "si") {
     const entry = icons.find((item) => (item.slug ?? item.title.toLowerCase().replace(/[^a-z0-9]/g, "")) === source.slug);

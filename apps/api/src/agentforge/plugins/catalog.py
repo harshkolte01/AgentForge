@@ -41,6 +41,8 @@ def _open(key: str, name: str, description: str, url: str, category: str, docs: 
 
 
 CATALOG: tuple[CatalogPlugin, ...] = (
+    _oauth("cfo-ai", "CFO.ai", "Read and build financial models, plans and scenarios in your CFO.ai account.",
+           "https://api.cfo.ai/mcp", "Business", "https://docs.cfo.ai/integrations/mcp-server"),
     # --- Code ---------------------------------------------------------------------------------------------------------
     CatalogPlugin("github", "GitHub", "Search code, read issues and pull requests, and work with repositories through GitHub's own server.",
         "https://api.githubcopilot.com/mcp/", "required", "Code", "Personal access token",

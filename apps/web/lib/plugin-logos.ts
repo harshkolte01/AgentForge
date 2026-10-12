@@ -51,4 +51,5 @@ export const pluginLogos: Readonly<Record<string, PluginLogo>> = {
   "parallel": {"file":"parallel.svg","fit":"glyph"},
   "mapbox": {"file":"mapbox.svg","fit":"glyph","dark":true},
   "zapier": {"file":"zapier.svg","fit":"glyph"},
+  "cfo-ai": {"file":"cfo-ai.png","fit":"icon"},
 };
