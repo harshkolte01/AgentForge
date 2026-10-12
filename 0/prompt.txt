@@ -1,0 +1,1 @@
+Hey I just set up all the required environment variables so you can take a look at it. Now just begin with the next phase that we have as Phase 3. Please go ahead and implement all of them carefully and accordingly
