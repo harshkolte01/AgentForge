@@ -1,0 +1,49 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "01M4QJTC8PS0GFCVF8SBR2EH78",
+  "session_id": "3e0e9ef1-cc0b-4604-8d29-a7ba8a5f9756",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-12T08:14:13.977045Z",
+  "branch": "main",
+  "checkpoints_count": 9,
+  "save_step_count": 1,
+  "files_touched": [
+    "apps/api/src/agentforge/bootstrap.py",
+    "apps/api/src/agentforge/integrations/github_app.py",
+    "apps/api/src/agentforge/integrations/github_client.py",
+    "apps/api/src/agentforge/sandbox/vm_repository.py",
+    "apps/api/src/agentforge/sandbox/vm_scan.py",
+    "apps/api/src/agentforge/settings.py",
+    "apps/api/src/agentforge/tools/sandbox_shell.py",
+    "apps/api/tests/test_github_app_client.py",
+    "apps/api/tests/test_repository_download.py",
+    "docs/agent-harness.md",
+    "docs/configuration.md"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-sonnet-5-5",
+  "turn_id": "5e37ba8eaa14",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 240,
+    "cache_creation_tokens": 313559,
+    "cache_read_tokens": 29791664,
+    "output_tokens": 135982,
+    "api_call_count": 120
+  },
+  "session_metrics": {
+    "turn_count": 9
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-10-12T08:14:13.896813Z",
+    "agent_lines": 734,
+    "agent_removed": 26,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 734,
+    "total_lines_changed": 760,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
