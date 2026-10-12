@@ -32,6 +32,9 @@ function Details({ status, draftTokens, failed, refresh, onNewConversation, clos
   const available = status.input_limit_tokens ?? (status.window_tokens ? status.window_tokens - (status.max_output_tokens ?? 0) : null);
   const percent = projected.percent.toFixed(1).replace(/\.0$/, "");
   const used = projected.empty ? 0 : projected.used;
+  const measured = projected.basis === "measured";
+  const run = status.last_run;
+  const peakPercent = run && available ? Math.min(100, Math.round((run.peak_input_tokens / available) * 1000) / 10) : null;
 
   return <div className="px-3.5 py-3 text-xs leading-4">
     <div className="flex items-center justify-between gap-4">
@@ -39,18 +42,25 @@ function Details({ status, draftTokens, failed, refresh, onNewConversation, clos
       {available ? <span className={`tabular-nums ${tone[projected.level]}`}>{percent}% used</span> : null}
     </div>
     {available ? <>
-      <div role="meter" aria-label="Estimated next message input" aria-valuemin={0} aria-valuemax={100}
-        aria-valuenow={projected.percent} aria-valuetext={`Approximately ${used} of ${available} input tokens`}
+      <div role="meter" aria-label={measured ? "Model input right now" : "Estimated next message input"} aria-valuemin={0} aria-valuemax={100}
+        aria-valuenow={projected.percent} aria-valuetext={measured ? `${used} of ${available} input tokens, measured` : `Approximately ${used} of ${available} input tokens`}
         className="my-2.5 h-1 overflow-hidden rounded-full bg-muted">
         <div className={`h-full rounded-full transition-[width] duration-200 ease-out motion-reduce:transition-none ${projected.level === "high" ? "bg-destructive" : projected.level === "notice" ? "bg-amber-600 dark:bg-amber-400" : "bg-foreground/60"}`}
           style={{ width: `${projected.percent}%` }} />
       </div>
-      <p className="tabular-nums text-muted-foreground">{used ? `≈ ${formatTokens(used)}` : "0"} / {formatTokens(available)} tokens</p>
-      <span className="sr-only">Estimated input for your next message. Space for a reply is reserved.</span>
+      <p className="tabular-nums text-muted-foreground">{measured ? formatTokens(used) : used ? `≈ ${formatTokens(used)}` : "0"} / {formatTokens(available)} tokens</p>
+      <p className="mt-1 text-muted-foreground/80" data-context-basis={projected.basis}>{measured ? "Measured on the model’s latest request." : "Estimated for your next message."}</p>
+      <span className="sr-only">Space for a reply is reserved.</span>
     </> : <p className="mt-2 text-muted-foreground">Context limit unavailable.</p>}
+    {run ? <div className="mt-2.5 border-t border-border/60 pt-2 tabular-nums text-muted-foreground" data-context-run={run.active ? "active" : "last"}>
+      <p>{run.active ? "This run" : "Last run"} · {run.model_calls} {run.model_calls === 1 ? "request" : "requests"}</p>
+      <p>Peak {formatTokens(run.peak_input_tokens)} tokens{peakPercent !== null ? ` · ${String(peakPercent).replace(/\.0$/, "")}%` : ""}</p>
+      {run.compacted_results ? <p>Older tool results were shortened.</p> : null}
+    </div> : null}
     {status.uncovered_turns ? <p className="mt-2 text-muted-foreground">Some earlier details need retrieval.</p>
       : status.summary_through_ordinal ? <p className="mt-2 text-muted-foreground">Earlier decisions summarized.</p> : null}
-    {projected.level === "high" ? <div className="mt-2.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+    {projected.level === "high" && measured ? <p className="mt-2.5 text-destructive">Close to the model’s limit. Older results are shortened automatically.</p> : null}
+    {projected.level === "high" && !measured ? <div className="mt-2.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
       <p className="text-destructive">Shorten your message to free space.</p>
       {onNewConversation ? <button type="button" onClick={() => { close(); onNewConversation(); }}
         className="min-h-8 rounded px-1 font-medium outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/60 motion-reduce:transition-none">New conversation</button> : null}
@@ -70,7 +80,9 @@ export function ContextStatusButton({ sessionId, revision, live, draftTokens, si
   const projected = status ? projectContext(status, draftTokens) : null;
   const level = projected?.level ?? "unknown";
   const label = !status ? (failed ? "Context unavailable" : "Loading context") : !status.window_tokens ? "Context limit not configured"
-    : projected?.empty ? "Context: ready for your first message" : `Context: approximately ${projected?.percent}% of input capacity for your next message`;
+    : projected?.empty ? "Context: ready for your first message"
+      : projected?.basis === "measured" ? `Context: the model is using ${projected.percent}% of its input capacity right now`
+        : `Context: approximately ${projected?.percent}% of input capacity for your next message`;
 
   return <Popover open={open} onOpenChange={(next) => { setOpen(next); if (next) refresh(); }}>
     <PopoverTrigger id={id} aria-label={label} openOnHover delay={350} closeDelay={250}
@@ -85,6 +97,6 @@ export function ContextStatusButton({ sessionId, revision, live, draftTokens, si
         : <div className="px-3.5 py-3 text-xs leading-4"><h2 className="text-[13px] font-medium leading-5">Context</h2><p className="mt-2 text-muted-foreground" role="status">{failed ? "Unavailable right now." : "Loading…"}</p>
           {failed ? <button type="button" onClick={refresh} className="mt-1 min-h-8 rounded underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-ring/60">Retry</button> : null}</div>}
     </PopoverContent>
-    {level === "high" ? <span className="sr-only" role="status">Your next message is close to the input limit.</span> : null}
+    {level === "high" ? <span className="sr-only" role="status">{projected?.basis === "measured" ? "The model is close to its input limit." : "Your next message is close to the input limit."}</span> : null}
   </Popover>;
 }

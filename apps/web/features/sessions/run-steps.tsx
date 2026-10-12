@@ -9,7 +9,7 @@ import { loadHistoryEntries } from "@/features/sessions/history-activity";
 import { Glyph, chevron, draftedCalls, toggleClass } from "@/features/sessions/row-parts";
 import { ToolDetailPanel } from "@/features/sessions/tool-detail";
 import {
-  activityLabel, approvalSource, chunkRows, currentCallId, placeLiveTool, sectionsOf, subagentsByRun, summarizeEntries, type Section, type TimelineNotice,
+  activityLabel, approvalSource, chunkRows, collapseRows, currentCallId, placeLiveTool, sectionsOf, subagentsByRun, summarizeEntries, type RowSlot, type Section, type TimelineNotice,
 } from "@/features/sessions/timeline-model";
 import type { PendingApproval } from "@/lib/activity/approvals";
 import { ACTIVITY_DISCLOSURE, disclosureKey } from "@/lib/activity/disclosure";
@@ -116,6 +116,31 @@ export const EntryRow = memo(function EntryRow({ taskId, entry, current, animate
   </li>;
 });
 
+type EarlierSlot = Extract<RowSlot, { kind: "earlier" }>;
+
+/**
+ * The finished steps that came before the newest few, folded into one line while the run is going: "12 earlier steps" and what
+ * they were. It opens in place to the same rows (no entrance animation: they were already shown) and remembers the person's
+ * choice, like a group does. Its key is the first folded step's, so it does not remount as more steps join it.
+ */
+const EarlierSteps = memo(function EarlierSteps({ taskId, slot }: { taskId: string; slot: EarlierSlot }) {
+  const panelId = useId();
+  const [open, toggle] = useDisclosure(disclosureKey(taskId, slot.key), false);
+  const label = `${slot.count} earlier ${slot.count === 1 ? "step" : "steps"}`;
+  return <li className="min-w-0" data-activity-entry="earlier" data-count={slot.count} data-open={open ? "true" : "false"}>
+    <button type="button" aria-expanded={open} aria-controls={panelId} data-scroll-anchor-toggle className={rowButton} onClick={toggle}>
+      <Glyph icon="success" tone="neutral" current={false} />
+      <Words label={label} detail={slot.summary || undefined} shimmer={false} />
+      {chevron(open)}
+    </button>
+    <div id={panelId} hidden={!open} className="mt-2 ml-2 border-l pl-4">
+      {open ? <ul className="space-y-2" aria-label="Earlier steps">
+        {slot.chunks.map((chunk) => chunk.kind === "entry" ? <EntryRow key={chunk.key} taskId={taskId} entry={chunk.entry} current={false} animate={false} /> : null)}
+      </ul> : null}
+    </div>
+  </li>;
+});
+
 const PhaseHeading = memo(function PhaseHeading({ entry }: { entry: PhaseEntry }) {
   return <p className="mt-1 flex items-center gap-1.5 text-[13px] font-medium text-muted-foreground" data-activity-entry="phase" data-state={entry.state}>
     <span>{entry.label}</span>
@@ -173,18 +198,29 @@ type TimelineProps = {
   statusEnters?: boolean;
   /** The tool call the live row shows: being written by the model, or running and printing. */
   liveTool?: LiveToolView | null;
+  /**
+   * The steps of a run that is going on fold: the newest few show and the finished ones before them are one "N earlier steps"
+   * line. Set for the run in the thread until it folds into its summary (not for `live` alone: when a run ends the rows must
+   * not all pop back in before that); saved activity that a person opens, and a subagent's, show every step.
+   */
+  collapse?: boolean;
 };
 
-function renderSection(section: Section, taskId: string, current: string | null, animate: boolean, extra: ReactNode, outputFor: { entryId: string; text: string } | null, waiting: ReadonlySet<string>) {
+function renderSection(section: Section, taskId: string, current: string | null, animate: boolean, extra: ReactNode, outputFor: { entryId: string; text: string } | null, waiting: ReadonlySet<string>, collapse: boolean) {
   switch (section.kind) {
     case "note": return <NoteBlock key={section.id} text={section.entry.text} />;
     case "phase": return <PhaseHeading key={section.id} entry={section.entry} />;
-    case "rows": return <ul key={section.id} className="space-y-2 text-[15px] leading-6 text-muted-foreground" aria-label="Steps">
-      {chunkRows(section.entries).map((chunk) => chunk.kind === "subagents"
-        ? <SubagentFleet key={chunk.key} taskId={taskId} calls={chunk.calls} animate={animate} waiting={waiting} />
-        : <EntryRow key={chunk.key} taskId={taskId} entry={chunk.entry} current={chunk.entry.id === current} animate={animate} output={outputFor?.entryId === chunk.entry.id ? outputFor.text : undefined} />)}
-      {extra}
-    </ul>;
+    case "rows": {
+      const chunks = chunkRows(section.entries);
+      const slots: RowSlot[] = collapse ? collapseRows(chunks) : chunks.map((chunk) => ({ kind: "chunk", key: chunk.key, chunk }));
+      return <ul key={section.id} className="space-y-2 text-[15px] leading-6 text-muted-foreground" aria-label="Steps">
+        {slots.map((slot) => slot.kind === "earlier" ? <EarlierSteps key={slot.key} taskId={taskId} slot={slot} />
+          : slot.chunk.kind === "subagents"
+            ? <SubagentFleet key={slot.key} taskId={taskId} calls={slot.chunk.calls} animate={animate} waiting={waiting} />
+            : <EntryRow key={slot.key} taskId={taskId} entry={slot.chunk.entry} current={slot.chunk.entry.id === current} animate={animate} output={outputFor?.entryId === slot.chunk.entry.id ? outputFor.text : undefined} />)}
+        {extra}
+      </ul>;
+    }
   }
 }
 
@@ -197,7 +233,7 @@ function renderSection(section: Section, taskId: string, current: string | null,
  * The log itself is `aria-live="off"`: streaming text and growing rows would be read out word by word. A separate polite status
  * says only what changed in the run (`announcement`).
  */
-export function Timeline({ taskId = "", entries, live = false, quiet = false, fallback = "Thinking", tail, notice = null, onRetry, stopping = false, animate = true, announcement, fold = false, durationMs, approvals = [], statusEnters = false, liveTool = null }: TimelineProps) {
+export function Timeline({ taskId = "", entries, live = false, quiet = false, fallback = "Thinking", tail, notice = null, onRetry, stopping = false, animate = true, announcement, fold = false, durationMs, approvals = [], statusEnters = false, liveTool = null, collapse = false }: TimelineProps) {
   const sections = useMemo(() => sectionsOf(entries), [entries]);
   const callId = useMemo(() => currentCallId(entries), [entries]);
   // Subagents that have a question for the person, and whose each question is.
@@ -222,7 +258,7 @@ export function Timeline({ taskId = "", entries, live = false, quiet = false, fa
   return <>
     <div className="flex min-w-0 flex-col gap-3" role="log" aria-live="off" aria-label="Agent activity" data-activity-log data-live={live ? "true" : undefined}>
       {fold ? <ActivityDisclosure taskId={taskId} entries={entries} durationMs={durationMs} className="" />
-        : sections.map((section, index) => renderSection(section, taskId, current, animate, section.kind === "rows" && index === sections.length - 1 ? trailing : null, outputFor, waiting))}
+        : sections.map((section, index) => renderSection(section, taskId, current, animate, section.kind === "rows" && index === sections.length - 1 ? trailing : null, outputFor, waiting, collapse))}
       {trailing && last?.kind !== "rows" ? <ul className="space-y-2 text-[15px] leading-6 text-muted-foreground" aria-label="Steps">{trailing}</ul> : null}
       {approvals.map((approval) => <ApprovalCard key={approval.id} approval={approval} source={approvalSource(approval.agentRunId, subagents)} />)}
       {tail}

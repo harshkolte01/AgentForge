@@ -487,21 +487,31 @@ class SessionRepository:
 
     @staticmethod
     def last_run_context(session, session_id):
-        """Peak input tokens over the model calls of the newest turn that made any."""
+        """What the provider measured for the newest turn that made any model call: the peak input over all its calls, and the
+        main agent's own first and latest request (a delegated subagent has a context of its own). `active` says that turn is
+        the one still running, so its latest request is the live size of the model's context."""
         recent = list(session.scalars(select(TurnExecution.task_id).join(SessionTurn, SessionTurn.id == TurnExecution.turn_id)
             .join(ConversationMessage, ConversationMessage.id == SessionTurn.user_message_id)
             .where(SessionTurn.session_id == session_id, TurnExecution.task_id.is_not(None))
             .order_by(ConversationMessage.sequence.desc()).limit(3)))
         tokens = BudgetOperation.usage_json["provider_usage"]["input_tokens"].as_integer()
         compacted = BudgetOperation.usage_json["provider_usage"]["compacted_results"].as_integer()
+        # Naming the conversation is not part of the reply whose context is being measured.
+        reply = (BudgetOperation.kind == "model", tokens > 0, BudgetOperation.operation_key.not_like(f"{TITLE_OPERATION_PREFIX}%"))
         for task_id in recent:
             peak, calls, stubbed = session.execute(select(func.max(tokens), func.count(), func.max(compacted))
                 .join(BudgetReservation, BudgetReservation.id == BudgetOperation.reservation_id)
-                .where(BudgetReservation.task_id == task_id, BudgetOperation.kind == "model", tokens > 0,
-                    # Naming the conversation is not part of the reply whose context is being measured.
-                    BudgetOperation.operation_key.not_like(f"{TITLE_OPERATION_PREFIX}%"))).one()
-            if calls:
-                return {"peak_input_tokens": int(peak), "model_calls": calls, "compacted_results": int(stubbed or 0)}
+                .where(BudgetReservation.task_id == task_id, *reply)).one()
+            if not calls:
+                continue
+            main = (select(tokens).join(BudgetReservation, BudgetReservation.id == BudgetOperation.reservation_id)
+                .where(BudgetReservation.task_id == task_id, BudgetReservation.depth == 1, *reply))
+            latest = session.scalar(main.order_by(BudgetOperation.recorded_at.desc()).limit(1))
+            first = session.scalar(main.order_by(BudgetOperation.recorded_at.asc()).limit(1))
+            active = session.scalar(select(Conversation.active_task_id).where(Conversation.id == session_id)) == task_id
+            return {"peak_input_tokens": int(peak), "model_calls": calls, "compacted_results": int(stubbed or 0),
+                    "latest_input_tokens": int(latest) if latest is not None else None,
+                    "first_input_tokens": int(first) if first is not None else None, "active": active}
         return None
 
     def messages(self, session_id, owner_id, *, after_sequence=0, limit=100):

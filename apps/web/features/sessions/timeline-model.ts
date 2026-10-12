@@ -3,7 +3,7 @@
  * finished (or abandoned) run is projected, and how entries are laid out in sections. Kept free of React so every rule here
  * has a plain node test.
  */
-import { describeCall, isDetailable } from "@/lib/activity/presentation";
+import { describeCall, isDetailable, summarizeTools } from "@/lib/activity/presentation";
 import type { ActivityEntry, CallEntry, PhaseEntry, ToolCallOutcome } from "@/lib/activity/types";
 import type { SyncSnapshot } from "@/lib/activity/sync";
 import { isToolKind, type LiveState, type LiveToolView } from "@/lib/activity/live-text";
@@ -176,6 +176,59 @@ export function chunkRows(entries: readonly RowEntry[]): RowChunk[] {
     else out.push({ kind: "subagents", key: entry.key, calls: [entry] });
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Earlier steps, while a run is going
+
+/** How many of the newest steps of a list always show while the run is going. */
+export const VISIBLE_STEPS = 4;
+/** Fewer earlier steps than this are not worth a line of their own: they just show. */
+export const MIN_EARLIER = 3;
+
+/** What a list of steps is drawn as: a row, or one line standing for a stretch of earlier steps that finished without trouble. */
+export type RowSlot =
+  | { kind: "chunk"; key: string; chunk: RowChunk }
+  | { kind: "earlier"; key: string; chunks: readonly RowChunk[]; count: number; summary: string };
+
+/** A step that can go into the "earlier steps" line: finished well. Anything running, failed, refused, interrupted, a warning or a team of subagents stays on screen. */
+function foldsAway(chunk: RowChunk): boolean {
+  if (chunk.kind !== "entry") return false;
+  const entry = chunk.entry;
+  if (entry.kind === "group") return true;
+  return entry.kind === "call" && entry.tool !== "delegate_task" && entry.outcome === "completed" && !entry.ambiguous
+    && entry.tone !== "danger" && entry.tone !== "warning";
+}
+
+const callsOf = (chunk: RowChunk): readonly CallEntry[] =>
+  chunk.kind !== "entry" ? chunk.calls : chunk.entry.kind === "call" ? [chunk.entry] : chunk.entry.kind === "group" ? chunk.entry.calls : [];
+
+/**
+ * A list of steps for a run that is going on: the newest `keep` always show, and the finished steps before them fold into one
+ * line ("12 earlier steps", with what they were), so a run that calls dozens of tools does not push everything off the screen.
+ * Only a stretch of at least `MIN_EARLIER` steps that all finished well folds; a step with trouble, or still running, stays
+ * where it is and splits the stretch. The line's key is its first step's, so it stays the same as more steps join it (and the
+ * person's choice to open it is kept). Order is kept.
+ */
+export function collapseRows(chunks: readonly RowChunk[], keep = VISIBLE_STEPS): RowSlot[] {
+  const slots: RowSlot[] = [];
+  const shown = (chunk: RowChunk): RowSlot => ({ kind: "chunk", key: chunk.key, chunk });
+  let run: RowChunk[] = [];
+  const flush = () => {
+    if (run.length >= MIN_EARLIER) {
+      const calls = run.flatMap(callsOf);
+      slots.push({ kind: "earlier", key: `earlier:${run[0].key}`, chunks: run, count: calls.length, summary: summarizeTools(calls.map((call) => call.tool)) });
+    } else slots.push(...run.map(shown));
+    run = [];
+  };
+  const limit = chunks.length - keep;
+  for (let index = 0; index < chunks.length; index++) {
+    const chunk = chunks[index];
+    if (index < limit && foldsAway(chunk)) run.push(chunk);
+    else { flush(); slots.push(shown(chunk)); }
+  }
+  flush();
+  return slots;
 }
 
 /** The delegations among `entries`, by the run id of the subagent each started (calls from older runs have none). */

@@ -55,7 +55,13 @@ scrollbar (it would flash with every line) and fades its top edge while earlier 
 command's output block keeps its scrollbar. It never
 says "running" (`describeDraft`). It is hidden once the call's real row exists (matched by `call_id`) and while an Approve /
 Decline card waits for it (the card carries the exact text). A running command's output sits under its own row and goes when
-the row settles. Neither is held through the end of a run, and neither is prose: they never reach the answer area.
+the row settles.
+
+While the run is going, a list of steps shows only its newest four rows. The finished steps before them fold into one line,
+"17 earlier steps", with what they were ("Read 11 files · Ran 6 searches"); it opens in place and remembers the choice
+(`collapseRows` in `timeline-model.ts`, `EarlierSteps` in `run-steps.tsx`, `Timeline`'s `collapse`). Only stretches of three or
+more steps that all finished well fold: a step that is running, failed, refused, interrupted or a warning, a failing command and
+a team of subagents always stay on screen. Finished runs, a subagent's panel and the opened "Worked" disclosure show every step. Neither is held through the end of a run, and neither is prose: they never reach the answer area.
 
 ## Backend
 

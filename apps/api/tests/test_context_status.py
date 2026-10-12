@@ -63,6 +63,17 @@ class BuildStatusTests(TestCase):
         self.assertEqual(result.level, "ok")
         self.assertEqual(result.last_run.compacted_results, 2)
 
+    def test_the_measured_requests_of_the_run_are_reported_next_to_the_estimate_and_never_replace_it(self):
+        last = {"peak_input_tokens": 139_172, "model_calls": 44, "compacted_results": 0, "latest_input_tokens": 139_172,
+                "first_input_tokens": 36_773, "active": True}
+        result = status(usage(last_run=last), window=1_050_000)
+        self.assertEqual((result.last_run.latest_input_tokens, result.last_run.first_input_tokens, result.last_run.active), (139_172, 36_773, True))
+        self.assertEqual((result.used_basis, result.used_tokens), ("next_turn", result.baseline_tokens + result.history_tokens))
+
+    def test_a_server_that_does_not_measure_the_main_agent_still_gives_a_valid_last_run(self):
+        result = status(usage(last_run={"peak_input_tokens": 10, "model_calls": 1, "compacted_results": 0}))
+        self.assertEqual((result.last_run.latest_input_tokens, result.last_run.first_input_tokens, result.last_run.active), (None, None, False))
+
     def test_a_small_peak_never_hides_the_starting_context(self):
         result = status(usage(last_run={"peak_input_tokens": 10, "model_calls": 1, "compacted_results": 0}))
         self.assertEqual(result.used_basis, "next_turn")
@@ -144,6 +155,14 @@ class RouteTests(TestCase):
         self.assertEqual(body["used_basis"], "next_turn")
         self.assertEqual(body["last_run"]["peak_input_tokens"], 30_000)
         self.assertEqual(body["last_run"]["model_calls"], 4)
+
+    def test_a_run_that_is_going_on_is_reported_with_its_live_measured_request(self):
+        last = {"peak_input_tokens": 90_000, "model_calls": 12, "compacted_results": 0, "latest_input_tokens": 88_000,
+                "first_input_tokens": 36_000, "active": True}
+        with patch("agentforge.api.routes_context.SessionRepository") as repository:
+            repository.return_value.context_usage.return_value = usage(last_run=last)
+            body = self.client().get(f"/api/v1/context?session_id={uuid4()}").json()
+        self.assertEqual((body["last_run"]["active"], body["last_run"]["latest_input_tokens"], body["last_run"]["first_input_tokens"]), (True, 88_000, 36_000))
 
     def test_an_unknown_or_foreign_session_is_not_found(self):
         with patch("agentforge.api.routes_context.SessionRepository") as repository:

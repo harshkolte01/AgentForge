@@ -11,6 +11,12 @@ class LastRunContext(BaseModel):
     model_calls: int = Field(ge=0)
     # Largest number of old tool results stubbed out of any single request in that run.
     compacted_results: int = Field(default=0, ge=0)
+    # Of the main agent's own requests (a delegated subagent has a context of its own), as the provider measured them: the
+    # newest, which is what the model holds right now while the run goes on, and the first, which is the run's starting size.
+    latest_input_tokens: int | None = Field(default=None, ge=0)
+    first_input_tokens: int | None = Field(default=None, ge=0)
+    # The run is still going on, so `latest_input_tokens` is the live size of the model's context.
+    active: bool = False
 
 
 class ContextStatus(BaseModel):

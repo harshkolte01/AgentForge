@@ -81,6 +81,49 @@ export function toolPresentation(tool: string, unlisted: UnlistedPolicy = "gener
   return unlisted === "generic" && safeName.test(tool) ? "status" : "hidden";
 }
 
+/** The kinds of work a stretch of finished steps is summed up in, and the tools that belong to each. */
+const summaryKinds: Record<string, string> = {
+  read: "read", read_sandbox_file: "read", read_repo_file: "read", read_context_resource: "read", read_task_artifact: "read",
+  grep: "search", search_repo: "search", search_conversation_history: "search",
+  find: "list", ls: "list", list_repo_files: "list",
+  edit: "edit", edit_sandbox_file: "edit",
+  write: "write", write_sandbox_file: "write",
+  bash: "run", run_sandbox_command: "run", run_tests: "run", get_test_results: "run",
+  web_search: "web", fetch_webpage: "web", browser_public_page: "web", read_research_source: "web",
+};
+const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+const summaryPhrases: Record<string, (count: number) => string> = {
+  read: (count) => `Read ${plural(count, "file", "files")}`,
+  search: (count) => `Ran ${plural(count, "search", "searches")}`,
+  list: (count) => `Listed files ${plural(count, "time", "times")}`,
+  edit: (count) => `Edited ${plural(count, "file", "files")}`,
+  write: (count) => `Wrote ${plural(count, "file", "files")}`,
+  run: (count) => `Ran ${plural(count, "command", "commands")}`,
+  web: (count) => `Looked up ${plural(count, "web source", "web sources")}`,
+};
+/** At most this many kinds of work are named in a summary; the rest are counted. */
+const SUMMARY_KINDS = 3;
+
+/**
+ * A short sum-up of finished steps by what they did: "Read 8 files · Ran 4 searches · 2 more". The most frequent kinds come
+ * first (ties keep the order they first happened in); steps of a tool the list does not know are counted in "more".
+ */
+export function summarizeTools(tools: readonly string[]): string {
+  const counts = new Map<string, number>();
+  let other = 0;
+  for (const tool of tools) {
+    const kind = summaryKinds[tool];
+    if (kind) counts.set(kind, (counts.get(kind) ?? 0) + 1);
+    else other++;
+  }
+  const ranked = [...counts].sort((a, b) => b[1] - a[1]);
+  const named = ranked.slice(0, SUMMARY_KINDS);
+  other += ranked.slice(SUMMARY_KINDS).reduce((sum, [, count]) => sum + count, 0);
+  const parts = named.map(([kind, count]) => summaryPhrases[kind](count));
+  if (other) parts.push(named.length ? `${other} more` : plural(other, "other step", "other steps"));
+  return parts.join(" · ");
+}
+
 /** Whether a call of this tool is an action: it appears in the timeline and in every count. */
 export function isActionTool(tool: string, unlisted: UnlistedPolicy = "generic"): boolean {
   return toolPresentation(tool, unlisted) !== "hidden";

@@ -105,12 +105,24 @@ The small indicator opens on hover, click, or keyboard activation. It does not
 disable sending or interfere with repository selection, model selection,
 attachments, or stop controls. Touch retains an enlarged target.
 
-The headline is an **estimated next-message input**: instruction/tool overhead,
-the actual next history extract, and the unsent draft/attachments. The denominator
-is the effective input allowance. The compact card shows only the percentage,
-meter and token estimate; it has no expandable diagnostics or model/settings
-breakdown. Empty, unknown, loading, stale, error, and near-limit states remain
-distinct. Detailed usage and history coverage remain in the API response.
+The ring has two readings, and the card says which one it is showing:
+
+- **While a run is going on**, it is the **measured** size of the model's latest request: the provider-reported input
+  tokens of the main agent's newest model call, tool results included. This is what the model actually holds right now; in a
+  tool-heavy run it climbs from the starting size (often tens of thousands of tokens) to well over a hundred thousand. The
+  unsent draft is not part of it. It follows the run because the status is re-read every few seconds while it is live and each
+  call's usage is recorded as soon as the call ends. A delegated subagent has a context of its own and is not counted here.
+- **Otherwise**, it is an **estimated next-message input**: instruction/tool overhead, the actual next history extract, and the
+  unsent draft/attachments. The denominator in both cases is the effective input allowance.
+
+Below the meter, a conversation that has had a run also shows that run's measured numbers ("This run" or "Last run": number of
+requests, peak input and its share of the allowance, and whether older tool results were shortened). The server reports
+`last_run.latest_input_tokens`, `first_input_tokens` and `active` (`SessionRepository.last_run_context`); `active` is true only for
+the conversation's current task, so a finished run's latest request is never mistaken for the live context. The estimate is
+unchanged and is still labelled as one: the next turn starts fresh from instructions and the history extract, so a previous run's
+tool results do not count toward it. Empty, unknown, loading, stale, error, and near-limit states remain distinct. Near the limit
+during a run the card says older results are shortened automatically; near it for the next message it suggests shortening the
+message or starting a new conversation.
 
 The popup is centered directly above the context indicator with a fixed 6px gap
 from its button. Its distance does not grow with the text area's height. It flips
@@ -118,9 +130,8 @@ vertically when needed and shifts away from screen edges without falling back to
 a distant side of the composer. Pointer opening does not move focus into the
 popup; keyboard opening supports focus and Escape dismissal.
 
-The latest run's provider-measured peak remains separate. It can include several
-independent agents and is never added to the next draft or used to recommend a new
-conversation. API coverage describes included text, not proof of model consumption.
+The latest run's provider-measured peak can include several independent agents, is never added
+to the next draft and is never used to recommend a new conversation. API coverage describes included text, not proof of model consumption.
 Actual input read receipts remain independently verified by the harness.
 
 Polling is sequential, times out, pauses when hidden, resumes on visibility, aborts

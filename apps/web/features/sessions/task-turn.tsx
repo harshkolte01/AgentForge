@@ -164,6 +164,6 @@ export function TaskTurn({ taskId, savedReady, holdStatus = true, onTerminal, on
 
   // Over, with no answer on screen yet and the saved one not in: the status line stays (it only shows when no steps do).
   const holding = over && !savedReady && !tailText && holdStatus;
-  return <Timeline taskId={taskId} entries={entries} live={!over || holding} quiet={quiet} notice={notice} onRetry={retry} stopping={stopping} announcement={announcement} fold={fold} durationMs={durationMs} approvals={approvals} liveTool={liveTool}
+  return <Timeline taskId={taskId} entries={entries} live={!over || holding} quiet={quiet} notice={notice} onRetry={retry} stopping={stopping} announcement={announcement} fold={fold} durationMs={durationMs} approvals={approvals} liveTool={liveTool} collapse
     tail={tailText ? <div ref={tail} className="min-w-0"><AssistantMessage content={tailText} streaming={!over} onProgress={onGrow} /></div> : null} />;
 }

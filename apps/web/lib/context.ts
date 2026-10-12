@@ -18,7 +18,15 @@ export type ContextStatus = {
   uncovered_turns?: number;
   retrieval_available?: boolean;
   snapshot_revision?: number;
-  last_run: { peak_input_tokens: number; model_calls: number; compacted_results: number } | null;
+  last_run: {
+    peak_input_tokens: number; model_calls: number; compacted_results: number;
+    /** The main agent's newest request as the provider measured it: the live size of the model's context while `active`. Absent from an older server. */
+    latest_input_tokens?: number | null;
+    /** The main agent's first request of that run, measured. */
+    first_input_tokens?: number | null;
+    /** That run is still going on. */
+    active?: boolean;
+  } | null;
   messages_total: number;
   messages_in_full: number;
   messages_condensed: number;
@@ -54,23 +62,33 @@ export function estimateDraftTokens(goal: string, attachments: readonly { name?:
   return estimate(goal) + attachments.reduce((sum, item) => sum + estimate(item.name ?? "") + estimate(item.content) + (item.media_type === "application/pdf" ? (item.page_count ?? 20) * 32768 : item.media_type?.startsWith("image/") ? 8192 : item.media_type === "text/plain" ? Math.ceil((item.byte_size ?? 0) / 2) : 0), 0);
 }
 
-export type ContextProjection = { used: number; percent: number; level: ContextLevel; empty: boolean };
+/** `measured`: the model's actual input on its latest request, while a run is going. `estimated`: the next message's starting input. */
+export type ContextBasis = "measured" | "estimated";
+export type ContextProjection = { used: number; percent: number; level: ContextLevel; empty: boolean; basis: ContextBasis };
 
 /**
- * The status with the unsent draft added, so the ring moves as the person types.
+ * What the ring shows. While a run is going on it is the provider-measured size of the model's latest request (what the
+ * model is holding right now, tool results included); the unsent draft is not part of it. Otherwise it is the estimated input
+ * of the next message, with the unsent draft added so the ring moves as the person types.
  *
- * A conversation with nothing in it and nothing typed is `empty`; otherwise instructions, history and
- * the draft estimate the next input. Previous runs' working contexts are not appended to a new turn.
+ * A conversation with nothing in it and nothing typed is `empty`. Previous runs' working contexts are not appended to a new
+ * turn: it starts fresh from instructions and the history extract.
  */
 export function projectContext(status: ContextStatus, draftTokens: number): ContextProjection {
+  const windowTokens = status.input_limit_tokens ?? (status.window_tokens ? Math.max(0, status.window_tokens - (status.max_output_tokens ?? 0)) : null);
+  const measured = status.last_run?.active ? status.last_run.latest_input_tokens : null;
+  if (measured && measured > 0) {
+    if (!windowTokens) return { used: measured, percent: 0, level: "unknown", empty: false, basis: "measured" };
+    const percent = Math.min(100, Math.round((measured / windowTokens) * 1000) / 10);
+    return { used: measured, percent, level: levelFor(percent), empty: false, basis: "measured" };
+  }
   const empty = status.messages_total === 0 && !status.last_run && draftTokens === 0;
   // Each new turn gets fresh working context. A historical peak is never carried into its draft.
   const used = status.baseline_tokens + status.history_tokens + Math.max(0, draftTokens);
-  const windowTokens = status.input_limit_tokens ?? (status.window_tokens ? Math.max(0, status.window_tokens - (status.max_output_tokens ?? 0)) : null);
-  if (!windowTokens) return { used, percent: 0, level: "unknown", empty };
-  if (empty) return { used: 0, percent: 0, level: "ok", empty };
+  if (!windowTokens) return { used, percent: 0, level: "unknown", empty, basis: "estimated" };
+  if (empty) return { used: 0, percent: 0, level: "ok", empty, basis: "estimated" };
   const percent = Math.min(100, Math.round((used / windowTokens) * 1000) / 10);
-  return { used, percent, level: levelFor(percent), empty };
+  return { used, percent, level: levelFor(percent), empty, basis: "estimated" };
 }
 
 /** What the next turn's history extract includes; this is not a proof that a model has read it. */
