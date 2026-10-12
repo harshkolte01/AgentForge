@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "neatlogs": {
+      "type": "http",
+      "url": "https://ingest.neatlogs.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${NEATLOGS_API_KEY}"
+      }
+    }
+  }
+}

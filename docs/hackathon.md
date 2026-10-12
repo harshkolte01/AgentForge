@@ -18,8 +18,8 @@ does not submit the entry.
 | Substantial task completes with evidence | Actual task receipt, source/test evidence and artifact download | Offline fixtures available; live end-to-end pending |
 | Failure recovery works | Disclosed failing attempt and subsequent legitimate action | Actual generated fixture exits available; live trace pending |
 | Neatlogs improved the agent | Before/after hosted trace links, comparable latency/tokens/cost and change | Integration implemented; hosted traces confirmed arriving (12 Oct, `docs/neatlogs.md`); before/after comparison runs still to do |
-| Entire used during implementation | Allowed checkpoint + commit or actual versioned entire-graph output | Pending; no conversation/transcript export authorized |
-| Business plan uses cfo.ai | Export/screenshots covering pricing, costs, revenue and runway | Assumption template below; cfo.ai export pending |
+| Entire used during implementation | Commits carrying Entire checkpoints (prompt, session, diff) from Claude Code sessions in this repository | Enabled (`.entire/settings.json`, git-refs checkpoints synced to origin); Claude Code hooks re-added 12 Oct; checkpointed fix commit pending |
+| Business plan uses cfo.ai | Export/screenshots covering pricing, costs, revenue and runway | CFO.ai is a catalog plugin (`plugins/catalog.py`), so AgentForge's agent builds the model in CFO.ai from the `business_metrics` export; model pending |
 | Built in public | Actual dated #neatHack posts | Pending |
 | Submitted | Public quote of official post with team/name/project/repo/demo | Pending; follow confirmed cutoff |
 
@@ -39,17 +39,14 @@ How the trace maps to each thing the official page asks to trace, how to run a b
 `examples/neatlogs_trace_smoke.py`) prove what would be exported; only a run with a real project key produces the hosted
 trace links this pack needs. Record the worker's `neatlogs_trace_id=` log line for each run you want to cite.
 
-## Entire graph without transcript export
+## Entire checkpoints
 
-The [official Entire Graph project](https://github.com/entireio/entire-graph)
-documents local static analysis and `entire graph health --repo . --json`. After
-an operator installs a verified CLI/plugin, record `entire graph version`, the
-commit being analyzed, and actual health/query output for a code question such as
-approval reconciliation or worker lease fencing. Keep original output; do not
-claim a graph/checkpoint has been produced before running the command. Do not run
-`init-agents` merely for evidence: it writes repository guidance and should be a
-separate intentional integration. No chat transcripts are needed for graph-only
-code analysis.
+Entire is a development tool for this repository, not part of the product: AgentForge has no Entire or
+entire-graph integration. `entire enable` is on for the repository and `entire agent add claude-code` installs the
+hooks in `.claude/settings.json`; each Claude Code session that changes files leaves a checkpoint (prompt, session and
+diff) attached to the commit, stored in git refs and synced to `origin`. `entire status` shows the active sessions and
+`entire checkpoint list` / `entire checkpoint explain <sha>` show what a commit carries. Cite only checkpoints that exist
+on the hosted repository page; do not claim graph output.
 
 ## Business-plan assumptions for cfo.ai
 
@@ -93,8 +90,8 @@ cost sensitivity. Never present fixture costs as live model unit economics.
 3. **1:10–1:35:** Show the final artifact/receipt and the separate exact-change
    approval. Only show live PR delivery after controlled qualification succeeds.
 4. **1:35–2:05:** Show actual Neatlogs failure/success traces and measured change.
-5. **2:05–2:25:** Show actual Entire checkpoint or graph output and what it helped
-   inspect; briefly explain its implementation role.
+5. **2:05–2:25:** Show the actual Entire checkpoint on the fix commit (prompt, session,
+   diff); briefly explain its implementation role.
 6. **2:25–2:45:** Show the cfo.ai export: assumptions, pricing, cost and runway.
 7. **2:45–2:50:** Show repository/demo links and honest remaining limitations.
 

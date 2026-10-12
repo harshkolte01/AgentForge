@@ -117,7 +117,10 @@ The loop the hackathon asks for is *measure, change one thing, measure again, ke
    ```
 
    (`.mcp.json` for Claude Code, `.cursor/mcp.json` for Cursor, or `npx @neatlogs/wizard mcp --api-key <key>`. Keep the key in
-   the environment. Use the EU host for an EU project. Not run or verified in this repository.)
+   the environment. Use the EU host for an EU project.) The repository's `.mcp.json` configures it for Claude Code and reads
+   `NEATLOGS_API_KEY` from the environment. Checked on 12 October 2026 with the project key: `initialize` and `tools/list`
+   answered, offering `search_traces`, `get_trace_context`, `get_project_analytics`, the `triage_*` tools and
+   `create_detection` among others.
 4. **Change one thing** (a prompt, a tool description, a budget) and restart the worker with `NEATLOGS_TAGS=improved`.
 5. **Compare** the same tasks: tokens, cost, duration, error spans, and `agentforge.task.tool_failures` per task. Save both
    trace links (or screenshots) with the numbers; that is the before/after evidence.
