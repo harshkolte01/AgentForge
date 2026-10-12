@@ -297,21 +297,32 @@ class AuthorizedGitHubClient:
         tree = await client.request("GET", f"/repos/{canonical}/git/trees/{ref}?recursive=1")
         if tree.get("truncated") or not isinstance(tree.get("tree"), list) or len(tree["tree"]) > 2000:
             raise GitHubError("github_archive_file_count_limit")
-        from agentforge.integrations.github_client import _safe_path, _secret_path
-        # Every entry is checked before anything is fetched.
-        blobs = []
+        from agentforge.integrations.github_client import MAX_FILE_BYTES, skip_reason
+        # Every entry is checked before anything is fetched. A file that cannot be loaded (a secret, a link, a submodule, an
+        # unsafe name, one over the size limit) is left out and reported; it never fails the rest of the repository.
+        blobs, skipped, folded = [], [], set()
         for entry in tree["tree"]:
-            parts = _safe_path(entry.get("path", ""))
-            if _secret_path(parts):
-                raise GitHubError("github_archive_sensitive_path")
-            if entry.get("type") == "tree":
+            path, kind, mode = entry.get("path", ""), entry.get("type"), entry.get("mode")
+            if kind == "tree":
                 continue
-            if entry.get("type") != "blob" or entry.get("mode") not in {"100644", "100755"}:
-                raise GitHubError("github_archive_special_file")
-            if entry.get("size", 0) > 1_000_000:
-                raise GitHubError("github_archive_file_size_limit")
+            if not isinstance(path, str):
+                raise GitHubError("github_response_invalid")
+            if kind == "commit":
+                reason = "submodule"
+            elif kind != "blob" or mode not in {"100644", "100755"}:
+                reason = "symlink" if mode == "120000" else "special"
+            else:
+                reason = skip_reason(path)
+                if reason is None and (entry.get("size") or 0) > MAX_FILE_BYTES:
+                    reason = "too_large"
+                elif reason is None and path.casefold() in folded:
+                    reason = "case_clash"
+            if reason:
+                skipped.append((path, reason))
+                continue
             if not isinstance(entry.get("sha"), str) or not SHA.fullmatch(entry["sha"]):
                 raise GitHubError("github_response_invalid")
+            folded.add(path.casefold())
             blobs.append(entry)
         size = 0
         gate = asyncio.Semaphore(SNAPSHOT_CONCURRENCY)
@@ -344,8 +355,8 @@ class AuthorizedGitHubClient:
                 await asyncio.gather(*fetches, return_exceptions=True)
         files = {entry["path"]: data for entry, data in zip(blobs, contents)}
         modes = {entry["path"]: 0o755 if entry["mode"] == "100755" else 0o644 for entry in blobs}
-        from agentforge.sandbox.workspace import validate_workspace
-        return RepositorySnapshot(canonical, ref, validate_workspace(files), modes)
+        from agentforge.integrations.github_client import checked_workspace
+        return RepositorySnapshot(canonical, ref, checked_workspace(files), modes, tuple(skipped))
 
 async def github_for_user(session_factory, settings, user_id):
     if settings.auth_mode == "github_app":

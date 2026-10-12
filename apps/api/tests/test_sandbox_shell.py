@@ -12,6 +12,7 @@ from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+from agentforge.integrations.github_client import GitHubError
 from agentforge.integrations.e2b_sandbox import GRACE_SEC, WORKSPACE, SandboxUnavailable, Workspace, SandboxConfig
 from agentforge.delivery.service import DeliveryError
 from agentforge.tools.catalog import EFFECT_TOOLS, ToolCatalog
@@ -123,7 +124,7 @@ class BashTests(IsolatedAsyncioTestCase):
         async def unavailable(existing_id, metadata):
             raise SandboxUnavailable("SANDBOX_CREATE_FAILED")
         env.provider.open = unavailable
-        with self.assertRaises(ToolError) as caught:
+        with self.assertLogs("agentforge.tools.sandbox_shell", "WARNING"), self.assertRaises(ToolError) as caught:
             await env.call("bash", BashArgs(command="ls"))
         self.assertEqual(caught.exception.code, "SANDBOX_CREATE_FAILED")
         self.assertIn("sandbox", caught.exception.detail)
@@ -326,6 +327,22 @@ class SearchToolTests(IsolatedAsyncioTestCase):
         outcome = await env.call("grep", GrepArgs(pattern="zzz"))
         self.assertEqual((outcome.status, outcome.data["count"], outcome.data["matches"]), ("ok", 0, ""))
 
+    async def test_an_invalid_pattern_or_missing_path_is_an_error_not_a_match(self):
+        env = Env(lambda command: (2, "", "grep: parentheses not balanced") if "grep" in command else None)
+        with self.assertRaises(ToolError) as caught:
+            await env.call("grep", GrepArgs(pattern="("))
+        self.assertEqual(caught.exception.code, "INVALID_ARGUMENT")
+        missing = Env(lambda command: (2, "", "") if "grep" in command else None)
+        with self.assertRaises(ToolError):
+            await missing.call("grep", GrepArgs(pattern="x", path="nope"))
+
+    async def test_matches_are_kept_when_grep_stopped_early_or_skipped_an_unreadable_file(self):
+        for code in (141, 2):  # head cut the stream; some file could not be read while others matched
+            env = Env(lambda command, code=code: (code, "a.py:1:x\n", "") if "grep" in command else None)
+            outcome = await env.call("grep", GrepArgs(pattern="x"))
+            self.assertEqual((outcome.data["count"], outcome.data["matches"]), (1, "a.py:1:x\n"), code)
+        self.assertIn("set -o pipefail", shlex.split(env.sandbox.ran[-1][0])[-1])
+
     async def test_find_matches_names_outside_noise_folders(self):
         env = Env(lambda command: (0, "./a/test_x.py\n./b/test_y.py\n", "") if "find" in command else None)
         outcome = await env.call("find", FindArgs(pattern="test_*.py", max_results=20))
@@ -412,6 +429,63 @@ class ConversationSandboxTests(IsolatedAsyncioTestCase):
             await env.conversation.workspace(env.task_id)
         self.assertEqual(caught.exception.code, "REPOSITORY_UNAVAILABLE")
 
+    async def test_the_agent_is_told_which_files_were_left_out_of_the_repository(self):
+        skipped = (("config/.env", "sensitive"), ("assets/movie.mp4", "too_large"), ("keys/server.key", "sensitive"))
+        github = NS(snapshot=AsyncMock(return_value=NS(commit_sha=SHA, files={"README.md": b"hi"}, skipped=skipped)))
+        env = Env(repository=REPO, github=github)
+        await env.conversation.workspace(env.task_id)
+        notice = env.conversation.take_notice()
+        for path in ("config/.env", "assets/movie.mp4", "keys/server.key"):
+            self.assertIn(path, notice)
+        self.assertIn("may hold secrets", notice)
+        self.assertIn("will not delete", notice)
+        self.assertIsNone(env.conversation.take_notice())  # said once
+
+    async def test_a_repository_with_nothing_left_out_says_nothing(self):
+        env = Env(repository=REPO, github=self.snapshot())
+        await env.conversation.workspace(env.task_id)
+        self.assertIsNone(env.conversation.take_notice())
+
+    async def test_the_marker_is_written_only_after_the_checkout_is_complete(self):
+        env = Env(repository=REPO, github=self.snapshot())
+        await env.conversation.workspace(env.task_id)
+        script = shlex.split(env.sandbox.ran[-1][0])[-1]
+        self.assertGreater(script.index(f"> {MARKER}"), script.index(f"git tag -f {BASE_TAG}"))  # a failed load is redone, not trusted
+
+    async def test_uploaded_files_carry_a_current_modification_time(self):
+        github = self.snapshot()
+        env = Env(repository=REPO, github=github)
+        await env.conversation.workspace(env.task_id)
+        with tarfile.open(fileobj=io.BytesIO(env.sandbox.written["/tmp/agentforge-repo.tgz"]), mode="r:gz") as archive:
+            self.assertTrue(all(member.mtime > 1_500_000_000 for member in archive.getmembers()))
+
+    async def test_a_sandbox_is_remembered_even_when_the_repository_then_fails_to_load(self):
+        github = NS(snapshot=AsyncMock(side_effect=GitHubError("github_rate_limited")))
+        env = Env(repository=REPO, github=github)
+        with self.assertRaises(GitHubError):
+            await env.conversation.workspace(env.task_id)
+        self.assertEqual(env.remembered, ["sbx-1"])  # the next attempt reuses this VM instead of creating another
+
+    async def test_an_attachment_that_cannot_be_placed_does_not_take_the_sandbox_away(self):
+        env = Env()
+        files = [{"name": "a.txt", "content": "hi"}, {"name": "b.png", "upload_id": "gone"}]
+        class Sessions:
+            def __call__(self):
+                return self
+            def __enter__(self):
+                return NS(get=lambda model, key: NS(created_by="user", permissions_json={"attachments": files}))
+            def __exit__(self, *exc):
+                return False
+        def load(owner, file):
+            raise OSError("missing upload")
+        env.conversation.sessions = Sessions()
+        env.conversation.attachment_storage = NS(load=load)
+        with self.assertLogs("agentforge.tools.sandbox_shell", "WARNING"):
+            workspace = await env.conversation.workspace(env.task_id)
+        self.assertIs(workspace, env.workspace)
+        self.assertIn("b.png", env.conversation.take_notice())
+        self.assertTrue(any(path.endswith("a.txt") for path in env.sandbox.written))
+
     async def test_a_resumed_sandbox_that_already_holds_the_repository_is_not_loaded_again(self):
         github = self.snapshot()
         env = Env(lambda command: (0, f"owner/repo@{SHA}", "") if f"cat {MARKER}" in command else None, repository=REPO, github=github)
@@ -433,6 +507,42 @@ class ConversationSandboxTests(IsolatedAsyncioTestCase):
         self.assertEqual(opens, [None, None])
         self.assertEqual(env.killed, 1)
         self.assertEqual(github.calls, [("owner/repo", SHA)])
+
+
+class RepositoryFailureTests(IsolatedAsyncioTestCase):
+    def env(self, error):
+        github = NS(snapshot=AsyncMock(side_effect=error))
+        return Env(repository=REPO, github=github), github
+
+    async def test_a_repository_over_a_limit_is_a_typed_error_not_a_sandbox_failure(self):
+        env, github = self.env(GitHubError("github_archive_file_count_limit"))
+        with self.assertLogs("agentforge.tools.sandbox_shell", "WARNING"), self.assertRaises(ToolError) as caught:
+            await env.call("bash", BashArgs(command="ls"))
+        self.assertEqual(caught.exception.code, "REPOSITORY_TOO_LARGE")
+        self.assertNotIn("github_archive", caught.exception.detail)
+
+    async def test_a_failure_that_cannot_change_is_not_downloaded_again_for_every_tool_call(self):
+        env, github = self.env(GitHubError("github_public_repository_or_ref_not_found"))
+        for _ in range(3):
+            with self.assertLogs("agentforge.tools.sandbox_shell", "WARNING"), self.assertRaises(ToolError) as caught:
+                await env.call("ls", LsArgs(path="."))
+            self.assertEqual(caught.exception.code, "REPOSITORY_UNAVAILABLE")
+        self.assertEqual(github.snapshot.await_count, 1)
+
+    async def test_a_busy_github_is_tried_again_on_the_next_call(self):
+        env, github = self.env(GitHubError("github_rate_limited"))
+        for _ in range(2):
+            with self.assertLogs("agentforge.tools.sandbox_shell", "WARNING"), self.assertRaises(ToolError):
+                await env.call("ls", LsArgs(path="."))
+        self.assertEqual(github.snapshot.await_count, 2)
+
+    async def test_a_checkout_that_fails_inside_the_sandbox_says_the_sandbox_itself_started(self):
+        env = Env(lambda command: (1, "", "") if "tar -xzf" in command else None, repository=REPO,
+                  github=NS(snapshot=AsyncMock(return_value=NS(commit_sha=SHA, files={"a": b"1"}))))
+        with self.assertLogs("agentforge.tools.sandbox_shell", "WARNING"), self.assertRaises(ToolError) as caught:
+            await env.call("bash", BashArgs(command="ls"))
+        self.assertEqual(caught.exception.code, "REPOSITORY_LOAD_FAILED")
+        self.assertIn("sandbox started", caught.exception.detail)
 
 
 class FakeDelivery:

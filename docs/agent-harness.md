@@ -107,12 +107,25 @@ credentials; GitHub writes happen in the backend.
   process; the output so far comes back with `timed_out`. If the connection is lost, or the person presses Stop, the
   backend ends the command's whole process group in the VM. The VM's lifetime is extended to cover a long command.
   While it runs, its output (both streams) is shown live, redacted, from the end (the saved result is unchanged).
-- **Connections**: reconnecting to an existing VM is retried after a transient failure; creating one is never retried
-  (a failed create may still have allocated a VM). A dropped connection during a command or a write is a
+- **Connections**: reconnecting to an existing VM is retried after a transient failure; creating one is retried only when
+  the provider refused it (no capacity or rate limit: `SANDBOX_BUSY` after three tries), never after an unknown failure (a
+  failed create may still have allocated a VM). A rejected API key is `SANDBOX_AUTH_FAILED` and is not retried. A new VM
+  that cannot run its first command is stopped, not left behind. A VM that is gone or unreachable during a command is a
+  sandbox error, not a command that "ran too long". A dropped connection during a command or a write is a
   `SANDBOX_DISCONNECTED` result, not a failed run, and the next call reconnects. A read or edit the sandbox does not
   answer is `SANDBOX_UNAVAILABLE`, never `FILE_NOT_FOUND`, so a real file is not mistaken for a missing one.
 - **Setup**: the first call of a conversation also starts the VM and uploads the selected repository's pinned commit
-  (tagged `agentforge-base`), so every tool deadline includes ten minutes for that setup.
+  (tagged `agentforge-base`), so every tool deadline includes ten minutes for that setup. The repository is marked as
+  loaded only after the checkout fully succeeded, so a failed attempt is redone on the next call.
+- **Files left out of the repository**: files that must not or cannot be loaded are skipped, never fatal for the rest of
+  the repository: anything that may hold secrets (`.env` and `.env.*` except `.env.example`/`.sample`/`.template`, keys
+  and certificates such as `*.pem`/`*.key`/`*.p12`/`*.pfx`/`*.keystore`, `.git`, `.ssh`, `.aws`, `.npmrc`, `.netrc`,
+  `id_rsa`, or any file or folder named `credentials`), symbolic links, submodules, special files, names the workspace
+  cannot hold, files over 1 MB and names that differ only by letter case. The agent is told which ones in a `notice` with
+  the first result. Skipped files are not in the baseline, so publishing never deletes them. A repository over the whole-size
+  limits (2,000 files, 10 MB) still fails, as `REPOSITORY_TOO_LARGE`; other repository failures are
+  `REPOSITORY_UNAVAILABLE` with a plain reason, and one that cannot change (not found, too large) is not downloaded again
+  for every call of the same run.
 - **Replaced VMs**: when the conversation's earlier VM no longer exists, a new one is created and the next tool result
   carries a `notice` telling the agent that earlier files and changes are gone.
 

@@ -287,6 +287,31 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("private", str(caught.exception))
         self.assertEqual(len(sdk.created), 1)  # allocation is never retried behind the person's back
 
+    async def test_a_refused_creation_is_retried_because_nothing_was_allocated(self):
+        from e2b import ServiceBusyException
+        sdk = FakeSDK(create_error=ServiceBusyException())
+        with patch("agentforge.integrations.e2b_sandbox.CREATE_RETRY_SEC", 0), self.assertRaises(SandboxUnavailable) as caught:
+            await SandboxProvider(config(), factory=sdk).open(None, metadata={})
+        self.assertEqual(caught.exception.code, "SANDBOX_BUSY")
+        self.assertEqual(len(sdk.created), 3)
+
+    async def test_a_rejected_api_key_is_named_and_not_retried(self):
+        from e2b import AuthenticationException
+        created = FakeSDK(create_error=AuthenticationException("bad key"))
+        with self.assertRaises(SandboxUnavailable) as caught:
+            await SandboxProvider(config(), factory=created).open(None, metadata={})
+        self.assertEqual((caught.exception.code, len(created.created)), ("SANDBOX_AUTH_FAILED", 1))
+        connected = FakeSDK(connect_error=AuthenticationException("bad key"))
+        with self.assertRaises(SandboxUnavailable) as again:
+            await SandboxProvider(config(), factory=connected).open("sbx-old", metadata={})
+        self.assertEqual((again.exception.code, len(connected.connected), connected.created), ("SANDBOX_AUTH_FAILED", 1, []))
+
+    async def test_a_new_sandbox_that_cannot_run_its_first_command_is_stopped_not_leaked(self):
+        sdk = FakeSDK(FakeSandbox(lambda command: (_ for _ in ()).throw(OSError("down"))))
+        with patch("agentforge.integrations.e2b_sandbox.OPEN_RETRY_SEC", 0), self.assertRaises(SandboxUnavailable):
+            await SandboxProvider(config(), factory=sdk).open(None, metadata={})
+        self.assertEqual(sdk.sandbox.killed, 1)
+
     async def test_kill_stops_the_vm_and_swallows_errors(self):
         sdk = FakeSDK()
         provider = SandboxProvider(config(), factory=sdk)
@@ -346,6 +371,28 @@ class WorkspaceTests(unittest.IsolatedAsyncioTestCase):
             raise TimeoutException("deadline")
         outcome = await self.workspace(slow)[0].run("sleep 999", timeout_sec=1)
         self.assertEqual((outcome.exit_code, outcome.timed_out), (None, True))
+
+    async def test_a_vm_that_is_gone_is_not_reported_as_a_command_that_ran_too_long(self):
+        from e2b import SandboxNotRunningException, SandboxUnreachableException
+        for failure in (SandboxNotRunningException("paused"), SandboxUnreachableException("down")):
+            def gone(command, failure=failure):
+                raise failure
+            with self.subTest(failure=type(failure).__name__), self.assertRaises(SandboxUnavailable) as caught:
+                await self.workspace(gone)[0].run("make")
+            self.assertEqual(caught.exception.code, "SANDBOX_COMMAND_FAILED")
+
+    async def test_a_large_upload_gets_a_longer_request_timeout_than_a_small_call(self):
+        calls = []
+        workspace, sandbox = self.workspace()
+        original = sandbox.files.write
+        async def spy(path, data, **kwargs):
+            calls.append(kwargs["request_timeout"])
+            await original(path, data, **kwargs)
+        sandbox.files = NS(read=sandbox.files.read, write=spy)
+        await workspace.write("a.txt", "x")
+        await workspace.write("big.tgz", b"x", timeout_sec=180)
+        await workspace.write("short.txt", "x", timeout_sec=1)
+        self.assertEqual(calls, [20, 180, 20])  # never shorter than the configured timeout
 
     async def test_a_broken_sandbox_is_an_error_that_does_not_leak_its_cause(self):
         def broken(command):

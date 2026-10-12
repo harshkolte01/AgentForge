@@ -44,6 +44,8 @@ class RepositorySnapshot:
     files: dict[str, bytes]
     # Unix mode per path (0o755 executable, 0o644 otherwise) when the source knows it; empty means 0o644 for all.
     modes: dict[str, int] = field(default_factory=dict)
+    # (path, reason) of every file left out of `files`; see `skip_reason`. The rest of the repository is still complete.
+    skipped: tuple[tuple[str, str], ...] = ()
 
 
 def validate_repo_id(repo_id: str) -> str:
@@ -73,7 +75,47 @@ def _secret_path(parts: tuple[str, ...]) -> bool:
     return False
 
 
-def unpack_archive(compressed: bytes) -> dict[str, bytes]:
+def skip_reason(path: str) -> str | None:
+    """Why one repository file is left out of a snapshot, or None when it is kept.
+
+    A file that cannot be loaded (secrets, an unsafe name, ...) is skipped; it never fails the rest of the repository.
+    """
+    try:
+        parts = _safe_path(path)
+    except GitHubError:
+        return "unsafe_name"
+    if _secret_path(parts):
+        return "sensitive"
+    from agentforge.sandbox.workspace import validate_path
+    try:
+        validate_path(path)
+    except ValueError as error:
+        return "sensitive" if "sensitive" in str(error) else "unsafe_name"
+    return None
+
+
+def checked_workspace(files: dict[str, bytes]) -> dict[str, bytes]:
+    """The files as a validated workspace, or a GitHubError saying which limit the repository is over."""
+    from agentforge.sandbox.workspace import validate_workspace
+    try:
+        return validate_workspace(files)
+    except ValueError as error:
+        limit = {"workspace_file_limit": "github_archive_file_count_limit",
+                 "workspace_byte_limit": "github_archive_decompressed_limit"}
+        raise GitHubError(limit.get(str(error), "github_archive_workspace_invalid")) from None
+
+
+def is_transient(error: GitHubError) -> bool:
+    """True when asking again later may work (GitHub busy or unreachable); False when the same request will always fail."""
+    return str(error) in {"github_rate_limited", "github_read_unavailable", "github_unavailable"}
+
+
+def read_archive(compressed: bytes) -> tuple[dict[str, bytes], list[tuple[str, str]]]:
+    """The regular files of a GitHub source archive and the (path, reason) of each one left out.
+
+    Left out, not fatal: secrets, links, special files, unsafe names, files over MAX_FILE_BYTES and names that differ only by
+    letter case. Fatal: an archive that is malformed, empty, or over a size or count limit as a whole.
+    """
     if len(compressed) > MAX_COMPRESSED_BYTES:
         raise GitHubError("github_archive_compressed_limit")
     try:
@@ -82,31 +124,42 @@ def unpack_archive(compressed: bytes) -> dict[str, bytes]:
         if len(archive) > MAX_ARCHIVE_BYTES:
             raise GitHubError("github_archive_decompressed_limit")
         files: dict[str, bytes] = {}
+        skipped: list[tuple[str, str]] = []
         root: str | None = None
         seen: set[str] = set()
+        folded: set[str] = set()
         total_bytes = 0
         with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
             for count, member in enumerate(tar, start=1):
                 if count > MAX_FILES:
                     raise GitHubError("github_archive_file_count_limit")
                 name = member.name.rstrip("/") if member.isdir() else member.name
-                parts = _safe_path(name)
+                parts = name.split("/")
                 if root is None:
                     root = parts[0]
+                    if _safe_path(root) != (root,):
+                        raise GitHubError("github_archive_root_invalid")
                 if parts[0] != root or (len(parts) == 1 and not member.isdir()):
                     raise GitHubError("github_archive_root_invalid")
-                if member.issym() or member.islnk() or not (member.isdir() or member.isfile()):
-                    raise GitHubError("github_archive_special_file")
+                if member.isdir():
+                    continue  # a folder carries nothing; one whose files are all skipped is simply never created
                 if name in seen:
                     raise GitHubError("github_archive_duplicate_path")
                 seen.add(name)
-                if _secret_path(parts[1:]):
-                    raise GitHubError("github_archive_sensitive_path")
-                if member.isdir():
-                    continue
                 path = "/".join(parts[1:])
-                if member.size < 0 or member.size > MAX_FILE_BYTES:
-                    raise GitHubError("github_archive_file_size_limit")
+                if member.issym() or member.islnk():
+                    reason = "symlink"
+                elif not member.isfile():
+                    reason = "special"
+                else:
+                    reason = skip_reason(path)
+                    if reason is None and (member.size < 0 or member.size > MAX_FILE_BYTES):
+                        reason = "too_large"
+                    elif reason is None and path.casefold() in folded:
+                        reason = "case_clash"
+                if reason:
+                    skipped.append((path, reason))
+                    continue
                 total_bytes += member.size
                 if total_bytes > MAX_ARCHIVE_BYTES:
                     raise GitHubError("github_archive_decompressed_limit")
@@ -117,6 +170,7 @@ def unpack_archive(compressed: bytes) -> dict[str, bytes]:
                 if len(data) != member.size:
                     raise GitHubError("github_archive_invalid")
                 files[path] = data
+                folded.add(path.casefold())
         if not files:
             raise GitHubError("github_repository_empty")
         # Reject directory/file collisions even if the tar's entry order differs.
@@ -124,16 +178,15 @@ def unpack_archive(compressed: bytes) -> dict[str, bytes]:
             parts = path.split("/")
             if any("/".join(parts[:index]) in files for index in range(1, len(parts))):
                 raise GitHubError("github_archive_path_collision")
-        from agentforge.sandbox.workspace import validate_workspace
-        from agentforge.subagents.scope import ScopeDenied
-        try:
-            return validate_workspace(files)
-        except (ScopeDenied, ValueError):
-            raise GitHubError("github_archive_workspace_invalid") from None
+        return checked_workspace(files), skipped
     except GitHubError:
         raise
     except (tarfile.TarError, OSError, EOFError, ValueError):
         raise GitHubError("github_archive_invalid") from None
+
+
+def unpack_archive(compressed: bytes) -> dict[str, bytes]:
+    return read_archive(compressed)[0]
 
 
 def _deadline(seconds: float):
@@ -244,4 +297,5 @@ class GitHubClient:
         async with self._client() as client:
             archive = await self._read(client,
                 f"https://codeload.github.com/{resolved.repo_id}/tar.gz/{resolved.commit_sha}", MAX_COMPRESSED_BYTES)
-        return RepositorySnapshot(resolved.repo_id, resolved.commit_sha, unpack_archive(archive))
+        files, skipped = read_archive(archive)
+        return RepositorySnapshot(resolved.repo_id, resolved.commit_sha, files, skipped=tuple(skipped))

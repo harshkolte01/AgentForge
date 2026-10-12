@@ -10,6 +10,7 @@ import io
 import logging
 import shlex
 import tarfile
+import time
 from decimal import Decimal
 from uuid import UUID
 
@@ -18,11 +19,13 @@ from sqlalchemy import select, update
 from agentforge.database.models import Task
 from agentforge.database.sessions import Conversation, TurnExecution
 from agentforge.integrations.e2b_sandbox import (
-    WORKSPACE, SandboxProvider, SandboxUnavailable, Workspace, bound_output,
+    UPLOAD_TIMEOUT_SEC, WORKSPACE, SandboxProvider, SandboxUnavailable, Workspace, bound_output,
 )
+from agentforge.integrations.github_client import GitHubError, is_transient
 
 from .contracts import ToolOutcome
 from .errors import ToolError
+from .repository_errors import describe_skipped, repository_error
 
 log = logging.getLogger(__name__)
 
@@ -38,10 +41,12 @@ SETUP_SEC = 600
 def _tarball(files: dict[str, bytes], modes: dict[str, int] | None = None) -> bytes:
     """A gzip tarball of the snapshot. Executable files stay executable (scripts such as ./gradlew must still run)."""
     buffer = io.BytesIO()
+    now = int(time.time())  # an mtime of 0 (1970) breaks tools that cannot represent it, e.g. building a wheel ("before 1980")
     with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
         for path, data in files.items():
             info = tarfile.TarInfo(path)
             info.size = len(data)
+            info.mtime = now
             info.mode = 0o755 if (modes or {}).get(path) == 0o755 else 0o644
             archive.addfile(info, io.BytesIO(data))
     return buffer.getvalue()
@@ -55,12 +60,18 @@ class ConversationSandbox:
         self.attachment_storage = attachment_storage
         self._lock = asyncio.Lock()
         self._workspace: Workspace | None = None
+        # A repository that can never be loaded (not found, too large) fails the same way every time: said once per run, not
+        # downloaded again for every tool call. A transient failure (GitHub busy) is not kept, so the next call tries again.
+        self._refused: GitHubError | None = None
         # Said once, with the first result after it happened, so the agent never assumes earlier work is still there.
         self.notice: str | None = None
 
     def forget(self) -> None:
         """The workspace stopped answering: the next call reconnects instead of reusing a dead connection."""
         self._workspace = None
+
+    def add_notice(self, text: str) -> None:
+        self.notice = f"{self.notice} {text}" if self.notice else text
 
     def take_notice(self) -> str | None:
         notice, self.notice = self.notice, None
@@ -80,27 +91,37 @@ class ConversationSandbox:
     async def workspace(self, task_id: UUID) -> Workspace:
         async with self._lock:
             if self._workspace is None:
-                self._workspace = await self._open(task_id)
+                if self._refused is not None:
+                    raise self._refused
+                try:
+                    self._workspace = await self._open(task_id)
+                except GitHubError as error:
+                    if not is_transient(error):
+                        self._refused = error
+                    raise
             await self._workspace.keep_alive()
             return self._workspace
 
     async def _open(self, task_id: UUID) -> Workspace:
         session_id, sandbox_id, repository = await asyncio.to_thread(self._lookup, task_id)
         workspace, created = await self.provider.open(sandbox_id, metadata={"agentforge_task": str(task_id)})
+        # Remembered at once: a sandbox the conversation does not know about is a VM nobody can find again if a later step fails.
+        if session_id and (created or workspace.sandbox_id != sandbox_id):
+            await asyncio.to_thread(self._remember, session_id, workspace.sandbox_id)
         loaded = None if created else await self._loaded_repository(workspace)
         if repository and loaded and loaded != repository["repo_id"]:
             # The person switched repositories: files of one must never be mixed into the other.
             await self.provider.kill(workspace)
             workspace, created = await self.provider.open(None, metadata={"agentforge_task": str(task_id)})
             loaded = None
-        if session_id and (created or workspace.sandbox_id != sandbox_id):
-            await asyncio.to_thread(self._remember, session_id, workspace.sandbox_id)
+            if session_id:
+                await asyncio.to_thread(self._remember, session_id, workspace.sandbox_id)
         if repository and not loaded:
             await self._load_repository(workspace, repository)
         if getattr(workspace, "recreated", False):
-            self.notice = ("This conversation's earlier sandbox had expired, so a new one was created: files, installed packages and "
-                           "changes from earlier turns are gone" + (" (the repository was checked out again at its pinned commit)"
-                           if repository else "") + ". Check what is there before relying on earlier work.")
+            self.add_notice("This conversation's earlier sandbox had expired, so a new one was created: files, installed packages and "
+                            "changes from earlier turns are gone" + (" (the repository was checked out again at its pinned commit)"
+                            if repository else "") + ". Check what is there before relying on earlier work.")
         if self.attachment_storage is not None:
             await self._stage_attachments(workspace, task_id)
         return workspace
@@ -113,13 +134,21 @@ class ConversationSandbox:
                 task = db.get(Task, task_id)
                 return task.created_by, (task.permissions_json or {}).get("attachments", [])
         owner, files = await asyncio.to_thread(inputs)
+        failed = []
         for index, file in enumerate(files):
-            if file.get("upload_id"):
-                record = await asyncio.to_thread(self.attachment_storage.load, owner, file)
-                data = base64.b64decode(record["data"])
-            else:
-                data = file["content"].encode()
-            await workspace.write(workspace_attachment_path(task_id, index, file["name"]), data)
+            try:
+                if file.get("upload_id"):
+                    record = await asyncio.to_thread(self.attachment_storage.load, owner, file)
+                    data = base64.b64decode(record["data"])
+                else:
+                    data = file["content"].encode()
+                await workspace.write(workspace_attachment_path(task_id, index, file["name"]), data, timeout_sec=UPLOAD_TIMEOUT_SEC)
+            except Exception:
+                # One attachment that cannot be placed must not take the whole sandbox away from the agent.
+                log.warning("attachment %d could not be placed in the sandbox", index, exc_info=True)
+                failed.append(str(file.get("name", index))[:80])
+        if failed:
+            self.add_notice("These attachments could not be copied into the workspace: " + ", ".join(failed) + ".")
 
     async def _loaded_repository(self, workspace: Workspace) -> str | None:
         outcome = await workspace.run(f"cat {MARKER} 2>/dev/null || true", timeout_sec=30)
@@ -132,15 +161,22 @@ class ConversationSandbox:
         snapshot = await self.github.snapshot(repository["repo_id"], repository["ref"])
         # Compressing a large repository takes a while; other runs on this worker keep streaming meanwhile.
         await workspace.write("/tmp/agentforge-repo.tgz", await asyncio.to_thread(_tarball, snapshot.files,
-                                                                               getattr(snapshot, "modes", None)))
+                                                                               getattr(snapshot, "modes", None)),
+                              timeout_sec=UPLOAD_TIMEOUT_SEC)
+        # The marker is written last: it says the repository is completely loaded, so a failed attempt is redone, not trusted.
         script = (f"set -e; tar -xzf /tmp/agentforge-repo.tgz -C {WORKSPACE}; rm -f /tmp/agentforge-repo.tgz; cd {WORKSPACE}; "
-                  f"mkdir -p .agentforge; printf '%s' {shlex.quote(repository['repo_id'] + '@' + snapshot.commit_sha)} > {MARKER}; "
+                  "mkdir -p .agentforge; "
                   "git init -q; git config user.email agentforge@users.noreply.github.com; git config user.name AgentForge; "
                   "printf '.agentforge/\\n' >> .git/info/exclude; git add -A; git commit -q -m base --allow-empty; "
-                  f"git tag -f {BASE_TAG} >/dev/null")
+                  f"git tag -f {BASE_TAG} >/dev/null; "
+                  f"printf '%s' {shlex.quote(repository['repo_id'] + '@' + snapshot.commit_sha)} > {MARKER}")
         outcome = await workspace.run(script, timeout_sec=300, cwd="/")
         if outcome.exit_code != 0:
+            log.warning("loading the repository into the sandbox failed (exit %s): %s", outcome.exit_code, outcome.output[-1000:])
             raise SandboxUnavailable("REPOSITORY_LOAD_FAILED")
+        note = describe_skipped(getattr(snapshot, "skipped", ()))
+        if note:
+            self.add_notice(note)
 
     def repository(self, task_id: UUID) -> dict | None:
         with self.sessions() as db:
@@ -184,7 +220,14 @@ def register_sandbox_shell(catalog, sandbox: ConversationSandbox, *, delivery=No
         try:
             return await sandbox.workspace(execution.task.task_id)
         except SandboxUnavailable as exc:
+            log.warning("sandbox unavailable (%s)", exc.code, exc_info=exc.__cause__ is not None)
+            if exc.code.startswith("REPOSITORY_"):
+                raise ToolError(exc.code, "The sandbox started, but the selected repository could not be loaded into it, so no file or "
+                                "command tool can run right now.") from None
             raise ToolError(exc.code, "The sandbox could not be started, so no file or command tool can run right now.") from None
+        except GitHubError as exc:
+            log.warning("repository could not be loaded into the sandbox (%s)", exc)
+            raise repository_error(exc) from None
         except Exception:
             log.warning("sandbox start failed", exc_info=True)
             raise ToolError("SANDBOX_UNAVAILABLE", "The sandbox could not be started, so no file or command tool can run right now.") from None
@@ -281,9 +324,15 @@ def register_sandbox_shell(catalog, sandbox: ConversationSandbox, *, delivery=No
         excludes = " ".join(f"--exclude-dir={shlex.quote(name)}" for name in NOISE)
         include = f"--include={shlex.quote(args.glob)}" if args.glob else ""
         flags = "-rnIE" + ("i" if args.ignore_case else "")
-        command = (f"grep {flags} {excludes} {include} -e {shlex.quote(args.pattern)} -- {shlex.quote(args.path)} "
+        # pipefail keeps grep's own status (1 no match, 2 error) visible through `head`; -s hides messages about unreadable files.
+        command = (f"set -o pipefail; grep {flags} -s {excludes} {include} -e {shlex.quote(args.pattern)} -- {shlex.quote(args.path)} "
                    f"| head -n {args.max_results}")
         outcome = await shell(workspace, command)
+        # 2 is grep's "could not run", but it is also its status when some file was unreadable while others matched; 141 is
+        # grep stopped by `head` once enough lines were found. Only 2 with nothing found (or only its own message) is a failure.
+        if outcome.exit_code == 2 and (not outcome.output or outcome.output.startswith("grep:")):
+            raise ToolError("INVALID_ARGUMENT", "grep could not run: the pattern is not a valid extended regular expression "
+                            "(escape special characters such as ( [ { with a backslash), or the path does not exist.")
         text, truncated = bound_output(outcome.output)
         return ok(matches=text, count=len(outcome.output.splitlines()) if outcome.output else 0, truncated=truncated)
 

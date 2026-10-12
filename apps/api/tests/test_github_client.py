@@ -10,7 +10,7 @@ from uuid import uuid4
 import httpx
 from fastapi import HTTPException
 from agentforge.contracts.tasks import TaskCreate
-from agentforge.integrations.github_client import GitHubClient, GitHubError, unpack_archive, ResolvedRepository
+from agentforge.integrations.github_client import GitHubClient, GitHubError, ResolvedRepository, is_transient, read_archive, unpack_archive
 from agentforge.api.routes_tasks import create_task
 from agentforge.repositories.tasks import TaskNotFound
 
@@ -36,20 +36,35 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(value["image.png"], b"\x89PNG\0\xff")
         self.assertEqual(set(value), {"app.py", "image.png"})
 
-    def test_unsafe_archives_fail_as_a_whole(self):
-        cases = [("root/../outside", tarfile.REGTYPE), ("root/link", tarfile.SYMTYPE),
-            ("root/link", tarfile.LNKTYPE), ("root/fifo", tarfile.FIFOTYPE),
-            ("root/.git/config", tarfile.REGTYPE), ("root/.env.local", tarfile.REGTYPE),
-            ("root/.ssh/config", tarfile.REGTYPE), ("root/a\\b", tarfile.REGTYPE)]
-        for name, kind in cases:
-            with self.subTest(name=name, kind=kind), self.assertRaises(GitHubError):
-                unpack_archive(archive([("root/ok", b"ok", tarfile.REGTYPE), (name, b"bad", kind)]))
+    def test_files_that_cannot_be_loaded_are_skipped_and_the_rest_of_the_repository_still_loads(self):
+        cases = {"../outside": "unsafe_name", "link": "symlink", "hard": "symlink", "fifo": "special", ".git/config": "sensitive",
+                 ".env": "sensitive", ".env.local": "sensitive", ".ssh/config": "sensitive", "a\\b": "unsafe_name",
+                 "certs/server.key": "sensitive", "src/credentials/token.py": "sensitive", "big.bin": "too_large"}
+        kinds = {"link": tarfile.SYMTYPE, "hard": tarfile.LNKTYPE, "fifo": tarfile.FIFOTYPE}
+        entries = [("root/README.md", b"hi", tarfile.REGTYPE), ("root/.env.example", b"KEY=\n", tarfile.REGTYPE),
+                   ("root/src/app.py", b"print(1)\n", tarfile.REGTYPE)]
+        entries += [("root/" + name, b"x" * 1_000_001 if name == "big.bin" else b"bad", kinds.get(name, tarfile.REGTYPE)) for name in cases]
+        files, skipped = read_archive(archive(entries))
+        self.assertEqual(set(files), {"README.md", ".env.example", "src/app.py"})  # a template env file is not a secret
+        self.assertEqual(dict(skipped), cases)
+
+    def test_a_repository_of_only_skipped_files_is_empty_not_unsafe(self):
+        with self.assertRaisesRegex(GitHubError, "repository_empty"):
+            unpack_archive(archive([("root/.env", b"A=1", tarfile.REGTYPE)]))
+
+    def test_names_that_differ_only_by_case_keep_the_first_and_skip_the_rest(self):
+        files, skipped = read_archive(archive([("root/A", b"1", tarfile.REGTYPE), ("root/a", b"2", tarfile.REGTYPE)]))
+        self.assertEqual((files, skipped), ({"A": b"1"}, [("a", "case_clash")]))
+
+    def test_the_same_path_twice_is_still_a_malformed_archive(self):
+        with self.assertRaisesRegex(GitHubError, "duplicate"):
+            unpack_archive(archive([("root/a", b"1", tarfile.REGTYPE), ("root/a", b"2", tarfile.REGTYPE)]))
+
+    def test_a_repository_over_the_total_size_is_refused_with_a_size_code_not_a_generic_one(self):
+        with patch("agentforge.sandbox.workspace.MAX_WORKSPACE_BYTES", 10), self.assertRaisesRegex(GitHubError, "decompressed_limit"):
+            unpack_archive(archive([("root/a", b"x" * 20, tarfile.REGTYPE)]))
 
     def test_collisions_and_limits_rejected(self):
-        with self.assertRaises(GitHubError):
-            unpack_archive(archive([("root/A", b"1", tarfile.REGTYPE), ("root/a", b"2", tarfile.REGTYPE)]))
-        with self.assertRaises(GitHubError):
-            unpack_archive(archive([("root/file", b"x" * 1_000_001, tarfile.REGTYPE)]))
         with self.assertRaises(GitHubError):
             unpack_archive(archive([("root/a", b"1", tarfile.REGTYPE), ("root/a/b", b"2", tarfile.REGTYPE)]))
         with patch("agentforge.integrations.github_client.MAX_ARCHIVE_BYTES", 1000), self.assertRaises(GitHubError):

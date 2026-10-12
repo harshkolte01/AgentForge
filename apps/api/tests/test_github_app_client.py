@@ -152,13 +152,20 @@ class SnapshotTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(GitHubError, "integrity"):
             await self.snapshot(files, corrupt=git_sha(b"3"))
 
-    async def test_an_unsafe_entry_is_refused_before_any_blob_is_fetched(self):
+    async def test_files_that_cannot_be_loaded_are_skipped_and_never_fetched(self):
         fetched = []
+        tree = [{"path": "ok.txt", "type": "blob", "mode": "100644", "size": 1, "sha": git_sha(b"x")},
+                {"path": ".env", "type": "blob", "mode": "100644", "size": 1, "sha": SHA},
+                {"path": "keys/server.pem", "type": "blob", "mode": "100644", "size": 1, "sha": SHA},
+                {"path": "link", "type": "blob", "mode": "120000", "size": 1, "sha": SHA},
+                {"path": "vendor/lib", "type": "commit", "mode": "160000", "sha": SHA},
+                {"path": "big.bin", "type": "blob", "mode": "100644", "size": 1_000_001, "sha": SHA},
+                {"path": "Ok.txt", "type": "blob", "mode": "100644", "size": 1, "sha": SHA},
+                {"path": "src", "type": "tree", "mode": "040000", "sha": SHA}]
 
         async def respond(request):
             if "/git/trees/" in request.url.path:
-                return httpx.Response(200, json={"tree": [{"path": "ok.txt", "type": "blob", "mode": "100644", "size": 1, "sha": SHA},
-                    {"path": ".env", "type": "blob", "mode": "100644", "size": 1, "sha": SHA}]})
+                return httpx.Response(200, json={"tree": tree})
             fetched.append(request.url.path)
             return httpx.Response(200, json=blob(b"x"))
         app = GitHubAppClient(settings(), token="ghu_x", transport=httpx.MockTransport(respond))
@@ -167,9 +174,11 @@ class SnapshotTests(unittest.IsolatedAsyncioTestCase):
         async def authorize(repo_id, **kwargs):
             return app, {"id": 1, "full_name": "owner/repo"}, {"id": 1}
         github.authorize = authorize
-        with self.assertRaisesRegex(GitHubError, "sensitive_path"):
-            await github.snapshot("owner/repo", SHA)
-        self.assertEqual(fetched, [])
+        result = await github.snapshot("owner/repo", SHA)
+        self.assertEqual(list(result.files), ["ok.txt"])
+        self.assertEqual(dict(result.skipped), {".env": "sensitive", "keys/server.pem": "sensitive", "link": "symlink",
+            "vendor/lib": "submodule", "big.bin": "too_large", "Ok.txt": "case_clash"})
+        self.assertEqual(len(fetched), 1)  # only the one file that is kept was downloaded
 
     async def test_requests_share_one_client_and_keep_the_token(self):
         seen = []

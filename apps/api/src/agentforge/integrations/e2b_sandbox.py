@@ -39,6 +39,11 @@ PID_DIR = "/tmp/.agentforge-commands"
 # Connecting to an existing VM is retried after a transient failure (the provider briefly unreachable, a 5xx).
 OPEN_ATTEMPTS = 3
 OPEN_RETRY_SEC = 1.0
+# Creating is retried only when the provider says it refused the request (no capacity, rate limit): nothing was allocated then.
+CREATE_ATTEMPTS = 3
+CREATE_RETRY_SEC = 2.0
+# Uploading a repository can take much longer than a small request.
+UPLOAD_TIMEOUT_SEC = 180
 
 
 class SandboxUnavailable(RuntimeError):
@@ -47,6 +52,16 @@ class SandboxUnavailable(RuntimeError):
     def __init__(self, code: str = "SANDBOX_UNAVAILABLE") -> None:
         super().__init__(code)
         self.code = code
+
+
+def _rejected_key(exc: BaseException) -> bool:
+    from e2b import AuthenticationException
+    return isinstance(exc, AuthenticationException)
+
+
+def _failure_code(exc: BaseException, default: str) -> str:
+    """A rejected API key will fail every call the same way: say so, instead of a generic failure."""
+    return "SANDBOX_AUTH_FAILED" if _rejected_key(exc) else default
 
 
 @dataclass(frozen=True)
@@ -176,7 +191,7 @@ class Workspace:
         `on_output` receives each piece of the command's output (both streams, as it arrives) while it runs. It is for
         showing progress: it gets the raw text, and anything that raises is ignored.
         """
-        from e2b import CommandExitException, TimeoutException
+        from e2b import CommandExitException, SandboxNotRunningException, SandboxUnreachableException, TimeoutException
         out, err = _Collector(on_output, tail=True), _Collector(on_output, tail=True)
         exit_code: int | None = None
         timed_out = False
@@ -199,6 +214,9 @@ class Workspace:
             timed_out = exit_code == 124 or (exit_code == 137 and time.monotonic() - started >= limit)
             if timed_out:
                 exit_code = None
+        except (SandboxNotRunningException, SandboxUnreachableException) as exc:
+            # These are TimeoutExceptions to the SDK, but they say the VM is gone or unreachable, not that the command ran long.
+            raise SandboxUnavailable("SANDBOX_COMMAND_FAILED") from exc
         except (TimeoutException, TimeoutError):
             timed_out = True
             await asyncio.shield(self._stop(marker))
@@ -235,8 +253,10 @@ class Workspace:
     async def read_text(self, path: str) -> str:
         return await self.sandbox.files.read(self.absolute(path), request_timeout=self.config.request_timeout_sec)
 
-    async def write(self, path: str, data: str | bytes) -> None:
-        await self.sandbox.files.write(self.absolute(path), data, request_timeout=self.config.request_timeout_sec)
+    async def write(self, path: str, data: str | bytes, *, timeout_sec: float | None = None) -> None:
+        """`timeout_sec` lengthens the request for a large upload; it never shortens the configured one."""
+        await self.sandbox.files.write(self.absolute(path), data,
+                                       request_timeout=max(self.config.request_timeout_sec, timeout_sec or 0))
 
     @staticmethod
     def absolute(path: str) -> str:
@@ -269,20 +289,42 @@ class SandboxProvider:
                     if isinstance(exc, NotFoundException):
                         log.info("sandbox %s is gone; creating a new one", existing_id)
                         break
-                    if attempt + 1 >= OPEN_ATTEMPTS:
-                        raise SandboxUnavailable("SANDBOX_CONNECT_FAILED") from exc
+                    if _rejected_key(exc) or attempt + 1 >= OPEN_ATTEMPTS:
+                        raise SandboxUnavailable(_failure_code(exc, "SANDBOX_CONNECT_FAILED")) from exc
                     await asyncio.sleep(OPEN_RETRY_SEC * (attempt + 1))
-        # Never retried: a failed create may still have allocated (and be billing for) a VM nobody would know about.
-        try:
-            sandbox = await sdk.create(template=self.config.template, timeout=self.config.ttl_sec, metadata=metadata,
-                envs={}, secure=True, allow_internet_access=True,
-                lifecycle={"on_timeout": "pause", "auto_resume": True}, **options)
-        except Exception as exc:
-            raise SandboxUnavailable("SANDBOX_CREATE_FAILED") from exc
+        # Not retried after an unknown failure: a failed create may still have allocated (and be billing for) a VM nobody would
+        # know about. A refusal (no capacity, rate limit) allocated nothing, so only that is retried.
+        from e2b import RateLimitException, ServiceBusyException
+        sandbox = None
+        for attempt in range(CREATE_ATTEMPTS):
+            try:
+                sandbox = await sdk.create(template=self.config.template, timeout=self.config.ttl_sec, metadata=metadata,
+                    envs={}, secure=True, allow_internet_access=True,
+                    lifecycle={"on_timeout": "pause", "auto_resume": True}, **options)
+                break
+            except (RateLimitException, ServiceBusyException) as exc:
+                if attempt + 1 >= CREATE_ATTEMPTS:
+                    raise SandboxUnavailable("SANDBOX_BUSY") from exc
+                await asyncio.sleep(CREATE_RETRY_SEC * (attempt + 1))
+            except Exception as exc:
+                raise SandboxUnavailable(_failure_code(exc, "SANDBOX_CREATE_FAILED")) from exc
         workspace = Workspace(sandbox, self.config)
         # The conversation had a sandbox and it is gone: whatever earlier turns left in it is gone too, and the agent is told.
         workspace.recreated = bool(existing_id)
-        await workspace.run(f"mkdir -p {WORKSPACE}", cwd="/")
+        try:
+            for attempt in range(OPEN_ATTEMPTS):
+                try:
+                    await workspace.run(f"mkdir -p {WORKSPACE}", cwd="/")
+                    break
+                except SandboxUnavailable:
+                    # A new VM can need a moment before it answers.
+                    if attempt + 1 >= OPEN_ATTEMPTS:
+                        raise
+                    await asyncio.sleep(OPEN_RETRY_SEC * (attempt + 1))
+        except BaseException:
+            # A VM that cannot run its first command is of no use and nobody knows its id yet: stop it rather than leak it.
+            await asyncio.shield(self.kill(workspace))
+            raise
         return workspace, True
 
     async def attach(self, existing_id: str | None) -> Workspace | None:
@@ -304,8 +346,8 @@ class SandboxProvider:
                 from e2b import NotFoundException
                 if isinstance(exc, NotFoundException):
                     return None
-                if attempt + 1 >= OPEN_ATTEMPTS:
-                    raise SandboxUnavailable("SANDBOX_CONNECT_FAILED") from exc
+                if _rejected_key(exc) or attempt + 1 >= OPEN_ATTEMPTS:
+                    raise SandboxUnavailable(_failure_code(exc, "SANDBOX_CONNECT_FAILED")) from exc
                 await asyncio.sleep(OPEN_RETRY_SEC * (attempt + 1))
         return None
 

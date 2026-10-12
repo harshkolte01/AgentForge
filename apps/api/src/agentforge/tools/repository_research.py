@@ -1,4 +1,5 @@
 """Selected pinned repository reads as immutable research source evidence."""
+import asyncio
 from decimal import Decimal
 import json
 from urllib.parse import quote
@@ -19,6 +20,8 @@ def _preview_fits(data, evidence_ids=()):
 def register_repository_research(catalog, sessions, selection, github, resources):
     repository = ResearchInputRepository(sessions)
     cached = None
+    refused = None
+    loading = asyncio.Lock()
     original_verify = resources.verify_tool_inputs
 
     async def verify(ctx, name, args):
@@ -40,12 +43,24 @@ def register_repository_research(catalog, sessions, selection, github, resources
     resources.bindings = bindings
 
     async def files(execution):
-        nonlocal cached
-        if cached is None:
-            snapshot = await github.snapshot(selection["repo_id"], selection["ref"])
-            if snapshot.commit_sha != selection["ref"]:
-                raise ScopeDenied("repository snapshot differs from selected commit")
-            cached = snapshot.files
+        nonlocal cached, refused
+        # Sub-agents read in parallel: the repository is downloaded once, and a failure that cannot change is not retried per call.
+        async with loading:
+            if cached is None:
+                if refused is not None:
+                    raise refused
+                from agentforge.integrations.github_client import GitHubError, is_transient
+                from agentforge.tools.repository_errors import repository_error
+                try:
+                    snapshot = await github.snapshot(selection["repo_id"], selection["ref"])
+                except GitHubError as error:
+                    failure = repository_error(error)
+                    if not is_transient(error):
+                        refused = failure
+                    raise failure from None
+                if snapshot.commit_sha != selection["ref"]:
+                    raise ScopeDenied("repository snapshot differs from selected commit")
+                cached = snapshot.files
         if execution.authorize_current:
             await execution.authorize_current()
         return cached
