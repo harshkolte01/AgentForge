@@ -1,0 +1,57 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "01M4QZN1QN7DJZ3NEEVZC3KW0R",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".gitignore",
+    ".impeccable/.gitignore",
+    ".impeccable/config.json",
+    ".impeccable/surfaces/apps-web-app-page-tsx.md",
+    ".mcp.json",
+    "AgentForge_AI_Dynamic_Subagents_Implementation_Plan.md",
+    "DESIGN.md",
+    "PRODUCT.md",
+    "README.md",
+    "apps/api/alembic/README.md",
+    "apps/api/examples/neatlogs_eval.py",
+    "apps/web/README.md",
+    "docs/agent-harness.md",
+    "docs/cfo-ai-connection.md",
+    "docs/hackathon.md",
+    "docs/images/landing.png",
+    "docs/live-activity.md",
+    "docs/neatlogs-before-after.md",
+    "docs/neatlogs.md",
+    "docs/phase-2.md",
+    "docs/phase-3-research.md",
+    "docs/phase-3.md",
+    "docs/phase-4.md",
+    "docs/phase-5.md",
+    "docs/phase-6.md",
+    "docs/phase-7.md",
+    "docs/remaining-phases.md",
+    "docs/subagents.md",
+    "infra/README.md",
+    "infra/e2b/README.md",
+    "phase-status.md",
+    "scripts/restart-tunnel-web.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": "/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 68,
+    "cache_creation_tokens": 165880,
+    "cache_read_tokens": 4366996,
+    "output_tokens": 29158,
+    "api_call_count": 34
+  }
+}

@@ -1,0 +1,96 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "01M4QZN1QN7DJZ3NEEVZC3KW0R",
+  "session_id": "639079e6-8fe9-4b31-8466-7500a0fbd29b",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-12T11:58:31.06946Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    ".gitignore",
+    ".impeccable/.gitignore",
+    ".impeccable/config.json",
+    ".impeccable/surfaces/apps-web-app-page-tsx.md",
+    ".mcp.json",
+    "AgentForge_AI_Dynamic_Subagents_Implementation_Plan.md",
+    "DESIGN.md",
+    "PRODUCT.md",
+    "README.md",
+    "apps/api/alembic/README.md",
+    "apps/api/examples/neatlogs_eval.py",
+    "apps/web/README.md",
+    "docs/agent-harness.md",
+    "docs/cfo-ai-connection.md",
+    "docs/hackathon.md",
+    "docs/images/landing.png",
+    "docs/live-activity.md",
+    "docs/neatlogs-before-after.md",
+    "docs/neatlogs.md",
+    "docs/phase-2.md",
+    "docs/phase-3-research.md",
+    "docs/phase-3.md",
+    "docs/phase-4.md",
+    "docs/phase-5.md",
+    "docs/phase-6.md",
+    "docs/phase-7.md",
+    "docs/remaining-phases.md",
+    "docs/subagents.md",
+    "infra/README.md",
+    "infra/e2b/README.md",
+    "phase-status.md",
+    "scripts/restart-tunnel-web.py"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-sonnet-5-5",
+  "turn_id": "b68fd7cab329",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 68,
+    "cache_creation_tokens": 165880,
+    "cache_read_tokens": 4366996,
+    "output_tokens": 29158,
+    "api_call_count": 34
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-10-12T11:58:31.027011Z",
+    "agent_lines": 198,
+    "agent_removed": 4473,
+    "human_added": 38,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 236,
+    "total_lines_changed": 4898,
+    "agent_percentage": 95.3654552878726,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 7,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/settings.local.json": 6,
+        ".impeccable/hook.cache.json": 1
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 38,
+      "user_lines_removed": 0,
+      "agent_lines_added": 236,
+      "agent_lines_removed": 4473,
+      "user_added_per_file": {
+        ".impeccable/.gitignore": 3,
+        ".impeccable/config.json": 1,
+        ".impeccable/surfaces/apps-web-app-page-tsx.md": 23,
+        ".mcp.json": 11
+      }
+    }
+  ]
+}
