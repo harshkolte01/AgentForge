@@ -1,9 +1,9 @@
 # Delegated assignments
 
-The default assistant (immutable `builtin/agent` version 3) can call
+The default assistant (immutable `builtin/agent`, current version 4) can call
 `delegate_task` with a short `title`, a self-contained `prompt`, and an optional
-`mode` (`research` by default, or `work`). Existing tasks pinned to versions 1
-and 2 retain their original definitions.
+`mode` (`research` by default, or `work`). Existing tasks pinned to earlier
+versions retain their original definitions.
 
 Delegation is synchronous, and independent assignments run in parallel. When the
 main agent calls `delegate_task` several times in one reply, the children start

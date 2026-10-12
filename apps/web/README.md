@@ -1,37 +1,35 @@
-# AgentForge AI web
+# AgentForge web
 
-Next.js App Router with TypeScript, Tailwind CSS and shadcn/ui.
+The AgentForge workspace and public pages: Next.js (App Router), TypeScript, Tailwind CSS and shadcn/ui.
 
-## Local development
+Setup, configuration and the full-stack dev runner are in the [root README](../../README.md). To work on the web app alone:
 
-Requires Node.js 20.9 or newer and pnpm (the tested version is recorded in `package.json`).
-
-```powershell
-cd C:\Coding\AgentForge\apps\web
-pnpm install
-pnpm dev
+```sh
+pnpm install        # Node.js 24 and pnpm 10.34.6 (corepack)
+pnpm dev            # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+`next.config.ts` rewrites `/api/*` to `API_ORIGIN` (default `http://localhost:8000`), so start the API first
+(`uv run uvicorn agentforge.main:app --app-dir src --reload --port 8000` from `apps/api`).
 
-The home page fetches `/api/v1/health/live` and `/api/v1/health/ready` from the browser. `next.config.ts` rewrites `/api/:path*` to `http://localhost:8000/api/:path*`.
+## Layout
 
-Start the API first:
-
-```powershell
-cd C:\Coding\AgentForge\apps\api
-uv run uvicorn agentforge.main:app --app-dir src --reload --port 8000
-```
-
-Then open [http://localhost:3000](http://localhost:3000). Direct API checks: [http://localhost:8000/api/v1/health/live](http://localhost:8000/api/v1/health/live), [http://localhost:8000/api/v1/health/ready](http://localhost:8000/api/v1/health/ready), [http://localhost:8000/docs](http://localhost:8000/docs).
+| Path | Contents |
+| --- | --- |
+| `app/` | Routes: landing, sign-in/up, chat, plugins and settings |
+| `features/` | UI by feature (sessions, delivery, plugins, skills, settings, landing, agents, auth) |
+| `components/` | Shared components, including the shadcn/ui primitives in `components/ui` |
+| `lib/` | API clients, stores and the activity reducer |
+| `tests/` | Node test runner suites |
 
 ## Checks
 
-```powershell
+```sh
+pnpm test:web                                   # all tests
 pnpm lint
-pnpm exec next typegen
-pnpm exec tsc --noEmit
+pnpm exec next typegen && pnpm exec tsc --noEmit
 pnpm build
 ```
 
-Add further shadcn/ui components with `pnpm dlx shadcn@latest add <component>`.
+Add shadcn/ui components with `pnpm dlx shadcn@latest add <component>`. Plugin logos are regenerated with
+`node scripts/plugin-logos.mjs` after the catalog changes.

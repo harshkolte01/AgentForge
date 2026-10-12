@@ -102,7 +102,7 @@ the worker and open its trace: one root, `agentforge_task`, in the conversation'
 
 ## Using Neatlogs to improve the agent
 
-The loop the hackathon asks for is *measure, change one thing, measure again, keep the evidence*.
+A useful loop is *measure, change one thing, measure again, keep the evidence*.
 
 1. **Baseline.** Start the worker with `NEATLOGS_TAGS=baseline`, run a fixed set of tasks (same prompts), note the trace ids
    from the worker log.
@@ -117,16 +117,14 @@ The loop the hackathon asks for is *measure, change one thing, measure again, ke
    ```
 
    (`.mcp.json` for Claude Code, `.cursor/mcp.json` for Cursor, or `npx @neatlogs/wizard mcp --api-key <key>`. Keep the key in
-   the environment. Use the EU host for an EU project.) The repository's `.mcp.json` configures it for Claude Code and reads
-   `NEATLOGS_API_KEY` from the environment. Checked on 12 October 2026 with the project key: `initialize` and `tools/list`
-   answered, offering `search_traces`, `get_trace_context`, `get_project_analytics`, the `triage_*` tools and
-   `create_detection` among others.
+   the environment. Use the EU host for an EU project.) The server offers `search_traces`, `get_trace_context`,
+   `get_project_analytics`, the `triage_*` tools and `create_detection` among others.
 4. **Change one thing** (a prompt, a tool description, a budget) and restart the worker with `NEATLOGS_TAGS=improved`.
 5. **Compare** the same tasks: tokens, cost, duration, error spans, and `agentforge.task.tool_failures` per task. Save both
    trace links (or screenshots) with the numbers; that is the before/after evidence.
 
-This loop has been run once end to end: see [Neatlogs before/after](neatlogs-before-after.md) and
-`examples/neatlogs_eval.py`, which runs the fixed prompts and reads each task's numbers back from the database.
+`examples/neatlogs_eval.py` runs a fixed set of prompts and reads each task's numbers back from the database, so the two
+sides of a change can be compared.
 
 A **failure-recovery** example: run a task that makes the agent hit a real failure (for instance ask it to read a file that
 does not exist, or decline an "Ask me" approval). In the trace the failing `TOOL`/`tool_policy`/`tool_approval` span is `ERROR`
@@ -155,4 +153,4 @@ answer, which is the failure-recovery trace to cite. Read a trace back with
   the hook is traced without a retry count.
 - Content mode redaction is pattern based. Metadata mode is the only mode with a hard guarantee (an allowlist).
 - No hosted trace has been produced from this repository by the code change itself; that evidence comes from running it with
-  a project key (see `docs/hackathon.md`).
+  a project key.

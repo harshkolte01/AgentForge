@@ -119,7 +119,7 @@ tool is `UNKNOWN_REMOTE_OUTCOME`, which ends the run rather than risk repeating 
 `fetch_webpage` opens a URL that came back from one of the task's searches, or one the person wrote in the task's own
 message (matched exactly against the stored message, so no query string or host can be added to it); task host limits,
 public-address checks and redirect rules apply to both. The gateway does not count or cap calls; it only remembers the
-deterministic fetch failures above, per run. See [Neatlogs before/after](neatlogs-before-after.md) for why.
+deterministic fetch failures above, per run.
 
 ## The workspace (E2B)
 

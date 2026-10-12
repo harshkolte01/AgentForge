@@ -195,7 +195,7 @@ run cannot finish are plain sentences for the person, not internal text.
 
 - `apps/api/tests/test_live_activity.py`: the live stream, the adapter's narration callback, the loop's handling of notes,
   cut-off replies, call ids, cancellation and the stop-request poll.
-- `apps/api/examples/phase8_streaming_smoke.py` and `phase6_research_general_smoke.py` check notes and events against a
+- `apps/api/examples/phase8_streaming_smoke.py` checks notes and events against a
   real PostgreSQL database and the real graph (notes saved in order, each followed by its step, tool events carry call ids).
 - `apps/web/tests/*.test.mjs` (`pnpm test:web`): the reducer, live text, recovery controller and the pure helpers behind the
   timeline, tool details, answer extras, highlighting, frame batching and copy feedback. `pnpm test:activity` runs the core subset.

@@ -1,4 +1,4 @@
-# Phase 4 E2B execution
+# E2B execution
 
 The API stores repository files as bounded bytes. Each command consumes a fresh
 copy in a new E2B sandbox and kills the whole sandbox afterwards. There is no
@@ -109,7 +109,7 @@ fixed output directories `dist`, `build`, `out`, `.next`, and `coverage` into th
 bounded scratch mount. A source snapshot already containing one of those paths
 fails with `build_output_collides_source`; it is never replaced. Other build
 output must use `TMPDIR`; attempts to modify source fail. Build output files are not
-imported into the durable workspace; Phase 4 returns bounded logs and exit codes.
+imported into the durable workspace; a command returns bounded logs and exit codes.
 
 Evidence binds the uploaded input revision and actual SDK process exit code.
 It does not claim a measured post-execution revision, trusted test counts, or

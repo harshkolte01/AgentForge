@@ -1,4 +1,4 @@
-"""Fixed-prompt evaluation for Neatlogs before/after comparisons (docs/neatlogs-before-after.md).
+"""Fixed-prompt evaluation for Neatlogs before/after comparisons.
 
 Runs the same five research prompts against a *running* local AgentForge (API on 127.0.0.1:8000, worker started with
 `NEATLOGS_TAGS=<label>`), one new conversation each, waits for each to finish, then reads the per-task numbers back from

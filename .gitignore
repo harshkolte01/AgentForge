@@ -32,3 +32,10 @@ coverage/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Personal AI-tooling configuration and session data.
+.claude/
+.codex/
+.entire/
+.impeccable/
+.mcp.json
