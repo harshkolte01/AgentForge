@@ -108,6 +108,9 @@ class Settings(BaseSettings):
     e2b_webhook_secret: SecretStr | None = Field(default=None, repr=False, min_length=32)
     e2b_request_timeout_sec: float = Field(default=30, gt=0, le=120)
     e2b_sandbox_ttl_sec: int = Field(default=3600, ge=60, le=86400)
+    # The sandbox downloads the selected repository itself from a short-lived GitHub archive link (fast, any size). Off, the API
+    # uploads a snapshot instead; that is also what happens whenever the download fails.
+    sandbox_archive_load: bool = True
     auth_mode: Literal["disabled", "local_single_user", "github_app"] = "disabled"
     github_client_id: str | None = Field(default=None, min_length=1, max_length=200)
     github_client_secret: SecretStr | None = Field(default=None, repr=False)

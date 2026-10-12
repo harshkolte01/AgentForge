@@ -191,6 +191,15 @@ class SnapshotTests(unittest.IsolatedAsyncioTestCase):
             "vendor/lib": "submodule", "Ok.txt": "case_clash"})
         self.assertEqual(len(fetched), 2)  # only the files that are kept were downloaded; a big one is kept like any other
 
+    async def test_a_used_up_rate_limit_is_not_reported_as_lost_access(self):
+        cases = [(403, {"x-ratelimit-remaining": "0"}, "github_rate_limited"), (403, {"retry-after": "60"}, "github_rate_limited"),
+                 (429, {}, "github_rate_limited"), (403, {"x-ratelimit-remaining": "4000"}, "github_access_denied"),
+                 (403, {}, "github_access_denied"), (404, {}, "github_access_denied")]
+        for status, headers, code in cases:
+            app = GitHubAppClient(settings(), token="ghu_x", transport=httpx.MockTransport(lambda request: httpx.Response(status, headers=headers)))
+            with self.subTest(status=status, headers=headers), self.assertRaisesRegex(GitHubError, code):
+                await app.request("GET", "/repos/owner/repo/git/blobs/" + SHA)
+
     async def test_requests_share_one_client_and_keep_the_token(self):
         seen = []
 

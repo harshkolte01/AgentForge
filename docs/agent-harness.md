@@ -121,9 +121,20 @@ credentials; GitHub writes happen in the backend.
   sandbox error, not a command that "ran too long". A dropped connection during a command or a write is a
   `SANDBOX_DISCONNECTED` result, not a failed run, and the next call reconnects. A read or edit the sandbox does not
   answer is `SANDBOX_UNAVAILABLE`, never `FILE_NOT_FOUND`, so a real file is not mistaken for a missing one.
-- **Setup**: the first call of a conversation also starts the VM and uploads the selected repository's pinned commit
-  (tagged `agentforge-base`), so every tool deadline includes ten minutes for that setup. The repository is marked as
-  loaded only after the checkout fully succeeded, so a failed attempt is redone on the next call.
+- **Setup**: the first call of a conversation also starts the VM and loads the selected repository's pinned commit
+  (tagged `agentforge-base`), so every tool deadline includes time for that setup. The repository is marked as loaded
+  only after the checkout fully succeeded, so a failed attempt is redone on the next call.
+- **How the repository gets in**: the VM downloads it itself. The backend asks GitHub for one short-lived archive link
+  (`archive_link`: the tarball redirect for the person's repositories, read but not followed and accepted only on
+  `codeload.github.com`; the open download address for a public repository). The link is written to a file in the VM that
+  curl reads and that is deleted at once, never put on a command line or in a log. The VM unpacks into a staging folder
+  and lists it (`sandbox/vm_scan.py`); the backend decides what to leave out with the same rules as the snapshot upload
+  (`skip_reason`), the VM deletes those files, and the rest is moved into the workspace and committed as the baseline
+  (`sandbox/vm_repository.py`, `ConversationSandbox._load_by_download`). Nothing passes through the API, so there is no
+  limit on files or size and no request per file. Anything that goes wrong (no link, no curl or Python in the VM, a broken
+  archive, a failed commit) falls back to the earlier path, where the API reads a snapshot and uploads it as a tarball;
+  `SANDBOX_ARCHIVE_LOAD=false` always uses that path. A VM that stops answering, or a repository with nothing loadable,
+  ends the load instead. An archive is made by `git archive`, so files a repository marks `export-ignore` are not in it.
 - **Files left out of the repository**: files that must not or cannot be loaded are skipped, never fatal for the rest of
   the repository: anything that may hold secrets (`.env` and `.env.*` except `.env.example`/`.sample`/`.template`, keys
   and certificates such as `*.pem`/`*.key`/`*.p12`/`*.pfx`/`*.keystore`, `.git`, `.ssh`, `.aws`, `.npmrc`, `.netrc`,

@@ -7,9 +7,9 @@ import hashlib
 import json
 import re
 import time
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 import httpx
-from agentforge.integrations.github_client import (GitHubClient, GitHubError, MAX_SNAPSHOT_BYTES, RepositorySnapshot,
+from agentforge.integrations.github_client import (ArchiveLink, GitHubClient, GitHubError, MAX_SNAPSHOT_BYTES, RepositorySnapshot,
     ResolvedRepository, validate_repo_id, _deadline)
 from agentforge.integrations.tls import outbound_tls
 
@@ -64,19 +64,30 @@ class GitHubAppClient:
             raise GitHubError("github_response_invalid") from None
 
     @staticmethod
+    def _failure(response):
+        """The error for a response that says the request was refused, or None when it says nothing of the kind."""
+        code = response.status_code
+        # GitHub answers a used-up rate limit with 403 (429 for the secondary one), not only with an error about access:
+        # a large repository is thousands of requests, so this is the failure it meets, and "try again later" is the true one.
+        if code == 429 or (code == 403 and (response.headers.get("x-ratelimit-remaining") == "0" or "retry-after" in response.headers)):
+            return GitHubError("github_rate_limited")
+        if code in {401, 403, 404}:
+            return GitHubError("github_access_denied")
+        if code in {409, 422}:
+            return GitHubError("github_write_conflict")
+        if code == 405:
+            # A merge GitHub will not make (a draft, a required check, a protected branch).
+            return GitHubError("github_not_mergeable")
+        return None
+
+    @staticmethod
     async def _send(client, method, path, payload, allow_missing, max_bytes=MAX_RESPONSE_BYTES):
         async with client.stream(method, "https://api.github.com" + path, json=payload) as response:
             if allow_missing and response.status_code == 404:
                 return None
-            if response.status_code in {401, 403, 404}:
-                raise GitHubError("github_access_denied")
-            if response.status_code in {409, 422}:
-                raise GitHubError("github_write_conflict")
-            if response.status_code == 405:
-                # A merge GitHub will not make (a draft, a required check, a protected branch).
-                raise GitHubError("github_not_mergeable")
-            if response.status_code == 429:
-                raise GitHubError("github_rate_limited")
+            failure = GitHubAppClient._failure(response)
+            if failure:
+                raise failure
             if response.status_code not in {200, 201, 202, 204}:
                 raise GitHubError("github_unavailable")
             data = bytearray()
@@ -85,6 +96,31 @@ class GitHubAppClient:
                 if len(data) > max_bytes:
                     raise GitHubError("github_response_size_limit")
             return json.loads(data) if data else {}
+
+    async def archive_location(self, name, sha):
+        """The signed address GitHub gives for the archive (tar.gz) of `name` at the commit `sha`: one request, whatever the
+        size of the repository. GitHub answers 302 and the address expires within minutes (for a private repository).
+
+        The redirect is read, not followed, and only an https address on codeload.github.com is accepted: the token that
+        asked for it is never sent anywhere else, and the VM is only ever pointed at GitHub's own download host.
+        """
+        try:
+            async with self.http() as client:
+                response = await client.get(f"https://api.github.com/repos/{name}/tarball/{sha}")
+        except (httpx.HTTPError, asyncio.TimeoutError):
+            raise GitHubError("github_unavailable") from None
+        if response.status_code != 302:
+            raise self._failure(response) or GitHubError("github_unavailable")
+        location = response.headers.get("location", "")
+        try:
+            parts = urlsplit(location)
+            port = parts.port
+        except ValueError:
+            raise GitHubError("github_response_invalid") from None
+        if (len(location) > 4096 or parts.scheme != "https" or parts.hostname != "codeload.github.com"
+                or parts.username or parts.password or port not in (None, 443)):
+            raise GitHubError("github_response_invalid")
+        return location
 
     async def oauth(self, payload):
         payload = {**payload, "client_id": self.settings.github_client_id,
@@ -290,6 +326,15 @@ class AuthorizedGitHubClient:
             raise GitHubError("github_issue_size_limit")
         return {"number": issue_number, "title": title, "body": body, "state": state,
             "url": f"https://github.com/{repo['full_name']}/issues/{issue_number}"}
+
+    @_deadline(120)
+    async def archive_link(self, repo_id, ref):
+        """Where the sandbox downloads the archive of `ref` from, once this person's access to the repository is confirmed."""
+        if not SHA.fullmatch(ref):
+            raise GitHubError("github_immutable_commit_required")
+        client, repo, _ = await self.authorize(repo_id)
+        canonical = validate_repo_id(repo["full_name"])
+        return ArchiveLink(await client.archive_location(canonical, ref), canonical, ref)
 
     # Every file is its own request, so a big repository takes minutes; the time allowed is generous.
     @_deadline(900)

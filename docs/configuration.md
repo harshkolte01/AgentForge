@@ -121,6 +121,7 @@ longer to start answering than `LLM_TIMEOUT_SEC` (2x for High, 3x Extra high, 4x
 | `E2B_WEBHOOK_SECRET` | none | Signature secret (32+ characters) for E2B lifecycle events sent to `/api/v1/sandbox-usage/webhook`; see [sandbox-usage.md](sandbox-usage.md). Without it the webhook is unavailable. |
 | `E2B_REQUEST_TIMEOUT_SEC` | `30` | Per request. |
 | `E2B_SANDBOX_TTL_SEC` | `3600` | A sandbox is paused after this many idle seconds and resumed on use. |
+| `SANDBOX_ARCHIVE_LOAD` | `true` | The sandbox downloads the selected repository itself from a short-lived GitHub archive link: fast, any size, no request per file. `false`, or any failure, makes the API upload a snapshot instead. |
 
 **How a search picks its provider.** The agent has one `web_search` tool. With `EXA_API_KEY` set it goes to Exa; if Exa cannot
 answer (rate limit, no credit, outage, timeout) and `TAVILY_API_KEY` is also set, the same search goes to Tavily, and the

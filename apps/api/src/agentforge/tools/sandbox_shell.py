@@ -7,6 +7,7 @@ Nothing here holds a credential, and nothing in the sandbox can reach GitHub as 
 """
 import asyncio
 import io
+import json
 import logging
 import shlex
 import tarfile
@@ -23,6 +24,8 @@ from agentforge.integrations.e2b_sandbox import (
 )
 from agentforge.integrations.github_client import GitHubError, is_transient
 
+from agentforge.sandbox import vm_repository
+
 from .contracts import ToolOutcome
 from .errors import ToolError
 from .repository_errors import describe_skipped, repository_error
@@ -34,10 +37,11 @@ MARKER = ".agentforge/repo"
 # Folders no search or listing should wander into.
 NOISE = ("node_modules", ".git", ".agentforge", "__pycache__", ".venv", "dist", "build")
 READ_CHARS = 12000
-# Time the first sandbox call may spend opening the VM and loading the repository, which has no size limit: reading it from GitHub
-# (up to 900 s), uploading it (UPLOAD_TIMEOUT_SEC) and unpacking it into git (LOAD_SEC), plus the VM itself.
+# Time the first sandbox call may spend opening the VM and loading the repository, which has no size limit. The VM downloads it
+# (the address from GitHub, then LOAD_SEC to download, unpack and list, and LOAD_SEC again to prune and commit it); if that fails
+# the snapshot upload takes over: read from GitHub (up to 900 s), uploaded (UPLOAD_TIMEOUT_SEC) and unpacked into git (LOAD_SEC).
 LOAD_SEC = 600
-SETUP_SEC = 900 + UPLOAD_TIMEOUT_SEC + LOAD_SEC + 300
+SETUP_SEC = 120 + 2 * LOAD_SEC + 900 + UPLOAD_TIMEOUT_SEC + LOAD_SEC + 300
 
 
 def _tarball(files: dict[str, bytes], modes: dict[str, int] | None = None) -> bytes:
@@ -54,12 +58,24 @@ def _tarball(files: dict[str, bytes], modes: dict[str, int] | None = None) -> by
     return buffer.getvalue()
 
 
+def _commit_baseline(repo_id: str, commit_sha: str) -> str:
+    """Turns the files now in the workspace into the baseline the agent's changes are measured against, and marks the repository
+    as completely loaded (written last, so a failed attempt is redone, not trusted)."""
+    return (f"cd {WORKSPACE}; mkdir -p .agentforge; "
+            "git init -q; git config user.email agentforge@users.noreply.github.com; git config user.name AgentForge; "
+            "printf '.agentforge/\\n' >> .git/info/exclude; git add -A; git commit -q -m base --allow-empty; "
+            f"git tag -f {BASE_TAG} >/dev/null; "
+            f"printf '%s' {shlex.quote(repo_id + '@' + commit_sha)} > {MARKER}")
+
+
 class ConversationSandbox:
     """Opens the conversation's sandbox once per run and loads the selected repository into it."""
 
-    def __init__(self, sessions, provider: SandboxProvider, github=None, *, attachment_storage=None) -> None:
+    def __init__(self, sessions, provider: SandboxProvider, github=None, *, attachment_storage=None, archive_load: bool = True) -> None:
         self.sessions, self.provider, self.github = sessions, provider, github
         self.attachment_storage = attachment_storage
+        # The VM downloads the repository itself when GitHub can give it an archive link; off, or on any failure, the API uploads a snapshot.
+        self.archive_load = archive_load
         self._lock = asyncio.Lock()
         self._workspace: Workspace | None = None
         # A repository that can never be loaded (not found, too large) fails the same way every time: said once per run, not
@@ -160,18 +176,14 @@ class ConversationSandbox:
     async def _load_repository(self, workspace: Workspace, repository: dict) -> None:
         if self.github is None:
             raise SandboxUnavailable("REPOSITORY_UNAVAILABLE")
+        if await self._load_by_download(workspace, repository):
+            return
         snapshot = await self.github.snapshot(repository["repo_id"], repository["ref"])
         # Compressing a large repository takes a while; other runs on this worker keep streaming meanwhile.
         await workspace.write("/tmp/agentforge-repo.tgz", await asyncio.to_thread(_tarball, snapshot.files,
                                                                                getattr(snapshot, "modes", None)),
                               timeout_sec=UPLOAD_TIMEOUT_SEC)
-        # The marker is written last: it says the repository is completely loaded, so a failed attempt is redone, not trusted.
-        script = (f"set -e; tar -xzf /tmp/agentforge-repo.tgz -C {WORKSPACE}; rm -f /tmp/agentforge-repo.tgz; cd {WORKSPACE}; "
-                  "mkdir -p .agentforge; "
-                  "git init -q; git config user.email agentforge@users.noreply.github.com; git config user.name AgentForge; "
-                  "printf '.agentforge/\\n' >> .git/info/exclude; git add -A; git commit -q -m base --allow-empty; "
-                  f"git tag -f {BASE_TAG} >/dev/null; "
-                  f"printf '%s' {shlex.quote(repository['repo_id'] + '@' + snapshot.commit_sha)} > {MARKER}")
+        script = f"set -e; tar -xzf /tmp/agentforge-repo.tgz -C {WORKSPACE}; rm -f /tmp/agentforge-repo.tgz; " + _commit_baseline(repository["repo_id"], snapshot.commit_sha)
         outcome = await workspace.run(script, timeout_sec=LOAD_SEC, cwd="/")
         if outcome.exit_code != 0:
             log.warning("loading the repository into the sandbox failed (exit %s): %s", outcome.exit_code, outcome.output[-1000:])
@@ -179,6 +191,56 @@ class ConversationSandbox:
         note = describe_skipped(getattr(snapshot, "skipped", ()))
         if note:
             self.add_notice(note)
+
+    async def _load_by_download(self, workspace: Workspace, repository: dict) -> bool:
+        """Has the VM download and unpack the repository itself. True when it is loaded, False when the snapshot upload must do it.
+
+        GitHub gives one archive link and the VM does the rest, so nothing passes through this server and a repository of any size
+        loads in seconds, without a request per file. Anything that goes wrong here (no link, no internet or curl or Python in
+        the VM, a broken archive) is a reason to fall back, not to fail: the snapshot path reads the same commit another way. Only a
+        VM that stops answering, a cancelled run, or a repository with nothing loadable ends the load.
+        """
+        link_for = getattr(self.github, "archive_link", None)
+        if not self.archive_load or link_for is None:
+            return False
+        started = time.monotonic()
+        try:
+            link = await link_for(repository["repo_id"], repository["ref"])
+            await workspace.write(vm_repository.SCAN, vm_repository.scan_source())
+            await workspace.write(vm_repository.CURL_CONFIG, vm_repository.curl_config(link.url))
+            fetched = await workspace.run(vm_repository.fetch_script(), timeout_sec=LOAD_SEC, cwd="/")
+            if fetched.exit_code != 0 or fetched.timed_out:
+                raise RuntimeError(f"the download failed (exit {fetched.exit_code}): {fetched.output[-300:]}")
+            plan = vm_repository.plan_skips(json.loads(await workspace.read_bytes(vm_repository.LIST)))
+            if plan.kept:
+                await workspace.write(vm_repository.DROP, json.dumps(plan.drop))
+                script = vm_repository.merge_script() + "; " + _commit_baseline(repository["repo_id"], link.commit_sha)
+                merged = await workspace.run(script, timeout_sec=LOAD_SEC, cwd="/")
+                if merged.exit_code != 0 or merged.timed_out:
+                    raise RuntimeError(f"the files could not be committed (exit {merged.exit_code}): {merged.output[-300:]}")
+        except (asyncio.CancelledError, SandboxUnavailable):
+            raise
+        except Exception as exc:
+            log.warning("the sandbox could not download the repository (%s: %s); uploading a snapshot instead", type(exc).__name__, str(exc)[:400])
+            await self._clean_up_download(workspace)
+            return False
+        if not plan.kept:
+            await self._clean_up_download(workspace)
+            raise GitHubError("github_repository_empty")
+        log.info("loaded %s into the sandbox by download in %.1fs (%d files, %d left out)", repository["repo_id"], time.monotonic() - started,
+                 plan.kept, len(plan.skipped))
+        note = describe_skipped(plan.skipped)
+        if note:
+            self.add_notice(note)
+        return True
+
+    async def _clean_up_download(self, workspace: Workspace) -> None:
+        try:
+            await workspace.run(vm_repository.cleanup_script(), timeout_sec=60, cwd="/")
+        except (asyncio.CancelledError, SandboxUnavailable):
+            raise
+        except Exception:
+            log.debug("could not clean up after a repository download", exc_info=True)
 
     def repository(self, task_id: UUID) -> dict | None:
         with self.sessions() as db:

@@ -38,6 +38,18 @@ class ResolvedRepository:
 
 
 @dataclass(frozen=True)
+class ArchiveLink:
+    """Where the sandbox VM can download one commit's source archive (a tar.gz) itself, so the API never holds the files.
+
+    For a private repository `url` is a signed address that expires within minutes: it is a credential, never logged or
+    shown. Handed to the VM in a file, not on a command line (see `sandbox/vm_repository.py`).
+    """
+    url: str = field(repr=False)
+    repo_id: str
+    commit_sha: str
+
+
+@dataclass(frozen=True)
 class RepositorySnapshot:
     repo_id: str
     commit_sha: str
@@ -290,6 +302,16 @@ class GitHubClient:
                 raise GitHubError("github_issue_size_limit")
             return {"number": issue_number, "title": title, "body": body, "state": state,
                     "url": f"https://github.com/{repo_id}/issues/{issue_number}"}
+
+    @_deadline(60)
+    async def archive_link(self, repo_id: str, ref: str) -> ArchiveLink:
+        """The address the sandbox downloads the public repository's archive from, after the same checks `snapshot` makes."""
+        if not _SHA.fullmatch(ref):
+            raise GitHubError("github_immutable_commit_required")
+        resolved = await self.resolve(repo_id, ref)
+        if resolved.commit_sha != ref:
+            raise GitHubError("github_commit_mismatch")
+        return ArchiveLink(f"https://codeload.github.com/{resolved.repo_id}/tar.gz/{resolved.commit_sha}", resolved.repo_id, resolved.commit_sha)
 
     # Unpacking a large repository takes minutes of CPU, so the time allowed is generous and the work runs off the event loop.
     @_deadline(600)

@@ -86,7 +86,8 @@ def compose_runtime(settings, sessions, telemetry, store) -> Runtime:
         from agentforge.integrations.github_app import AuthorizedGitHubClient
         can_open_pull_requests = settings.enable_github_writes and isinstance(github, AuthorizedGitHubClient)
         from agentforge.integrations.attachment_storage import AttachmentStorage
-        conversation_sandbox = ConversationSandbox(sessions, provider, github, attachment_storage=AttachmentStorage(settings.research_storage_path))
+        conversation_sandbox = ConversationSandbox(sessions, provider, github, attachment_storage=AttachmentStorage(settings.research_storage_path),
+                                                   archive_load=settings.sandbox_archive_load)
         from agentforge.delivery.service import DeliveryService
 
         async def github_client(user_id):
