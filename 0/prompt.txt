@@ -1,0 +1,3 @@
+<send_user_message_question_reply>
+[{"answer":"i will add it later","question":"E2B_API_KEY is currently missing. Please add it to your local .env when ready—don’t paste it here. I’ll continue implementation and mocked tests without it; live sandbox verification will remain pending.","questionItemId":"[\"request_user_input_async\",\"call_ecdfb57a5d8d4826a725a428db583fea\",0]"}]
+</send_user_message_question_reply>
