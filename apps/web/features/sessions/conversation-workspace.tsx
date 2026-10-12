@@ -10,6 +10,7 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { SessionHistory } from "@/features/sessions/session-history";
 import { ConversationComposer } from "@/features/sessions/conversation-composer";
 import { ConversationThread, DraftThread } from "@/features/sessions/conversation-thread";
+import { ConversationIdentity } from "@/features/sessions/conversation-identity";
 import { ConversationScrollContext, useConversationScroll } from "@/features/sessions/use-conversation-scroll";
 import { ConversationQueue } from "@/features/sessions/conversation-queue";
 import { DeliveryChip } from "@/features/delivery/delivery-chip";
@@ -243,16 +244,18 @@ export function ConversationWorkspace({ children }: { children?: ReactNode }) {
       <div className="border-t pt-2"><SidebarAccountMenu /></div>
     </ResizableSidebar>
     <div inert={sidebar} className="flex min-w-0 flex-1"><DeliverySplit>
-      <header className={`flex min-h-12 shrink-0 items-center px-3 sm:px-4 ${collapsed ? "" : "lg:hidden"}`}><Button ref={navigationTrigger} variant="ghost" size="icon" aria-label="Open navigation" aria-expanded={sidebar} aria-controls="workspace-navigation" className={`size-11 sm:size-8 ${collapsed ? "" : "lg:hidden"}`} onClick={() => { setCollapsed(false); setSidebar(!window.matchMedia("(min-width: 1024px)").matches); }}><Menu className="size-4" /></Button>
-      </header>
-      {/* No title bar: the sidebar and the tab already name the conversation. What is left floats: its delivery status, and a quiet note when archived. */}
-      {page ? null : <h1 className="sr-only">{missing ? "Conversation not found" : failure ? "Unavailable" : selected?.title ?? (resolving ? "Loading…" : "New conversation")}</h1>}
-      <div className="absolute right-3 top-3 z-20 flex items-center gap-2 sm:right-4">
-        {selected?.archived ? <span className="rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground">Archived</span> : null}{page ? null : <DeliveryChip />}
+      {/* Outside the message scroller: identity stays at the chat's left edge without a separate visual header. */}
+      <div data-conversation-topline className={`flex min-h-12 shrink-0 items-center gap-2 px-3 py-2 sm:px-5 ${collapsed || (!page && selected) ? "" : "lg:hidden"}`}>
+        <Button ref={navigationTrigger} variant="ghost" size="icon" aria-label="Open navigation" aria-expanded={sidebar} aria-controls="workspace-navigation" className={`size-11 shrink-0 sm:size-8 ${collapsed ? "" : "lg:hidden"}`} onClick={() => { setCollapsed(false); setSidebar(!window.matchMedia("(min-width: 1024px)").matches); }}><Menu className="size-4" /></Button>
+        {!page && selected ? <ConversationIdentity session={selected} /> : null}
+        <div className="ml-auto flex max-w-[45%] shrink-0 flex-wrap items-center justify-end gap-2">
+          {selected?.archived ? <span className="rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground">Archived</span> : null}{page ? null : <DeliveryChip />}
+        </div>
       </div>
+      {page || selected ? null : <h1 className="sr-only">{missing ? "Conversation not found" : failure ? "Unavailable" : resolving ? "Loading…" : "New conversation"}</h1>}
       {error ? <div role="alert" className="mx-5 mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border px-3 py-2 text-xs text-destructive"><p>{error}</p><Button variant="outline" size="sm" onClick={() => { setLookupFailure(null); setRefresh((value) => value + 1); setRetryPending((value) => value + 1); }}>Retry</Button></div> : null}
-      {/* The scrollbar is hidden (wheel, touch, keys and the jump-to-latest button still scroll); the top padding keeps the floating status clear of the thread. */}
-      <main ref={page ? undefined : scrollerRef} data-conversation-scroll={page ? undefined : ""} className={`relative flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overscroll-contain [overflow-anchor:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${collapsed || page ? "" : "lg:pt-12"}`}>
+      {/* Only messages scroll; the compact identity and navigation stay in place. */}
+      <main ref={page ? undefined : scrollerRef} data-conversation-scroll={page ? undefined : ""} className={`relative flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overscroll-contain [overflow-anchor:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${collapsed || page || selected ? "" : "lg:pt-12"}`}>
         {page ? children : <>
         {failure && !failure.missing ? <div role="alert" className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center gap-3 px-5 pb-10 text-center sm:px-8"><h2 className="text-2xl font-medium tracking-tight">Couldn&apos;t load this conversation</h2><p className="text-sm leading-6 text-muted-foreground">Check your connection and try again.</p><div><Button onClick={() => { setLookupFailure(null); setRefresh((value) => value + 1); }}>Try again</Button></div></div>
         : missing ? <div role="alert" className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center gap-3 px-5 pb-10 text-center sm:px-8"><h2 className="text-2xl font-medium tracking-tight">Conversation not found</h2><p className="text-sm leading-6 text-muted-foreground">It may have been deleted, or the link belongs to a different account.</p><div><Link href={routes.newConversation} onClick={(event) => { if (!newChat()) event.preventDefault(); }} className="inline-flex min-h-11 items-center rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground outline-none hover:bg-primary/85 focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:min-h-9">Start a new conversation</Link></div></div>
