@@ -1,0 +1,16 @@
+curl -X POST https://ingest.neatlogs.com/v1/trace \
+  -H "Authorization: Bearer REDACTED" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "project": "Ashish's project",
+    "name": "chat",
+    "kind": "LLM",
+    "model": "gpt-4o",
+    "input": "What is the capital of France?",
+    "output": "Paris.",
+    "tokens": { "prompt": 12, "completion": 3 }
+  }'
+
+use this key REDACTED
+
+and just run it curl command
