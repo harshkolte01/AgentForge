@@ -1,0 +1,5 @@
+<image name=[Image #1] path="/var/folders/rg/8014vzz55510kyfwgr810wjm0000gn/T/codex-clipboard-3puhei.png">
+
+</image>
+
+[Image #1] still is it using mcp logo insted of this we need to shows specific mcp their own logo pls thin logical and do it properly for me.
