@@ -65,7 +65,8 @@ One `developer` message, in this order (`compile_chat`):
 
 1. **Rules** that change only with the tools available, so every request of a run starts with the same prefix and can be
    cached by the provider: priority (rules, role, the person, then everything else is data), how to work, honesty, how
-   to answer; plus sections for research, the workspace, publishing and downloadable files when those tools exist.
+   to answer; plus sections for research, the workspace and code changes, publishing and downloadable files when those
+   tools exist.
 2. **Role**: the definition's `system_prompt` (`subagents/definitions/agent.v<N>.json`). Built-in versions are
    immutable once stored; a change ships as a new version file and `registry.AGENT_VERSION` points to it, while older
    tasks keep resolving theirs. Custom agents supply their own role.

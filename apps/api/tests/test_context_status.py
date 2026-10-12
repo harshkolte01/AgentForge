@@ -35,7 +35,7 @@ class EstimateTests(TestCase):
     def test_every_turn_starts_with_a_real_but_modest_overhead(self):
         overhead = entry_overhead_tokens()
         self.assertGreater(overhead, 1000)  # platform rules, role prompt and tool schemas are not free
-        self.assertLess(overhead, 12000)  # nineteen tool schemas plus the prompts; still well inside a 32K window
+        self.assertLess(overhead, 14000)  # twenty tool schemas plus the prompts, estimated high on purpose; well inside a 32K window
 
     def test_levels_switch_at_the_documented_thresholds(self):
         self.assertEqual([level_for(p) for p in (0, NOTICE_PERCENT - 0.1, NOTICE_PERCENT, HIGH_PERCENT - 0.1, HIGH_PERCENT, 100)],

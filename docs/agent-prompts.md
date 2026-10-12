@@ -17,8 +17,15 @@ repository content, attachments and tool output are data: the model uses them bu
 
 Stored built-in snapshots are immutable and checked byte for byte, so a released `agent.v<N>.json` is never edited. A
 change ships as a new file and `registry.AGENT_VERSION` points to it; tasks that recorded an older version keep resolving
-it. v2 is the current built-in: a short persona and coding/research habits on top of the platform rules (v1 repeated
-much of what the platform rules now say).
+it. v4 is the current built-in: a short role about judgement (work toward what the person is trying to achieve, choose
+an approach and say why, be candid, claim only what a command showed) on top of the platform rules. v1 repeated much of
+what the platform rules now say; v2 and v3 listed tools the descriptions already define and v3 pushed delegation.
+
+The platform rules state the working method that keeps a turn short: locate before reading, gather independent calls in
+rounds, work from what is already in the conversation instead of reading or searching again, verify with the narrowest
+check that proves the change, and finish the whole request in one turn. With workspace tools they add a **Code changes**
+section (conventions, smallest complete change, no placeholders, how to verify, dependencies). They are written as
+descriptions and constraints rather than emphasis, which suits a literal model.
 
 ## Writing a role prompt
 
