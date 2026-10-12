@@ -4,7 +4,7 @@ import { Check, ChevronDown } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import type { ApprovalMode } from "@/lib/activity/approvals";
 import { approvalModes, useApprovalMode } from "@/features/sessions/approval-mode";
-import { chipClass, optionClass } from "@/features/sessions/composer-styles";
+import { chipClass, compactOptionClass } from "@/features/sessions/composer-styles";
 
 /**
  * One choice for every conversation: whether the agent stops to ask before anything that changes something. Reading and
@@ -23,14 +23,13 @@ export function ApprovalModePicker({ side = "top", compact = false }: { side?: "
   return <Popover open={open} onOpenChange={(next) => { setOpen(next); if (next && status === "error") retry(); }}>
     <PopoverTrigger disabled={status === "idle" || (status === "loading" && mode === null)} aria-label={`Approvals: ${current.label}`} title={`Approvals: ${current.label}`} className={`${chipClass} justify-center ${compact ? "max-sm:w-11 max-sm:px-0" : ""}`}>
       <current.Icon className="size-4" aria-hidden="true" />
-      {/* Sized to the longest label so the row never shifts when the mode loads or changes. */}
-      <span className={`grid whitespace-nowrap ${compact ? "hidden sm:grid" : ""}`}>{approvalModes.map((item) => <span key={item.id} aria-hidden={item.id !== current.id || undefined} className={`col-start-1 row-start-1 ${item.id === current.id ? "" : "invisible"}`}>{item.label}</span>)}</span>
+      <span className={`whitespace-nowrap ${compact ? "hidden sm:inline" : ""}`}>{current.label}</span>
       <ChevronDown className={`size-3 opacity-60 ${compact ? "hidden sm:block" : ""}`} aria-hidden="true" />
     </PopoverTrigger>
-    <PopoverContent side={side} align="end" className="w-[min(13rem,calc(100vw-1.5rem))] rounded-xl shadow-sm" initialFocus={(type) => type === "touch" ? true : document.querySelector<HTMLElement>("[data-approval-option][aria-checked='true']") ?? true}>
-      <div className="p-1" role="radiogroup" aria-label="When the agent may act">
-        {approvalModes.map(({ id, label, hint }) => <button key={id} type="button" role="radio" aria-checked={id === current.id} data-approval-option aria-describedby={`${descriptionId}-${id}`} title={hint} className={optionClass} onClick={() => pick(id)}>
-          <span className="min-w-0 flex-1">{label}</span>
+    <PopoverContent side={side} align="end" className="w-[min(12rem,calc(100vw-1.5rem))] p-1" initialFocus={(type) => type === "touch" ? true : document.querySelector<HTMLElement>("[data-approval-option][aria-checked='true']") ?? true}>
+      <div className="flex flex-col gap-px" role="radiogroup" aria-label="When the agent may act">
+        {approvalModes.map(({ id, label, hint }) => <button key={id} type="button" role="radio" aria-checked={id === current.id} data-approval-option aria-describedby={`${descriptionId}-${id}`} title={hint} className={compactOptionClass} onClick={() => pick(id)}>
+          <span className="min-w-0 flex-1 truncate font-medium">{label}</span>
           <span id={`${descriptionId}-${id}`} className="sr-only">{hint}</span>
           <Check className={`size-3.5 shrink-0 ${id === current.id ? "" : "invisible"}`} aria-hidden="true" />
         </button>)}
