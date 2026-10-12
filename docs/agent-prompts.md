@@ -7,8 +7,8 @@ Every model call is one `developer` message followed by the conversation (`subag
    built-in or custom, follows them. They depend only on the tool set, so a run's requests share one cacheable prefix.
 2. **Role** (`subagents/definitions/agent.v<N>.json`, `system_prompt`): the built-in agent's persona and habits, or a
    custom agent's own instructions. A role ranks below the platform rules.
-3. **Environment**: the date, the selected repository, whether workspace editing and GitHub publishing are available,
-   and the tool names.
+3. **Environment**: the date, the selected repository, whether workspace editing and GitHub publishing are available.
+   The tool names are not repeated: the tool definitions travel with every request.
 
 The person's messages follow as real chat messages and outrank everything except layers 1 and 2. Web pages, files,
 repository content, attachments and tool output are data: the model uses them but never takes instructions from them.

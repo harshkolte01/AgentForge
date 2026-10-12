@@ -544,7 +544,8 @@ class RunTests(IsolatedAsyncioTestCase):
         self.assertEqual(names, ["web_search", "demo__echo"])
         prompt = seen["messages"][0]["content"]
         self.assertIn("## Plugins", prompt)
-        self.assertIn("demo__echo", prompt)
+        self.assertIn("service__action", prompt)  # how to read a plugin tool's name; the tool itself travels as a schema
+        self.assertNotIn("demo__echo", prompt)
         self.assertEqual(recorder.started[0]["effective_permissions"]["available_tools"], ["web_search", "demo__echo"])
 
     async def test_without_plugins_nothing_changes(self):

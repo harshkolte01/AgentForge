@@ -146,7 +146,8 @@ class CompileChatTests(TestCase):
         positions = [developer.index(PLATFORM_INSTRUCTIONS), developer.index("# Role: agent"), developer.index(definition.system_prompt),
                      developer.index("# Environment")]
         self.assertEqual(positions, sorted(positions))
-        self.assertIn("Tools: web_search, fetch_webpage", developer)
+        # The tool definitions travel with every request; the prompt does not repeat their names.
+        self.assertNotIn("Tools: web_search, fetch_webpage", developer)
 
     def test_facts_about_the_turn_are_in_the_environment_after_the_rules(self):
         definition = load_builtin("agent", AGENT_VERSION)

@@ -53,7 +53,8 @@ One `developer` message, in this order (`compile_chat`):
 2. **Role**: the definition's `system_prompt` (`subagents/definitions/agent.v<N>.json`). Built-in versions are
    immutable once stored; a change ships as a new version file and `registry.AGENT_VERSION` points to it, while older
    tasks keep resolving theirs. Custom agents supply their own role.
-3. **Environment**: today's date, the selected repository, whether editing and publishing are available, the tools.
+3. **Environment**: today's date, the selected repository, whether editing and publishing are available. The tool names
+   are not repeated here: the definitions travel with every request.
 
 Earlier turns follow as real chat messages, then the person's new message with any attached text files.
 

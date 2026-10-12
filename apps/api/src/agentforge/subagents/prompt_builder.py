@@ -114,7 +114,8 @@ def compile_chat(definition: AgentDefinition, scope: EffectiveScope, context: di
         facts.append("Workspace file editing is unavailable in this turn. Repository read tools fetch the pinned GitHub snapshot; they do not create a writable checkout. Do not replace a requested project change with a downloadable file.")
     facts.append("GitHub publishing: " + ("available through create_pull_request; no sandbox remote or credentials are needed."
         if "create_pull_request" in tools else "unavailable in this run. Workspace changes remain in the sandbox."))
-    facts.append(f"Tools: {', '.join(available_tools)}")
+    # The tools themselves are not listed here: their definitions travel with every request, and a second copy of the
+    # names only costs tokens.
     parts = ["\n\n".join(rules), f"# Role: {definition.name}\n{definition.system_prompt}", "# Environment\n" + "\n".join(facts)]
     if skills and "use_skill" in tools:
         listed = "\n".join(f"- {name}: {description}" for name, description in skills[:MAX_SKILLS_LISTED])

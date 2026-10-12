@@ -142,7 +142,9 @@ class SetupTests(IsolatedAsyncioTestCase):
         await service.spawn_subagent(request("second"), context(), conversation=conversation)
         messages = run.await_args.kwargs["messages"]
         self.assertEqual(messages[0]["role"], "developer")
-        self.assertIn("Tools: web_search", messages[0]["content"])
+        # The rules for the tools offered (web_search here) are in the prompt; the tool names themselves travel as schemas.
+        self.assertIn("## Research", messages[0]["content"])
+        self.assertNotIn("Tools: web_search", messages[0]["content"])
         self.assertEqual(messages[1:], conversation)
 
     async def test_without_a_conversation_the_request_prompt_is_the_one_user_message(self):
