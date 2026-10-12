@@ -1,0 +1,3 @@
+2nd entire and cfo nu joje ama kayu best way su che implementation no 
+
+Now I need you to review the current codebase and understand how we should integrate the entire CFAI because we have to implement and use those tools from the hackathon. Just research and provide me with the perfect summary of how we should implement them and what the use case is for those in our current agent
