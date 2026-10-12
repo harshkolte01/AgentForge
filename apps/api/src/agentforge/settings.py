@@ -104,6 +104,7 @@ class Settings(BaseSettings):
     # image has git, Python and Node). The sandbox is paused after `e2b_sandbox_ttl_sec` idle seconds and resumed on use.
     e2b_api_key: SecretStr | None = Field(default=None, repr=False)
     e2b_template_id: str | None = Field(default=None, min_length=1, max_length=200)
+    e2b_webhook_secret: SecretStr | None = Field(default=None, repr=False, min_length=32)
     e2b_request_timeout_sec: float = Field(default=30, gt=0, le=120)
     e2b_sandbox_ttl_sec: int = Field(default=3600, ge=60, le=86400)
     auth_mode: Literal["disabled", "local_single_user", "github_app"] = "disabled"

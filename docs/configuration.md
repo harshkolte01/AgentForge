@@ -111,6 +111,7 @@ An OpenAI-compatible provider. Verify the model's tool support, context window a
 | `RESEARCH_MAX_RESPONSE_BYTES` | `1000000` | Largest page body read. |
 | `E2B_API_KEY` | none | Turns on the coding sandbox: bash, files and search. |
 | `E2B_TEMPLATE_ID` | none | Optional; E2B's default image has git, Python and Node. See [infra/e2b](../infra/e2b/README.md). |
+| `E2B_WEBHOOK_SECRET` | none | Signature secret (32+ characters) for E2B lifecycle events sent to `/api/v1/sandbox-usage/webhook`; see [sandbox-usage.md](sandbox-usage.md). Without it the webhook is unavailable. |
 | `E2B_REQUEST_TIMEOUT_SEC` | `30` | Per request. |
 | `E2B_SANDBOX_TTL_SEC` | `3600` | A sandbox is paused after this many idle seconds and resumed on use. |
 

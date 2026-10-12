@@ -46,14 +46,18 @@ try:
                     thread_id=str(uuid4()), max_cost_usd=1, max_wall_time_sec=60)); db.flush()
         db.add(BudgetReservation(id=reservation, task_id=task, run_id=uuid4(), amount_usd=1,
                                 max_steps=2, max_tool_calls=2, depth=1, deadline=datetime.now(timezone.utc)+timedelta(minutes=1))); db.flush()
-        db.add_all([BudgetOperation(reservation_id=reservation, operation_key="known", kind="model", max_cost_usd=Decimal("0.4"), cost_usd=Decimal("0.1")),
-                    BudgetOperation(reservation_id=reservation, operation_key="unknown", kind="tool", max_cost_usd=Decimal("0.2"), cost_usd=None)])
+        db.add_all([BudgetOperation(reservation_id=reservation, operation_key="known", kind="model", max_cost_usd=Decimal("0.4"), cost_usd=Decimal("0.1"),
+                        usage_json={"cost_source":"adapter_reported_cost"}, recorded_at=datetime.now(timezone.utc)),
+                    BudgetOperation(reservation_id=reservation, operation_key="unknown", kind="tool", max_cost_usd=Decimal("0.2"), cost_usd=None),
+                    BudgetOperation(reservation_id=reservation, operation_key="bounded", kind="model", max_cost_usd=Decimal("0.5"), cost_usd=Decimal("0.5"),
+                        usage_json={"cost_source":"authorized_upper_bound"}, recorded_at=datetime.now(timezone.utc))])
     with engine.begin() as connection:
         result = aggregate(connection, datetime.now(timezone.utc)-timedelta(days=1))
         assert result["task_counts"]["tasks"] == 1
-        assert result["ledger"]["unmeasured_operations"] == 1
+        assert result["ledger"]["unmeasured_operations"] == 2
         assert Decimal(result["ledger"]["measured_cost_usd"]) == Decimal("0.1")
-        assert Decimal(result["ledger"]["conservative_cost_usd"]) == Decimal("0.3")
+        assert Decimal(result["ledger"]["conservative_cost_usd"]) == Decimal("0.8")
+        assert Decimal(result["ledger"]["upper_bound_cost_usd"]) == Decimal("0.7")
         assert "PRIVATE" not in str(result) and str(user) not in str(result)
     with engine.begin() as connection:
         result = inspect(connection)

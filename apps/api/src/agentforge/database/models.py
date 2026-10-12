@@ -240,6 +240,7 @@ class BudgetTransaction(_UUIDTimestampMixin, Base):
 
 
 # Register split phase modules in the shared Alembic metadata.
+from .sandbox_usage import SandboxUsageEvent  # noqa: E402,F401
 from .phase3 import TaskEvent, TaskJob, TaskStep, TaskStream, WorkerHeartbeat  # noqa: E402,F401
 from .research_models import ResearchArtifact, ResearchEvidence, ResearchSource  # noqa: E402,F401
 from .coding import CodingSession, CodingSnapshot, CodingOperation, CodingEvidence, CodingArtifact  # noqa: E402,F401

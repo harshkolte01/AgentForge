@@ -24,6 +24,7 @@ from agentforge.api.routes_agents import router as agents_router
 from agentforge.api.routes_activity import router as activity_router
 from agentforge.api.routes_attachments import router as attachments_router
 from agentforge.api.routes_plugins import router as plugins_router
+from agentforge.api.routes_sandbox_usage import router as sandbox_usage_router
 from agentforge.api.routes_skills import router as skills_router
 from agentforge.api.routes_delivery import router as delivery_router
 from agentforge.database.engine import create_db_engine
@@ -100,6 +101,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(context_router)
     app.include_router(agents_router)
     app.include_router(plugins_router)
+    app.include_router(sandbox_usage_router)
     app.include_router(skills_router)
     app.include_router(delivery_router)
     @app.middleware("http")
