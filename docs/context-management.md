@@ -34,8 +34,11 @@ LLM_LONG_CONTEXT_OUTPUT_USD_PER_MILLION=0.75
 These are the Standard rates reviewed on the date above; verify them against the
 [official pricing page](https://developers.openai.com/api/docs/pricing) before
 deployment. Long-context pricing applies to the entire request when measured
-input exceeds 272,000. Cache discounts are conservatively ignored. Missing long
-rates fail closed. Increasing capacity never increases the task's spending,
+input exceeds 272,000. Cached input is priced at the input rate unless
+`LLM_CACHED_INPUT_USD_PER_MILLION` and `LLM_CACHE_WRITE_USD_PER_MILLION` are set
+(the provider reports the cached, written and plain parts of every request, and the
+ledger records them either way; see [the harness](agent-harness.md#cost-per-request)).
+Missing long rates fail closed. Increasing capacity never increases the task's spending,
 time, permission, or tool-call grants.
 
 Request fitting uses an upper-biased local text estimate, not an exact tokenizer:

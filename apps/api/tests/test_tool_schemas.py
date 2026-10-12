@@ -174,11 +174,18 @@ class CompactionTests(TestCase):
         compact_messages(messages, 1500)
         self.assertEqual(json.dumps(messages), before)
 
-    def test_only_what_is_needed_is_compacted(self):
+    def test_a_conversation_over_its_budget_is_compacted_below_the_target_not_just_under_the_limit(self):
+        # One stub would do for this request; the next few requests would then each need one more, and every new stub changes
+        # a message deep in the history the provider had cached. Compacting with room to spare keeps the prefix stable.
+        from agentforge.subagents.context import COMPACTION_TARGET
         messages = self.conversation(8)
         total = conversation_tokens(messages)
-        compacted = compact_messages(messages, total - 500)
-        self.assertEqual(sum("compacted" in m.get("content", "") for m in compacted if m["role"] == "tool"), 1)
+        limit = total - 500
+        compacted = compact_messages(messages, limit)
+        stubs = sum("compacted" in m.get("content", "") for m in compacted if m["role"] == "tool")
+        self.assertGreater(stubs, 1)
+        self.assertLess(stubs, 8 - 4)  # not everything eligible either: it stops once under the target
+        self.assertLessEqual(conversation_tokens(compacted), int(limit * COMPACTION_TARGET))
 
     def test_the_unread_latest_batch_is_never_stubbed_however_hard_the_squeeze(self):
         messages = self.conversation(6)

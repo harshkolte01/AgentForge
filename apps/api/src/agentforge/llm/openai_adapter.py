@@ -16,6 +16,14 @@ Completions endpoint serves every request, exactly as it always did. A model who
 calls only without reasoning (gpt-6-luna, see `effort.py`) is sent through the Responses endpoint when an effort is asked
 for. The runtime keeps speaking the chat message format either way: this adapter translates the history it is given into
 Responses input and the reply back into one assistant message, so nothing above it changes.
+
+The model's thinking continues across the tool calls of a run: the Responses endpoint returns each step's reasoning as
+encrypted items (nothing is stored at the provider, `store` is false), the adapter keeps them on the assistant message under
+`reasoning`, and the next request passes them back with the tool results (`to_responses_input`). Without that the model
+reconstructs its plan from scratch at every step, at output-token prices. The items are opaque and never shown to anyone.
+
+Usage is reported the way it is billed: input split into cached reads, cache writes and the rest, and the thinking part of
+the output (`ModelUsage`), priced with the operator's rates (`ModelRates`, cache rates optional).
 """
 
 import asyncio
@@ -33,7 +41,8 @@ from openai.types.chat import ChatCompletionMessageParam, ChatCompletionToolPara
 from .models import (
     ModelConfigurationError, ModelContextLimit, ModelProviderError,
     ModelRates, ModelResponse, ModelUsage, PER_MESSAGE_OVERHEAD_TOKENS,
-    PROTOCOL_OVERHEAD_TOKENS, conservative_input_tokens, provider_detail,
+    PROTOCOL_OVERHEAD_TOKENS, REASONING_KEY, REASONING_TOKENS_KEY, conservative_input_tokens, provider_detail,
+    without_reasoning,
 )
 from .effort import EFFORTS, efforts_for, read_timeout, support_for, uses_responses
 from .limits import LUNA_LONG_CONTEXT_THRESHOLD, LUNA_WINDOW, input_limit, is_luna
@@ -81,15 +90,32 @@ def _input_part(part: dict[str, Any]) -> dict[str, Any]:
     raise ModelConfigurationError(f"a {kind!r} message part cannot be sent to the Responses endpoint")
 
 
+def reasoning_items(message: dict[str, Any]) -> list[dict[str, Any]]:
+    """The encrypted reasoning items an assistant message carries, in the shape the Responses endpoint takes back."""
+    items = []
+    for item in message.get(REASONING_KEY) or []:
+        if isinstance(item, dict) and isinstance(item.get("id"), str) and isinstance(item.get("encrypted_content"), str):
+            items.append({"type": "reasoning", "id": item["id"], "summary": list(item.get("summary") or []),
+                          "encrypted_content": item["encrypted_content"]})
+    return items
+
+
 def to_responses_input(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """A chat history as Responses `input` items: an assistant's tool calls and their results become `function_call` and
-    `function_call_output` items tied by the call's id. Items carry no provider `id`, so nothing refers to a stored response."""
+    `function_call_output` items tied by the call's id. Call items carry no provider `id`, so nothing refers to a stored response.
+
+    The reasoning items of the assistant messages since the last user message go back too, each before the text and calls
+    it led to: that is what lets the model continue its thinking across the tool calls of a turn. Older reasoning (before a
+    user message) is left out: the provider would ignore it, and it would still be sent."""
     items: list[dict[str, Any]] = []
-    for message in messages:
+    last_user = max((index for index, message in enumerate(messages) if message.get("role") == "user"), default=-1)
+    for index, message in enumerate(messages):
         role, content = message.get("role"), message.get("content")
         if role == "tool":
             items.append({"type": "function_call_output", "call_id": message["tool_call_id"], "output": _plain_text(content)})
         elif role == "assistant":
+            if index > last_user:
+                items.extend(reasoning_items(message))
             text = _plain_text(content)
             if text.strip():
                 items.append({"role": "assistant", "content": text})
@@ -131,7 +157,9 @@ def to_responses_tool_choice(choice: dict[str, Any] | str | None) -> dict[str, A
 def message_from_response(response: Any) -> tuple[dict[str, Any], str]:
     """The reply of a finished Responses call as one chat-format assistant message, and its finish reason.
 
-    Reasoning items are not kept: nothing above this adapter could store them, and a request that carries none is valid.
+    Encrypted reasoning items are kept on the message under `reasoning` (id, encrypted content and any summary), so the next
+    request of the run can pass them back; a reasoning item without encrypted content has nothing that could be passed back
+    and is left out. A request that carries none is still valid.
     """
     if response.status == "failed":
         raise _response_error(getattr(response, "error", None))
@@ -139,6 +167,7 @@ def message_from_response(response: Any) -> tuple[dict[str, Any], str]:
         raise ModelProviderError("model request did not finish", retriable=True, detail=f"response status: {response.status}")
     parts: list[str] = []
     calls: list[dict[str, Any]] = []
+    reasoning: list[dict[str, Any]] = []
     for item in response.output or []:
         if item.type == "message":
             for piece in item.content:
@@ -147,6 +176,12 @@ def message_from_response(response: Any) -> tuple[dict[str, Any], str]:
                     parts.append(text)
         elif item.type == "function_call":
             calls.append({"id": item.call_id, "type": "function", "function": {"name": item.name, "arguments": item.arguments}})
+        elif item.type == "reasoning":
+            encrypted, ident = getattr(item, "encrypted_content", None), getattr(item, "id", None)
+            if isinstance(encrypted, str) and encrypted and isinstance(ident, str) and ident:
+                summary = [{"type": "summary_text", "text": piece.text} for piece in (getattr(item, "summary", None) or [])
+                           if getattr(piece, "type", None) == "summary_text" and isinstance(getattr(piece, "text", None), str)]
+                reasoning.append({"type": "reasoning", "id": ident, "summary": summary, "encrypted_content": encrypted})
     content = "".join(parts)
     if response.status == "incomplete":
         reason = getattr(response.incomplete_details, "reason", None)
@@ -165,7 +200,18 @@ def message_from_response(response: Any) -> tuple[dict[str, Any], str]:
         message["content"] = content
     if calls:
         message["tool_calls"] = calls
+    if reasoning:
+        message[REASONING_KEY] = reasoning
     return message, finish
+
+
+def _usage_parts(usage: Any, *, input_details: str, output_details: str) -> tuple[int, int, int]:
+    """(cached, cache write, reasoning) token counts from a provider usage object, 0 for anything it does not report."""
+    def count(owner: Any, name: str) -> int:
+        value = getattr(owner, name, None) if owner is not None else None
+        return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+    inputs, outputs = getattr(usage, input_details, None), getattr(usage, output_details, None)
+    return count(inputs, "cached_tokens"), count(inputs, "cache_write_tokens"), count(outputs, "reasoning_tokens")
 
 
 def _response_error(error: Any) -> Exception:
@@ -270,8 +316,11 @@ class OpenAIAdapter:
         # Character estimates are useful for fitting, but cannot cap the cost of arbitrary text.
         # A byte-level upper bound also covers dense code and multilingual inputs. Successful
         # requests cannot exceed the provider input limit; rejected requests generate no output.
-        byte_bound = len(json.dumps({"messages": messages, "tools": tools}, ensure_ascii=False).encode("utf-8"))
+        # Encrypted reasoning is bounded by the tokens it stands for, not by its ciphertext.
+        stripped, reasoning = without_reasoning(messages)
+        byte_bound = len(json.dumps({"messages": stripped, "tools": tools}, ensure_ascii=False).encode("utf-8")) + reasoning
         upper = min(self.max_input_tokens, byte_bound + PROTOCOL_OVERHEAD_TOKENS + PER_MESSAGE_OVERHEAD_TOKENS * len(messages))
+        # The bound assumes nothing is cached: a cache miss costs the most.
         return self._rates_for(upper).cost(upper, self.max_output_tokens)
 
     def _rates_for(self, input_tokens: int) -> ModelRates:
@@ -282,6 +331,9 @@ class OpenAIAdapter:
     # --- request assembly -------------------------------------------------------------------
     def _request(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
                  tool_choice: dict[str, Any] | str | None) -> dict[str, Any]:
+        # Chat Completions has no place for reasoning items; a history that carries them (an earlier request of the run
+        # went through the Responses endpoint) is sent without them.
+        messages, _ = without_reasoning(messages)
         kwargs: dict[str, Any] = {
             "model": self.model_id, "messages": cast(list[ChatCompletionMessageParam], messages),
             "max_completion_tokens": self.max_output_tokens, "store": False, "service_tier": "default"}
@@ -407,13 +459,16 @@ class OpenAIAdapter:
         # Only documented replay fields are sent back. Never include parsed,
         # refusal metadata, audio, annotations or provider-specific extras.
         message = {key: message[key] for key in ("role", "content", "tool_calls") if key in message}
-        usage = response.usage
+        return ModelResponse(message, self._chat_usage(response.usage), response.model, choice.finish_reason)
+
+    def _chat_usage(self, usage: Any) -> ModelUsage:
+        """A Chat Completions usage object as measured usage: prompt tokens split into cached and uncached, and the reasoning
+        part of the completion when the model reports it."""
         if usage is None:
-            measured = ModelUsage(0, 0, None)
-        else:
-            measured = ModelUsage(usage.prompt_tokens, usage.completion_tokens,
-                                  self._rates_for(usage.prompt_tokens).cost(usage.prompt_tokens, usage.completion_tokens))
-        return ModelResponse(message, measured, response.model, choice.finish_reason)
+            return ModelUsage(0, 0, None)
+        cached, written, reasoning = _usage_parts(usage, input_details="prompt_tokens_details", output_details="completion_tokens_details")
+        cost = self._rates_for(usage.prompt_tokens).cost(usage.prompt_tokens, usage.completion_tokens, cached, written)
+        return ModelUsage(usage.prompt_tokens, usage.completion_tokens, cost, cached, written, reasoning)
 
     async def _complete_streaming(self, request: dict[str, Any], has_tools: bool,
                                   on_text: Callable[[str], None] | None,
@@ -486,12 +541,7 @@ class OpenAIAdapter:
             message["content"] = content
         if calls:
             message["tool_calls"] = [calls[index] for index in sorted(calls)]
-        if usage is None:
-            measured = ModelUsage(0, 0, None)
-        else:
-            measured = ModelUsage(usage.prompt_tokens, usage.completion_tokens,
-                                  self._rates_for(usage.prompt_tokens).cost(usage.prompt_tokens, usage.completion_tokens))
-        return ModelResponse(message, measured, reported_model, finish_reason)
+        return ModelResponse(message, self._chat_usage(usage), reported_model, finish_reason)
 
     # --- the Responses endpoint -------------------------------------------------------------
     def _responses_request(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
@@ -499,6 +549,9 @@ class OpenAIAdapter:
         kwargs: dict[str, Any] = {
             "model": self.model_id, "input": to_responses_input(messages), "max_output_tokens": self.max_output_tokens,
             "reasoning": {"effort": self.reasoning_effort}, "store": False, "service_tier": "default",
+            # Nothing is stored at the provider, so the model's thinking comes back encrypted and is passed back by us (see
+            # `to_responses_input`). Current servers include it on their own; asking keeps older ones doing the same.
+            "include": ["reasoning.encrypted_content"],
             # A model that thinks longer says nothing for longer before its first token.
             "timeout": httpx.Timeout(read_timeout(self.timeout_sec, self.reasoning_effort), connect=min(CONNECT_TIMEOUT_SEC, self.timeout_sec))}
         if tools:
@@ -512,8 +565,13 @@ class OpenAIAdapter:
         if usage is None:
             measured = ModelUsage(0, 0, None)
         else:
+            cached, written, reasoning = _usage_parts(usage, input_details="input_tokens_details", output_details="output_tokens_details")
             measured = ModelUsage(usage.input_tokens, usage.output_tokens,
-                                  self._rates_for(usage.input_tokens).cost(usage.input_tokens, usage.output_tokens))
+                                  self._rates_for(usage.input_tokens).cost(usage.input_tokens, usage.output_tokens, cached, written),
+                                  cached, written, reasoning)
+            if REASONING_KEY in message and reasoning:
+                # What passing this step's thinking back will cost in input tokens (see models.reasoning_input_tokens).
+                message[REASONING_TOKENS_KEY] = reasoning
         return ModelResponse(message, measured, getattr(response, "model", None) or reported_model or self.model_id, finish)
 
     async def _responses_once(self, request: dict[str, Any]) -> ModelResponse:

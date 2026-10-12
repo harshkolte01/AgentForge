@@ -24,7 +24,8 @@ from langgraph.graph import END, START, StateGraph
 from agentforge.contracts.agent_definition import AgentDefinition
 from agentforge.contracts.subagent import SubagentResult
 from agentforge.contracts.tasks import MAX_ANSWER_CHARS
-from agentforge.llm.models import ModelContextLimit, ModelProviderError, ToolCallingModel, conservative_input_tokens
+from agentforge.llm.models import (ModelContextLimit, ModelProviderError, ToolCallingModel, conservative_input_tokens,
+                                   without_reasoning)
 from agentforge.tools.catalog import error_guidance
 from agentforge.tools.gateway import ToolGateway
 from agentforge.tools.lifecycle import legacy_call_id
@@ -67,6 +68,7 @@ class ChildState(TypedDict):
     partial: str   # the start of an answer that reached the output limit and is being continued
     conts: int     # continuations asked for so far
     nudged: bool   # a stalled reply was already sent back once
+    stubbed: int   # old tool results the last request sent as stubs; the next request stubs the same ones (context.py)
 
 
 def stalled(text: str) -> bool:
@@ -142,10 +144,12 @@ class ChildRuntime:
                 return None
             return max_input - conservative_input_tokens(compact_messages(conversation, 1, 0), schemas)
 
-        def fit(conversation: list[dict[str, Any]]):
-            """The messages to send and their cost bound: compact gently, then harder, until the request fits."""
+        def fit(conversation: list[dict[str, Any]], floor: int):
+            """The messages to send and their cost bound: compact gently (keeping the stubs of the previous request, so the
+            provider's cached prefix is reused), then harder, until the request fits."""
             for keep in (KEEP_RECENT_RESULTS, 1, 0):
-                sent = compact_messages(conversation, context_budget if keep == KEEP_RECENT_RESULTS else 1, keep)
+                gentle = keep == KEEP_RECENT_RESULTS
+                sent = compact_messages(conversation, context_budget if gentle else 1, keep, floor=floor if gentle else 0)
                 try:
                     return sent, model.maximum_request_cost(sent, schemas)
                 except ModelContextLimit:
@@ -157,12 +161,16 @@ class ChildRuntime:
             budgets.check_active(reservation.id)
             steps = state["steps"]
             conversation = state["messages"]
-            fitted = fit(conversation)
+            fitted = fit(conversation, state.get("stubbed", 0))
             if fitted is None:
                 raise ModelContextLimit("The conversation no longer fits in the model's context window, even with old tool results removed.")
             sent, bound = fitted
             stubbed = [kept.get("tool_call_id") for original, kept in zip(conversation, sent)
                        if original is not kept and kept.get("role") == "tool"]
+
+            def advance(**fields: Any) -> dict[str, Any]:
+                """The next state: one more step taken, and how many results this request stubbed, for the next one to keep."""
+                return {"steps": steps + 1, "stubbed": len(stubbed), **fields}
             operation_key = f"{reservation.run_id}:model:{steps}"
             auditor = getattr(resources, "record_provider_input", None)
             if auditor is not None:
@@ -206,9 +214,15 @@ class ChildRuntime:
                 raise
             # The call succeeded, so its real cost is recorded before anything else can fail: `end` may raise an event
             # error the sink deferred (a stopped run, a lost lease), which must not charge the call's upper bound.
-            budgets.record_usage(reservation.id, operation_key, response.usage.cost_usd,
-                usage={"input_tokens": response.usage.input_tokens,
-                       "output_tokens": response.usage.output_tokens, "compacted_results": len(stubbed),
+            usage = response.usage
+            budgets.record_usage(reservation.id, operation_key, usage.cost_usd,
+                usage={"input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens,
+                       # The billing split, so cost per task can be weighed by what each kind of token costs: input read from the
+                       # provider's prompt cache, input written to it, and output spent thinking (0 when not reported).
+                       "cached_tokens": getattr(usage, "cached_tokens", 0),
+                       "cache_write_tokens": getattr(usage, "cache_write_tokens", 0),
+                       "reasoning_tokens": getattr(usage, "reasoning_tokens", 0),
+                       "compacted_results": len(stubbed),
                        "configured_model": model.model_id, "reported_model": response.model_id})
             if stream is not None:
                 try:
@@ -217,7 +231,10 @@ class ChildRuntime:
                     drop_live()
                     raise
             message = response.message
-            if len(json.dumps(message, allow_nan=False).encode()) > 4 * MAX_ANSWER_CHARS or message.get("role") != "assistant":
+            if not isinstance(message, dict) or message.get("role") != "assistant":
+                raise ModelProviderError("invalid model response envelope")
+            # The reply's own size, without the opaque reasoning the adapter may carry on it for the next request.
+            if len(json.dumps(without_reasoning([message])[0][0], allow_nan=False).encode()) > 4 * MAX_ANSWER_CHARS:
                 raise ModelProviderError("invalid model response envelope")
             pending = message.get("tool_calls") or []
             if not isinstance(pending, list):
@@ -230,8 +247,7 @@ class ChildRuntime:
                 drop_live()
                 if state["cuts"] >= MAX_CUTOFF_RETRIES:
                     raise ModelProviderError("The model kept running out of output space while calling tools.", detail="finish_reason: length")
-                return {"messages": [*conversation, {"role": "user", "content": CUTOFF_NOTICE}], "pending": [],
-                        "steps": steps + 1, "cuts": state["cuts"] + 1}
+                return advance(messages=[*conversation, {"role": "user", "content": CUTOFF_NOTICE}], pending=[], cuts=state["cuts"] + 1)
             if reason not in ("stop", "tool_calls", "length"):
                 drop_live()
                 raise ModelProviderError(f"The model stopped before finishing its reply (finish reason: {reason}).", detail=f"finish_reason: {reason}")
@@ -239,29 +255,26 @@ class ChildRuntime:
                 # Text next to tool calls was a note for the person: keep it in the run's history, in order.
                 if stream is not None:
                     stream.commit_narration()
-                return {"messages": [*conversation, message], "pending": pending, "steps": steps + 1,
-                        "partial": "", "conts": 0}
+                return advance(messages=[*conversation, message], pending=pending, partial="", conts=0)
             written = message.get("content") or ""
             if not written.strip() and not partial:
                 drop_live()
                 if state["empties"] >= 1:
                     raise ModelProviderError("The model returned an empty reply.", detail="empty completion")
-                return {"messages": [*conversation, {"role": "user", "content": EMPTY_NOTICE}], "pending": [],
-                        "steps": steps + 1, "empties": state["empties"] + 1}
+                return advance(messages=[*conversation, {"role": "user", "content": EMPTY_NOTICE}], pending=[], empties=state["empties"] + 1)
             if reason == "length" and state["conts"] < MAX_CONTINUATIONS and len(partial) + len(written) < MAX_ANSWER_CHARS:
                 # The answer ran into the output limit: keep what was written and ask for the rest.
-                return {"messages": [*conversation, message, {"role": "user", "content": CONTINUE_NOTICE}], "pending": [],
-                        "steps": steps + 1, "partial": partial + written, "conts": state["conts"] + 1}
+                return advance(messages=[*conversation, message, {"role": "user", "content": CONTINUE_NOTICE}], pending=[],
+                               partial=partial + written, conts=state["conts"] + 1)
             text = (partial + written).strip()
             if schemas and not partial and not state["nudged"] and reason == "stop" and stalled(text):
                 drop_live()
-                return {"messages": [*conversation, message, {"role": "user", "content": STALLED_NOTICE}], "pending": [],
-                        "steps": steps + 1, "nudged": True}
+                return advance(messages=[*conversation, message, {"role": "user", "content": STALLED_NOTICE}], pending=[], nudged=True)
             if reason == "length":
                 text += CUT_OFF_NOTE
             if stream is not None:
                 stream.commit_reply()
-            return {"messages": [*conversation, message], "pending": [], "steps": steps + 1, "answer": text[:MAX_ANSWER_CHARS]}
+            return advance(messages=[*conversation, message], pending=[], answer=text[:MAX_ANSWER_CHARS])
 
         async def run_tool(call: dict[str, Any]):
             return await gateway.execute(call["function"]["name"], call["function"]["arguments"], call["id"])
@@ -354,7 +367,7 @@ class ChildRuntime:
         try:
             async with asyncio.timeout(scope.budget.max_wall_time_sec if getattr(ctx, "depth", 0) else None):
                 output = await child.ainvoke({"messages": messages, "pending": [], "steps": 0, "cuts": 0, "empties": 0,
-                                          "answer": None, "partial": "", "conts": 0, "nudged": False},
+                                          "answer": None, "partial": "", "conts": 0, "nudged": False, "stubbed": 0},
                                          invoke_config)
         except BaseException:
             # An error or a stop request ends the run without a reply: nothing may stay on screen.

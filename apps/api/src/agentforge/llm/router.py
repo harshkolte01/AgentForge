@@ -27,7 +27,10 @@ class ModelRouter:
             raise ModelConfigurationError("operator must verify configured model tool calling and JSON support")
         return cls(OpenAIAdapter(
             api_key=settings.llm_api_key.get_secret_value(), model_id=settings.llm_model,
-            rates=ModelRates(settings.llm_input_usd_per_million, settings.llm_output_usd_per_million),
+            rates=ModelRates(settings.llm_input_usd_per_million, settings.llm_output_usd_per_million,
+                             settings.llm_cached_input_usd_per_million, settings.llm_cache_write_usd_per_million),
+            # Above the long-context threshold the cache rates are not configured separately: cached reads and writes are
+            # then priced at the long-context input rate, which is an overestimate, never a guess at a lower price.
             long_context_rates=(ModelRates(settings.llm_long_context_input_usd_per_million,
                                            settings.llm_long_context_output_usd_per_million)
                 if settings.llm_long_context_input_usd_per_million is not None

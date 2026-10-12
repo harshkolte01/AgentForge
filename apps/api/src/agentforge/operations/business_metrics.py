@@ -51,7 +51,13 @@ def aggregate(connection, since):
         coalesce(sum(CASE WHEN o.usage_json->'provider_usage'->>'input_tokens' ~ '^[0-9]+$'
             THEN (o.usage_json->'provider_usage'->>'input_tokens')::numeric ELSE 0 END),0) AS input_tokens,
         coalesce(sum(CASE WHEN o.usage_json->'provider_usage'->>'output_tokens' ~ '^[0-9]+$'
-            THEN (o.usage_json->'provider_usage'->>'output_tokens')::numeric ELSE 0 END),0) AS output_tokens
+            THEN (o.usage_json->'provider_usage'->>'output_tokens')::numeric ELSE 0 END),0) AS output_tokens,
+        coalesce(sum(CASE WHEN o.usage_json->'provider_usage'->>'cached_tokens' ~ '^[0-9]+$'
+            THEN (o.usage_json->'provider_usage'->>'cached_tokens')::numeric ELSE 0 END),0) AS cached_tokens,
+        coalesce(sum(CASE WHEN o.usage_json->'provider_usage'->>'cache_write_tokens' ~ '^[0-9]+$'
+            THEN (o.usage_json->'provider_usage'->>'cache_write_tokens')::numeric ELSE 0 END),0) AS cache_write_tokens,
+        coalesce(sum(CASE WHEN o.usage_json->'provider_usage'->>'reasoning_tokens' ~ '^[0-9]+$'
+            THEN (o.usage_json->'provider_usage'->>'reasoning_tokens')::numeric ELSE 0 END),0) AS reasoning_tokens
         FROM budget_operations o JOIN budget_reservations r ON r.id=o.reservation_id
         JOIN tasks t ON t.id=r.task_id WHERE t.created_at>=:since AND o.kind='model' GROUP BY 1"""), {'since':since}).mappings().all()
     return {"task_counts": dict(tasks), "ledger": {key: str(value) if key.endswith("usd") else value for key, value in costs.items()},

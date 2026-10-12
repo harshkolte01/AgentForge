@@ -39,9 +39,25 @@ Every requested call gets a reply, in request order.
 
 When the conversation outgrows half of the usable window, the oldest tool results are replaced by a stub that keeps the
 tool name, status and every id; the four newest stay whole. If that is not enough, long string arguments of the model's
-own earlier calls (a whole file passed to `write`) are replaced by a note too; the latest call is never touched. Results
-the model has not read yet are never stubbed, so a turn may only run as many calls as fit in the room left; the rest are
-answered `DEFERRED`. Stored state is never changed, only what is sent.
+own earlier calls (a whole file passed to `write`) are replaced by a note too, and their kept reasoning is dropped; the
+latest call is never touched. Results the model has not read yet are never stubbed, so a turn may only run as many calls
+as fit in the room left; the rest are answered `DEFERRED`. Stored state is never changed, only what is sent.
+
+Compaction is shaped for the provider's prompt cache (`subagents/context.py`). Every request of a run repeats the
+previous one and appends to it, so the provider reads the shared prefix from its cache at a tenth of the price; a stub
+changes a message deep in that prefix and everything after it is paid for again. So a run that outgrows its budget is
+compacted to 80% of the budget (`COMPACTION_TARGET`) rather than just under it, and the stubs of one request are sent
+again by the next (`ChildState.stubbed`, the `floor`), instead of one more result being stubbed at every step.
+
+### Cost per request
+
+Usage is recorded the way the provider bills it (`budget_operations.usage_json.provider_usage`, the `model_request` span
+and `examples/neatlogs_eval.py`): `input_tokens` with its `cached_tokens` (read from the prompt cache) and
+`cache_write_tokens` parts, `output_tokens` with its `reasoning_tokens` part, and `compacted_results`. With
+`LLM_CACHED_INPUT_USD_PER_MILLION` and `LLM_CACHE_WRITE_USD_PER_MILLION` set, the ledger prices each part at its own rate;
+without them every input token costs the input rate, as before. The prompt cache needs nothing from us beyond a stable
+prefix: the developer message depends only on the tool set, tools are sent in a fixed order, the date and the facts of the
+turn come after the rules, and the conversation only grows. Reasoning effort is part of the prefix, so it is fixed per run.
 
 ## The system prompt
 
@@ -165,6 +181,13 @@ credentials; GitHub writes happen in the backend.
 - `LLM_TIMEOUT_SEC` (default 180) bounds each wait for data; connecting has its own 15 s limit.
 - `LLM_MAX_OUTPUT_TOKENS` defaults to 16,384 (never more than half the window).
 - `LLM_STRICT_TOOLS=true` sends strict structured-output schemas. Enable it after confirming the model accepts it.
+- **Reasoning continuity.** On the Responses endpoint (any effort above none) the model's thinking comes back as
+  encrypted reasoning items (`store` is false, so the provider keeps nothing). The adapter keeps them on the assistant
+  message (`reasoning`, with the reported `reasoning_tokens`) and the next request of the run passes them back before the
+  tool calls they led to, for every step since the person's message. Without that the model rebuilds its plan from
+  scratch at every tool step, at output-token prices. The items are opaque, never shown, never stored outside the run,
+  and counted toward the window as the tokens they stand for, not as their ciphertext. The Chat Completions path never
+  sends them.
 
 ## Context status (the ring beside the composer)
 
@@ -184,4 +207,6 @@ numbers; free text and file content become lengths; URLs become their host) and,
 
 `tests/test_child_runtime.py`, `test_tool_gateway.py`, `test_tool_approvals.py`, `test_llm_adapter.py`,
 `test_sandbox_provider.py`, `test_sandbox_shell.py`, `test_tool_stream.py` and `test_agent_prompts.py` drive the real loop, gateway, adapter and
-sandbox tools with scripted models and fakes; no provider, VM or database is needed.
+sandbox tools with scripted models and fakes; no provider, VM or database is needed. `test_harness_efficiency.py` pins
+what keeps a run cheap (usage by billing type, reasoning passed back, cache-stable compaction) and
+`test_command_output_file.py` the saved command output.

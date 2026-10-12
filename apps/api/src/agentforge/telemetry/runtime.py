@@ -95,6 +95,11 @@ class ObservedModel:
                 set_attributes(span, {
                     "gen_ai.usage.input_tokens": usage.input_tokens, "gen_ai.usage.output_tokens": usage.output_tokens,
                     "llm.token_count.total": usage.input_tokens + usage.output_tokens,
+                    # The billing split: how much of the input the provider read from its prompt cache (or wrote to it) and how
+                    # much of the output was thinking. A model that reports none of it says 0.
+                    "agentforge.llm.cached_tokens": getattr(usage, "cached_tokens", 0),
+                    "agentforge.llm.cache_write_tokens": getattr(usage, "cache_write_tokens", 0),
+                    "agentforge.llm.reasoning_tokens": getattr(usage, "reasoning_tokens", 0),
                     "agentforge.llm.cost_known": usage.cost_usd is not None,
                     "agentforge.llm.reported_model": getattr(response, "model_id", None),
                     "neatlogs.llm.choices.0.finish_reason": getattr(response, "finish_reason", None),

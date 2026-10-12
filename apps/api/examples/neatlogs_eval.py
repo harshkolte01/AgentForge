@@ -76,9 +76,14 @@ def measure(results: list[dict]) -> dict:
         for result in results:
             tools = connection.execute(text("""SELECT tool_name, status, coalesce(error_code, '') AS code FROM tool_calls
                 WHERE task_id = :task ORDER BY started_at"""), {"task": result["task_id"]}).mappings().all()
+            # Tokens by how they are billed: cached reads and cache writes are parts of the input, thinking is part of the output
+            # (older rows recorded none of the parts and count as 0 there).
             model = connection.execute(text("""SELECT count(*) AS calls,
                 coalesce(sum((o.usage_json->'provider_usage'->>'input_tokens')::bigint), 0) AS input_tokens,
+                coalesce(sum((o.usage_json->'provider_usage'->>'cached_tokens')::bigint), 0) AS cached_tokens,
+                coalesce(sum((o.usage_json->'provider_usage'->>'cache_write_tokens')::bigint), 0) AS cache_write_tokens,
                 coalesce(sum((o.usage_json->'provider_usage'->>'output_tokens')::bigint), 0) AS output_tokens,
+                coalesce(sum((o.usage_json->'provider_usage'->>'reasoning_tokens')::bigint), 0) AS reasoning_tokens,
                 coalesce(sum(o.cost_usd), 0) AS cost_usd
                 FROM budget_operations o JOIN budget_reservations r ON r.id = o.reservation_id
                 WHERE r.task_id = :task AND o.kind = 'model'"""), {"task": result["task_id"]}).mappings().one()
@@ -88,21 +93,32 @@ def measure(results: list[dict]) -> dict:
                          "first_fetch_refused": first_fetch is not None and first_fetch["code"] == "SCOPE_DENIED",
                          "failure_codes": sorted({t["code"] for t in failed}),
                          "model_calls": model["calls"], "input_tokens": int(model["input_tokens"]),
-                         "output_tokens": int(model["output_tokens"]), "cost_usd": float(model["cost_usd"]),
+                         "cached_tokens": int(model["cached_tokens"]), "cache_write_tokens": int(model["cache_write_tokens"]),
+                         "output_tokens": int(model["output_tokens"]), "reasoning_tokens": int(model["reasoning_tokens"]),
+                         "cost_usd": float(model["cost_usd"]),
                          "tools": [f"{t['tool_name']}:{t['status']}{'(' + t['code'] + ')' if t['code'] else ''}" for t in tools]})
     engine.dispose()
-    keys = ("seconds", "tool_calls", "failed_or_blocked", "model_calls", "input_tokens", "output_tokens", "cost_usd")
+    keys = ("seconds", "tool_calls", "failed_or_blocked", "model_calls", "input_tokens", "cached_tokens", "cache_write_tokens",
+            "output_tokens", "reasoning_tokens", "cost_usd")
     total = {key: round(sum(row[key] for row in rows), 4) for key in keys}
     total["first_fetch_refused"] = sum(row["first_fetch_refused"] for row in rows)
+    total["cache_hit_rate"] = round(total["cached_tokens"] / total["input_tokens"], 3) if total["input_tokens"] else 0.0
+    completed = sum(row["status"] == "COMPLETED" for row in rows)
+    total["cost_per_completed_task_usd"] = round(total["cost_usd"] / completed, 4) if completed else None
     return {"tasks": rows, "total": total}
 
 
 def compare(before: dict, after: dict) -> None:
-    for key in ("first_fetch_refused", "tool_calls", "failed_or_blocked", "model_calls", "input_tokens", "output_tokens",
-                "cost_usd", "seconds"):
+    for key in ("first_fetch_refused", "tool_calls", "failed_or_blocked", "model_calls", "input_tokens", "cached_tokens",
+                "cache_write_tokens", "output_tokens", "reasoning_tokens", "cache_hit_rate", "cost_usd",
+                "cost_per_completed_task_usd", "seconds"):
+        if key not in before["total"] or key not in after["total"]:
+            continue  # a run recorded before a column existed
         old, new = before["total"][key], after["total"][key]
+        if old is None or new is None:
+            continue
         change = f"{(new - old) / old * 100:+.0f}%" if old else "n/a"
-        print(f"{key:20} {old:>12} -> {new:>12}  {change}")
+        print(f"{key:28} {old:>12} -> {new:>12}  {change}")
 
 
 def main() -> None:

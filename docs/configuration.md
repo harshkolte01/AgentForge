@@ -75,6 +75,7 @@ An OpenAI-compatible provider. Verify the model's tool support, context window a
 | `LLM_CONTEXT_WINDOW_TOKENS` | none | The model's context window (8192 to 2,000,000). |
 | `LLM_INPUT_USD_PER_MILLION`, `LLM_OUTPUT_USD_PER_MILLION` | none | Current prices; cost accounting depends on them. |
 | `LLM_LONG_CONTEXT_INPUT_USD_PER_MILLION`, `LLM_LONG_CONTEXT_OUTPUT_USD_PER_MILLION` | none | Only for models priced differently above a long-context threshold. |
+| `LLM_CACHED_INPUT_USD_PER_MILLION`, `LLM_CACHE_WRITE_USD_PER_MILLION` | none | The provider's prices for input read from its prompt cache and written to it. Unset, every input token is priced at the input rate (an overestimate for cached reads). The cached, written and plain parts are recorded per request either way. Above the long-context threshold, cached input is priced at the long-context input rate. |
 | `LLM_PROVIDER` | `openai` | The only provider kind. |
 | `LLM_MAX_OUTPUT_TOKENS` | `16384` | Room for a whole file in one tool call; a longer final answer is continued, not cut. |
 | `LLM_TIMEOUT_SEC` | `180` | The longest wait for the next piece of a reply. |

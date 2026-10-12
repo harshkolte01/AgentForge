@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     llm_output_usd_per_million: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
     llm_long_context_input_usd_per_million: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
     llm_long_context_output_usd_per_million: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
+    # The provider's prices for input read from its prompt cache and for writing to it (per million tokens). Optional: without
+    # them every input token is priced at LLM_INPUT_USD_PER_MILLION, which overstates cached reads. The ledger records the
+    # cached, written and plain parts of every request either way (budget_operations.usage_json.provider_usage).
+    llm_cached_input_usd_per_million: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
+    llm_cache_write_usd_per_million: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
     # Let the model request several independent read-only tools in one turn.
     llm_parallel_tool_calls: bool = True
     # Send tool schemas in the provider's strict structured-output form. Verify the configured
