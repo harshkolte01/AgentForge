@@ -76,7 +76,7 @@ lists every other setting with its default, and [Settings](apps/api/src/agentfor
 is the contract. The API refuses to start on invalid settings and names the fields, never their
 values. Never overwrite an existing `.env` with the template. For GitHub sign-in
 and private repositories, create a GitHub App as in [docs/github-app.md](docs/github-app.md).
-Set `E2B_API_KEY` for the coding sandbox and `TAVILY_API_KEY` for web search.
+Set `E2B_API_KEY` for the coding sandbox and `EXA_API_KEY` for web search (`TAVILY_API_KEY` works as the fallback, or on its own).
 `API_ORIGIN` (in `apps/web/.env.local`, default `http://localhost:8000`) is the
 server-only origin of Next.js's API rewrite; deployments route `/api/` directly
 to FastAPI on the same origin.

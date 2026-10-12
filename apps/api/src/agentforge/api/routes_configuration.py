@@ -10,6 +10,14 @@ from agentforge.repositories.workers import worker_presence
 router = APIRouter(prefix="/api/v1/configuration", tags=["configuration"])
 
 
+# Web search needs one of two providers (Exa first, Tavily as the fallback): either key turns it on.
+SEARCH_SETTING = "EXA_API_KEY or TAVILY_API_KEY"
+
+
+def web_search_configured(settings) -> bool:
+    return bool(getattr(settings, "exa_api_key", None) or getattr(settings, "tavily_api_key", None))
+
+
 @router.get("")
 def configuration(request: Request, user: User = Depends(current_user)) -> dict:
     settings = request.app.state.settings
@@ -21,7 +29,7 @@ def configuration(request: Request, user: User = Depends(current_user)) -> dict:
         "LLM_OUTPUT_USD_PER_MILLION": settings.llm_output_usd_per_million is not None,
         "LLM_SUPPORTS_TOOLS=true": settings.llm_supports_tools,
         "LLM_SUPPORTS_JSON=true": settings.llm_supports_json,
-        "TAVILY_API_KEY": bool(settings.tavily_api_key),
+        SEARCH_SETTING: web_search_configured(settings),
     }
     from agentforge.llm.limits import LUNA_LONG_CONTEXT_THRESHOLD, LUNA_WINDOW, input_limit, is_luna
     available = input_limit(settings.llm_model, settings.llm_context_window_tokens,
@@ -36,14 +44,14 @@ def configuration(request: Request, user: User = Depends(current_user)) -> dict:
             "LLM_LONG_CONTEXT_OUTPUT_USD_PER_MILLION": getattr(settings, "llm_long_context_output_usd_per_million", None) is not None,
         })
     missing = [name for name, present in required.items() if not present]
-    general_missing = [name for name, present in required.items() if name != "TAVILY_API_KEY" and not present]
-    coding_required = {name: present for name, present in required.items() if name != "TAVILY_API_KEY"}
+    general_missing = [name for name, present in required.items() if name != SEARCH_SETTING and not present]
+    coding_required = {name: present for name, present in required.items() if name != SEARCH_SETTING}
     coding_required["E2B_API_KEY"] = bool(getattr(settings, "e2b_api_key", None))
     coding_missing = [name for name, present in coding_required.items() if not present]
     return {"research_configured": not missing, "missing_settings": missing,
             "conversation_queue_enabled": getattr(settings, "conversation_queue_enabled", True),
             "general_configured": not general_missing, "general_missing_settings": general_missing,
-            "general_capabilities": ["text_attachment_reads", "task_owned_text_artifacts"] + (["web_research"] if settings.tavily_api_key else [])
+            "general_capabilities": ["text_attachment_reads", "task_owned_text_artifacts"] + (["web_research"] if web_search_configured(settings) else [])
                 + (["code_sandbox"] if settings.e2b_api_key else []),
             "general_execution": "agent", "general_sandbox_execution": "e2b" if settings.e2b_api_key else "unsupported",
             "configured_model": settings.llm_model or None, "configured_provider": getattr(settings, "llm_provider", "openai"),
@@ -53,7 +61,7 @@ def configuration(request: Request, user: User = Depends(current_user)) -> dict:
             "tracing_configured": bool(settings.neatlogs_api_key),
             # Whether traces carry prompts and tool data (off: structure, timing, usage and status only).
             "tracing_content_capture": bool(settings.neatlogs_api_key) and bool(getattr(settings, "neatlogs_capture_content", False)),
-            "web_research_configured": bool(settings.tavily_api_key),
+            "web_research_configured": web_search_configured(settings),
             "github_writes_enabled": bool(getattr(settings, "enable_github_writes", False)),
             "plugins_enabled": bool(getattr(settings, "plugins_enabled", False)),
             "skills_enabled": bool(getattr(settings, "skills_enabled", False)),

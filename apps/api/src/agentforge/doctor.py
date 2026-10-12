@@ -76,12 +76,22 @@ def check_model(settings):
     return [("PASS", "model", "LLM_MODEL, LLM_API_KEY, limits and prices set")]
 
 
+def keys(secret) -> str:
+    """How many keys a search setting holds, for the report (never the keys)."""
+    from agentforge.integrations.web_search import split_keys
+    count = len(split_keys(secret.get_secret_value()))
+    return "1 key" if count == 1 else f"{count} keys, used in order when one is refused"
+
+
 def check_optional(settings):
     results = [
         ("PASS", "e2b", "E2B_API_KEY set (coding sandbox)") if settings.e2b_api_key
         else ("WARN", "e2b", "E2B_API_KEY not set: no coding sandbox (bash, files, search)"),
-        ("PASS", "tavily", "TAVILY_API_KEY set (web research)") if settings.tavily_api_key
-        else ("WARN", "tavily", "TAVILY_API_KEY not set: no web search"),
+        ("PASS", "exa", f"EXA_API_KEY set ({keys(settings.exa_api_key)}; web search, first choice)") if settings.exa_api_key
+        else ("WARN", "exa", "EXA_API_KEY not set: web search falls back to Tavily" if settings.tavily_api_key
+              else "EXA_API_KEY not set: no web search unless TAVILY_API_KEY is set"),
+        ("PASS", "tavily", f"TAVILY_API_KEY set ({keys(settings.tavily_api_key)}; web search" + (", fallback)" if settings.exa_api_key else ")")) if settings.tavily_api_key
+        else ("WARN", "tavily", "TAVILY_API_KEY not set: " + ("no fallback if Exa is unavailable" if settings.exa_api_key else "no web search")),
     ]
     if settings.auth_mode == "github_app" or settings.github_app_id:
         missing = [name for name, value in (("GITHUB_APP_ID", settings.github_app_id), ("GITHUB_APP_SLUG", settings.github_app_slug),

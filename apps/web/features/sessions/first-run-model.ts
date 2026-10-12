@@ -23,7 +23,7 @@ export function setupItems(config: WorkspaceConfiguration, github: GitHubSetup =
     items.push({ id: "model", label: "Connect a model", detail: missing ? `Set ${missing} in the API's .env, then restart it.` : "Set the LLM_* settings in the API's .env, then restart it.", required: true, href: "/settings?section=agent" });
   }
   if (config.worker?.status === "offline") items.push({ id: "worker", label: "Start the worker", detail: "Messages wait until a worker is running: scripts/dev.sh starts it with the API.", required: true });
-  if (config.web_research_configured === false) items.push({ id: "web", label: "Turn on web research", detail: "Set TAVILY_API_KEY to let the agent search the web.", required: false });
+  if (config.web_research_configured === false) items.push({ id: "web", label: "Turn on web research", detail: "Set EXA_API_KEY (or TAVILY_API_KEY) to let the agent search the web.", required: false });
   if (config.coding_configured === false) {
     const missing = settingsList(config.coding_missing_settings);
     items.push({ id: "sandbox", label: "Turn on the coding sandbox", detail: missing ? `Set ${missing} to let the agent run code.` : "Set E2B_API_KEY to let the agent run code.", required: false });

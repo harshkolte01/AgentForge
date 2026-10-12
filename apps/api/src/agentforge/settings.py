@@ -10,6 +10,8 @@ from uuid import UUID
 from pydantic import AliasChoices, Field, HttpUrl, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from agentforge.integrations.web_search import split_keys
+
 API_DIR = Path(__file__).resolve().parents[2]
 REPO_ROOT = API_DIR.parent.parent
 logger = logging.getLogger(__name__)
@@ -86,6 +88,12 @@ class Settings(BaseSettings):
     # Off: traces carry structure, timing, tokens, cost and status only. On: prompts, answers and tool arguments/results are
     # sent too (secrets masked, long values cut), so a private conversation reaches Neatlogs. Choose it deliberately.
     neatlogs_capture_content: bool = False
+    # Web search. Exa is the first choice and Tavily the fallback: with both set a search goes to Exa and only goes to Tavily when
+    # Exa cannot answer; with one, that one serves every search (tools/research.py). Each takes one key or several separated
+    # by commas, tried in order (see `search_keys`).
+    exa_api_key: SecretStr | None = Field(default=None, repr=False)
+    exa_search_max_cost_usd: Decimal = Field(default=Decimal("0.03"), gt=0, allow_inf_nan=False)
+    exa_search_type: Literal["instant", "fast", "auto", "deep-lite", "deep", "deep-reasoning"] = "auto"
     tavily_api_key: SecretStr | None = Field(default=None, repr=False)
     tavily_search_max_cost_usd: Decimal = Field(default=Decimal("0.02"), gt=0, allow_inf_nan=False)
     tavily_usd_per_credit: Decimal | None = Field(default=None, gt=0, allow_inf_nan=False)
@@ -137,6 +145,20 @@ class Settings(BaseSettings):
     local_user_id: UUID | None = None
     local_bootstrap_token: SecretStr | None = Field(default=None, repr=False, min_length=32)
     local_session_ttl_sec: int = Field(default=86400, ge=60, le=604800)
+
+    @field_validator("exa_api_key", "tavily_api_key")
+    @classmethod
+    def search_keys(cls, value: SecretStr | None) -> SecretStr | None:
+        """One key or several separated by commas (`EXA_API_KEY=key1,key2`): stored as a clean, comma-separated list without
+        blanks or repeats. A search uses the first key that works and moves to the next when one is expired, out of credit or
+        rate limited (integrations/web_search.py). A bad key is refused here, at start, without being echoed."""
+        if value is None:
+            return None
+        try:
+            keys = split_keys(value.get_secret_value())
+        except ValueError as exc:
+            raise ValueError(str(exc)) from None
+        return SecretStr(",".join(keys)) if keys else None
 
     @field_validator("allowed_origins", mode="before")
     @classmethod

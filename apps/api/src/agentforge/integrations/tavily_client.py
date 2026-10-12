@@ -1,7 +1,6 @@
 """One bounded Tavily basic search, without automatic upgrades or retries."""
 
 import asyncio
-from dataclasses import dataclass
 from decimal import Decimal
 import json
 from typing import Any
@@ -9,17 +8,14 @@ from typing import Any
 import httpx
 
 from agentforge.integrations.tls import outbound_tls
+from agentforge.integrations.web_search import (EXHAUSTED, INVALID, RATE_LIMITED, KeyFailure, SearchFailure, SearchResponse,
+                                                UnbilledSearchFailure, retry_after_seconds)
 
-
-class SearchFailure(ValueError):
-    """Safe error code only; never includes provider bodies, prompts or API keys."""
-
-
-@dataclass(frozen=True)
-class SearchResponse:
-    results: tuple[dict[str, str], ...]
-    credits: int | None
-    cost_usd: Decimal | None
+# Statuses Tavily documents (https://docs.tavily.com/documentation/api-reference/endpoint/search): 401 missing or invalid key,
+# 429 rate limit, 432 the key's or plan's usage limit, 433 the pay-as-you-go limit. These are about the key, so another key may
+# be tried; 400 and 422 are about the request. Tavily refuses all of them before searching, so none is charged.
+KEY_STATUSES = {401: ("SEARCH_PROVIDER_AUTH", INVALID), 429: ("SEARCH_RATE_LIMITED", RATE_LIMITED),
+                432: ("SEARCH_CREDIT_EXHAUSTED", EXHAUSTED), 433: ("SEARCH_CREDIT_EXHAUSTED", EXHAUSTED)}
 
 
 class TavilyClient:
@@ -49,6 +45,11 @@ class TavilyClient:
                 async with client.stream("POST", "https://api.tavily.com/search", json=payload,
                     headers={"Authorization": f"Bearer {self.api_key}", "Accept-Encoding": "identity"}) as response:
                     if response.status_code != 200:
+                        if response.status_code in KEY_STATUSES:
+                            code, kind = KEY_STATUSES[response.status_code]
+                            raise KeyFailure(code, kind, retry_after_seconds(response.headers.get("retry-after")))
+                        if response.status_code in (400, 422):
+                            raise UnbilledSearchFailure("SEARCH_REQUEST_REJECTED")
                         raise SearchFailure("SEARCH_PROVIDER_ERROR")
                     if response.headers.get("content-encoding", "identity").lower() not in ("", "identity"):
                         raise SearchFailure("SEARCH_COMPRESSED_CONTENT_REJECTED")
@@ -80,4 +81,4 @@ class TavilyClient:
         # Missing billing configuration/observed usage stays unknown; the
         # durable budget ledger retains the configured maximum. Never invent $0.
         cost = Decimal(credits) * self.usd_per_credit if credits is not None and self.usd_per_credit is not None else None
-        return SearchResponse(tuple(results), credits, cost)
+        return SearchResponse(tuple(results), credits, cost, "tavily")

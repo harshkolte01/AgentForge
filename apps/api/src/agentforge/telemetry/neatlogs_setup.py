@@ -177,6 +177,8 @@ def configured_secrets(settings) -> tuple[str, ...]:
         value = getattr(settings, name, None)
         if isinstance(value, SecretStr) and value.get_secret_value():
             values.append(value.get_secret_value())
+            # A setting that holds several comma-separated keys: each one is a secret on its own wherever it appears.
+            values.extend(part for part in value.get_secret_value().split(",") if len(part) >= 8 and part != values[-1])
     return tuple(values)
 
 

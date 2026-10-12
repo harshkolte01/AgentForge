@@ -22,7 +22,7 @@ the worker.
 
 **Local development** (`.env`): `DATABASE_URL`; `AUTH_MODE`, `LOCAL_USER_ID` and `LOCAL_BOOTSTRAP_TOKEN` (filled by
 `python -m agentforge.auth.bootstrap --write-env`); and the model block (`LLM_MODEL`, `LLM_API_KEY`, `LLM_SUPPORTS_TOOLS`,
-`LLM_SUPPORTS_JSON`, `LLM_CONTEXT_WINDOW_TOKENS`, `LLM_INPUT_USD_PER_MILLION`, `LLM_OUTPUT_USD_PER_MILLION`). Add `TAVILY_API_KEY`,
+`LLM_SUPPORTS_JSON`, `LLM_CONTEXT_WINDOW_TOKENS`, `LLM_INPUT_USD_PER_MILLION`, `LLM_OUTPUT_USD_PER_MILLION`). Add `EXA_API_KEY` (web search; `TAVILY_API_KEY` as its fallback),
 `E2B_API_KEY`, `NEATLOGS_API_KEY` and `PLUGIN_ENCRYPTION_KEY` for the capability each one switches on.
 
 **Production** (`runtime.env`): `APP_ENV=production`, the three https URLs, `DATABASE_URL`, `RESEARCH_STORAGE_PATH`,
@@ -101,15 +101,42 @@ An OpenAI-compatible provider. Verify the model's tool support, context window a
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `TAVILY_API_KEY` | none | Turns on web search. |
+| `EXA_API_KEY` | none | Turns on web search with [Exa](https://exa.ai), the first choice. One key, or several separated by commas (`key1,key2`). |
+| `EXA_SEARCH_TYPE` | `auto` | Exa's search type: `instant`, `fast`, `auto`, `deep-lite`, `deep` or `deep-reasoning` (the deep ones are slower and cost more). |
+| `EXA_SEARCH_MAX_COST_USD` | `0.03` | The most one Exa search may cost. Exa reports each request's real cost, and that is what is recorded. |
+| `TAVILY_API_KEY` | none | Turns on web search with Tavily: the fallback when `EXA_API_KEY` is also set, the only provider when it is not. One key or several, separated by commas. |
 | `TAVILY_USD_PER_CREDIT` | none | Price of one Tavily credit, to account for the cost of a search. |
-| `TAVILY_SEARCH_MAX_COST_USD` | `0.02` | The most one search may cost. |
+| `TAVILY_SEARCH_MAX_COST_USD` | `0.02` | The most one Tavily search may cost. |
 | `RESEARCH_FETCH_TIMEOUT_SEC` | `15` | Page fetch timeout (max 30). |
 | `RESEARCH_MAX_RESPONSE_BYTES` | `1000000` | Largest page body read. |
 | `E2B_API_KEY` | none | Turns on the coding sandbox: bash, files and search. |
 | `E2B_TEMPLATE_ID` | none | Optional; E2B's default image has git, Python and Node. See [infra/e2b](../infra/e2b/README.md). |
 | `E2B_REQUEST_TIMEOUT_SEC` | `30` | Per request. |
 | `E2B_SANDBOX_TTL_SEC` | `3600` | A sandbox is paused after this many idle seconds and resumed on use. |
+
+**How a search picks its provider.** The agent has one `web_search` tool. With `EXA_API_KEY` set it goes to Exa; if Exa cannot
+answer (rate limit, no credit, outage, timeout) and `TAVILY_API_KEY` is also set, the same search goes to Tavily, and the
+failure is logged (`web search provider failed: provider=exa reason=...`) so a bad key does not hide behind the fallback. With
+only one key set, that provider serves every search. When a search falls back after an Exa attempt that may have been charged,
+the search is booked at the combined maximum of both providers rather than guessing the charge.
+
+**Several keys for one provider.** Put them in the same setting, separated by commas: `EXA_API_KEY=key1,key2,key3` (spaces and
+new lines also work; repeats are dropped; up to 20; a malformed key stops the app at start without printing it). A search uses
+the first key that works. When a provider refuses a key for a reason that is about the key, the next key serves that same
+search and the refused key is left alone for a while, so a dead key does not cost a request on every search:
+
+| The provider says | Meaning | The key rests for |
+| --- | --- | --- |
+| Exa `401`/`403`, Tavily `401` | wrong, expired or blocked key | 30 minutes |
+| Exa `402`, Tavily `432`/`433` | out of credit, or over its plan or pay-as-you-go limit | 10 minutes (top-ups are picked up) |
+| `429` | rate limited | the provider's `Retry-After` (5 s to 5 min), else 30 s |
+
+The provider refuses all of these before doing any work, so nothing is charged and no cost is booked for the refused attempts.
+Anything that is not about the key (a timeout, a server error, a rejected request) does not try the other keys; the search goes
+to the other provider instead. What the app has learned about a key is shared by every search in a worker process, and each
+refusal is logged by position only (`web search key refused: provider=exa key=1/2 reason=exhausted; not used for 600s`), never
+with the key itself. `python -m agentforge.doctor` shows how many keys each provider has. To add or replace a key, edit the
+setting and restart the worker.
 
 ### Tracing (Neatlogs; see [neatlogs.md](neatlogs.md))
 
