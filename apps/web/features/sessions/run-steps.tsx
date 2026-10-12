@@ -28,22 +28,31 @@ function Words({ label, detail, shimmer }: { label: string; detail?: string; shi
   </span>;
 }
 
+/** Says whether earlier lines are scrolled out of view above (the CSS fades the top edge then). Set on the element, not in state: it changes with every line. */
+const markClipped = (element: HTMLElement) => { element.dataset.clipped = element.scrollTop > 0 ? "true" : "false"; };
+
 /**
  * Text a call is writing or printing right now: the command or file content a model is still writing, or the end of what a
  * running command has printed. Bounded, monospace, with its own scroll area that follows the newest text until the reader
  * scrolls up to read, and quiet for a screen reader (the log is `aria-live="off"`; this is a region to move into, not news).
+ *
+ * `bare` is for text still being written (a file's content, a command): it scrolls the same way but shows no scrollbar, which
+ * would flash with every new line, and fades its top edge while earlier lines are scrolled out of view instead. The output of
+ * a running command keeps its scrollbar.
  */
-function LiveText({ text, label }: { text: string; label: string }) {
+function LiveText({ text, label, bare = false }: { text: string; label: string; bare?: boolean }) {
   const box = useRef<HTMLPreElement>(null);
   const following = useRef(true);
   useLayoutEffect(() => {
     const element = box.current;
-    if (element && following.current) element.scrollTop = element.scrollHeight;
-  }, [text]);
+    if (!element) return;
+    if (following.current) element.scrollTop = element.scrollHeight;
+    if (bare) markClipped(element);
+  }, [text, bare]);
   if (!text) return null;
-  return <pre ref={box} tabIndex={0} role="region" aria-label={label} data-live-text
-    onScroll={(event) => { const element = event.currentTarget; following.current = element.scrollHeight - element.scrollTop - element.clientHeight < 24; }}
-    className="mt-2 max-h-48 max-w-full overflow-auto overscroll-contain whitespace-pre rounded-lg border bg-muted/40 p-3 font-mono text-xs leading-5 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/60">{text}</pre>;
+  return <pre ref={box} tabIndex={0} role="region" aria-label={label} data-live-text={bare ? "bare" : ""}
+    onScroll={(event) => { const element = event.currentTarget; following.current = element.scrollHeight - element.scrollTop - element.clientHeight < 24; if (bare) markClipped(element); }}
+    className={`mt-2 max-h-48 max-w-full overflow-auto overscroll-contain whitespace-pre rounded-lg border bg-muted/40 p-3 font-mono text-xs leading-5 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/60${bare ? " [scrollbar-width:none] [&::-webkit-scrollbar]:hidden data-[clipped=true]:[mask-image:linear-gradient(to_bottom,transparent,black_1.75rem)]" : ""}`}>{text}</pre>;
 }
 
 /** A call the model is still writing: a row of its own (nothing runs yet, so it never says "running") with what it has so far. */
@@ -57,7 +66,7 @@ const DraftRow = memo(function DraftRow({ call }: { call: LiveToolView }) {
       <Glyph icon="running" tone="neutral" current />
       <Words label={shown.label} detail={shown.detail} shimmer />
     </div>
-    <LiveText text={call.text} label={shown.label} />
+    <LiveText text={call.text} label={shown.label} bare />
   </li>;
 });
 

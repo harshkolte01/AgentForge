@@ -50,7 +50,9 @@ of arguments), and a command showed nothing until it ended.
 view, and its notes and steps stay inside its panel.
 
 On the page (`features/sessions/run-steps.tsx`, `timeline-model.ts`): a call being written is a row of its own, "Writing a
-file `src/a.py`", with its text in a bounded monospace block that follows the newest text until the reader scrolls up. It never
+file `src/a.py`", with its text in a bounded monospace block that follows the newest text until the reader scrolls up. That block shows no
+scrollbar (it would flash with every line) and fades its top edge while earlier lines are scrolled out of view; a running
+command's output block keeps its scrollbar. It never
 says "running" (`describeDraft`). It is hidden once the call's real row exists (matched by `call_id`) and while an Approve /
 Decline card waits for it (the card carries the exact text). A running command's output sits under its own row and goes when
 the row settles. Neither is held through the end of a run, and neither is prose: they never reach the answer area.
