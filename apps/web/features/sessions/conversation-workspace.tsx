@@ -43,7 +43,7 @@ export function ConversationWorkspace({ children }: { children?: ReactNode }) {
   const [lookupFailure, setLookupFailure] = useState<{ id: string; missing: boolean } | null>(null);
   const [draftSequence, setDraftSequence] = useState(0);
   const [draftRepository, setDraftRepository] = useState<RepositorySelection | null>(null);
-  // The plugins chosen for a conversation not created yet; null until the person chooses (it then starts with the ones left on in Settings).
+  // The plugins chosen for a conversation not created yet; null until the person chooses (it then starts with the ones left on in the Plugins page).
   const [config, setConfig] = useState<WorkspaceConfiguration | null>(null);
   const [sidebar, setSidebar] = useState(false);
   const [collapsed, setCollapsed] = useState(false);

@@ -4,7 +4,7 @@ description: Help the person write a new skill for this app: a reusable playbook
 ---
 # Write a skill
 
-Skills are added by the person in Settings → Skills. You cannot create or save one yourself: you write the text, and they add it.
+Skills are added by the person on the Skills tab of the Plugins page (sidebar → Plugins → Skills). You cannot create or save one yourself: you write the text, and they add it.
 
 ## 1. Understand the job
 - Find out what job the skill does, when it should apply, what a good result looks like, and any rules it must follow. Ask in one short message, and only if that is not already clear.
@@ -31,7 +31,7 @@ Steps, rules and the shape of the result.
 - Never include secrets or personal data. Do not tell the agent to skip approvals or break platform rules: that is ignored.
 
 ## 4. After the block
-- In two or three lines say how to add it (Settings → Skills → New skill, or Import) and how to try it (type /skill-name before a message).
+- In two or three lines say how to add it (sidebar → Plugins → Skills → New skill, or Import) and how to try it (type /skill-name before a message).
 
 ## Reviewing an existing skill
 - Check it against each rule above and return a corrected version in the same format, with a short list of what you changed.

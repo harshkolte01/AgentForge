@@ -87,14 +87,14 @@ An OpenAI-compatible provider. Verify the model's tool support, context window a
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `PLUGINS_ENABLED` | `true` | MCP servers a person connects in Settings > Plugins. |
+| `PLUGINS_ENABLED` | `true` | MCP servers a person connects on the Plugins page (sidebar → Plugins). |
 | `PLUGIN_ENCRYPTION_KEY` | falls back to `GITHUB_TOKEN_ENCRYPTION_KEY` | At least 32 random characters; encrypts the tokens people save for plugins. Without either key only plugins that need no token can be connected. Changing it makes saved plugin tokens unreadable (people enter them again). |
 | `PLUGIN_CALL_TIMEOUT_SEC` | `60` | Seconds one plugin call may take. |
 | `PLUGIN_MAX_CONNECTIONS` | `20` | How many plugins one person may connect. |
 | `PLUGIN_ALLOW_PRIVATE_NETWORK` | `false` | Development only: plugin servers on localhost or a private network, and plain http. Refused in production. |
 | `PLUGIN_OAUTH_ENABLED` | `true` | Sign in to plugins with OAuth (the MCP authorization specification). Needs a plugin encryption key and an `API_PUBLIC_BASE_URL` the person's browser can reach; the return address is `API_PUBLIC_BASE_URL` + `/api/v1/plugins/oauth/callback`. |
 | `PLUGIN_OAUTH_REGISTRATION` | `auto` | `auto` registers through a Client ID Metadata Document where the server supports one and the URL is https, else Dynamic Client Registration; `dcr` always uses the latter. |
-| `SKILLS_ENABLED` | `true` | Playbooks the agent loads when a request fits (Settings > Skills). |
+| `SKILLS_ENABLED` | `true` | Playbooks the agent loads when a request fits (Plugins page > Skills). |
 | `SKILL_MAX_PER_USER` | `50` | How many skills of their own one person may have (the built-in ones do not count). |
 
 ## Optional tools

@@ -6,7 +6,7 @@ Some skills ship with the app; people also write their own.
 
 ## Using them
 
-* **The Skills tab of the Plugins page** (sidebar → Plugins → Skills; also Settings → Skills) lists the built-in skills and the
+* **The Skills tab of the Plugins page** (sidebar → Plugins → Skills; the old `/settings?section=skills` link redirects here) lists the built-in skills and the
   person's own as cards. Each has a switch. The person's own skills can be created, edited, imported from a `SKILL.md`, exported,
   and deleted. A built-in skill cannot be edited, but **Copy to my skills** makes an editable copy under a new name.
 * **Typing `/name` at the start of a message** asks for that skill. Otherwise the agent decides: when a request clearly fits a skill's

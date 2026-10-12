@@ -14,7 +14,7 @@ import type { StatusIcon, Tone } from "@/lib/activity/types";
  */
 export const draftedCalls = new Set<string>();
 
-/** Compact service branding from the same local assets as Settings → Plugins. */
+/** Compact service branding from the same local assets as the Plugins page. */
 function PluginCallLogo({ tool }: { tool: string }) {
   const slug = tool.slice(0, tool.indexOf("__"));
   // Connecting a service more than once appends a numeric suffix to its catalog slug.

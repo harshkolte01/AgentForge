@@ -173,7 +173,7 @@ ERROR_GUIDANCE = {
     "DECLINED": "The person said no to this action and nothing was run. Do not try to do the same thing another way; say what you were about to do and ask how to continue.",
     "DEFERRED": "That call was not run because its result would not fit in the context window with this turn's other results. Ask for it again in a later turn, a few at a time.",
     "PLUGIN_TOOL_ERROR": "The plugin's tool reported a problem. Read the detail; correct the arguments if they were at fault, otherwise tell the person.",
-    "PLUGIN_AUTH_FAILED": "The plugin rejected the person's credential. Do not retry; tell them to reconnect the plugin in Settings → Plugins.",
+    "PLUGIN_AUTH_FAILED": "The plugin rejected the person's credential. Do not retry; tell them to reconnect the plugin on the Plugins page (sidebar → Plugins).",
     "PLUGIN_REAUTHORIZE": "The person's sign-in to this plugin has ended. Do not retry; tell them to open Plugins, choose the plugin and press Reconnect.",
     "PLUGIN_SCOPE_INSUFFICIENT": "The person's sign-in to this plugin does not allow this action. Do not retry; tell them to open Plugins, choose the plugin and press Reconnect to grant more access.",
     "PLUGIN_AUTH_UNAVAILABLE": "The plugin's sign-in service could not be reached to renew access. Retry once later in the turn; if it fails again, continue without the plugin and tell the person.",

@@ -120,7 +120,7 @@ test("approving a plugin's action names the plugin", () => {
   assert.equal(approvalTitle("something"), "Allow this action?");
 });
 
-test("Plugins is a settings section that opens by its own name", () => {
-  assert.equal(settingsSection("plugins"), "plugins");
-  assert.ok(settingsSections.some((item) => item.id === "plugins"));
+test("Plugins lives on its own page, not in Settings", () => {
+  assert.ok(!settingsSections.some((item) => item.id === "plugins"));
+  assert.equal(settingsSection("plugins"), "account");
 });

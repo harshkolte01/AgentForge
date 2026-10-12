@@ -144,7 +144,7 @@ function SkillItem({ skill, onEdit, onCopy }: { skill: Skill; onEdit?: (full: Sk
 
 type Editing = { existing: Skill | null; initial: Partial<SkillFields> };
 
-/** The person's own skills and the built-in ones: shared by the Plugins page (with its `tabs`) and Settings → Skills. */
+/** The person's own skills and the built-in ones: shown on the Plugins page (with its `tabs`). */
 export function SkillsPanel({ tabs }: { tabs?: ReactNode }) {
   const { status, overview, error } = useSkills();
   const [query, setQuery] = useState("");

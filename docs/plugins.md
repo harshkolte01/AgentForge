@@ -6,7 +6,7 @@ so everything below exists to keep that safe.
 
 ## Using them
 
-1. **The Plugins page** (sidebar → Plugins; the same panel is in Settings → Plugins) is a quiet list: **Connected** plugins, then
+1. **The Plugins page** (sidebar → Plugins; there is no copy in Settings, and the old `/settings?section=plugins` link redirects here) is a quiet list: **Connected** plugins, then
    **Available** ones (about fifty, grouped by category, plus "Your own server"), each with its logo. Search and the category
    pills filter the list; **Add** (top right) or a row's **+** connects one. A plugin that signs in with OAuth sends the person to
    the service to sign in; one that takes a token asks for it in a dialog. Nothing is saved unless the server answers and lists

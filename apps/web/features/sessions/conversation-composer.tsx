@@ -147,7 +147,7 @@ export function ConversationComposer({ queue, repository, onRepositoryChange, co
     event.preventDefault(); setError("");
     if (upload.current || stopping || actionPending.current) return;
     if (blocked !== null && blocked !== "empty") return;
-    // No `plugins`: a first message's conversation starts with the plugins left on in Settings, chosen by the server when it is
+    // No `plugins`: a first message's conversation starts with the plugins left on in the Plugins page, chosen by the server when it is
     // created (a selection read here could be stale, or name a plugin since removed).
     const input: Omit<TurnInput, "idempotency_key"> = { routing: "auto", goal: attachmentGoal(goal, attachments), repository, allowed_web_hosts: [], attachments };
     if (input.goal.length < 1) { setError("Enter a message to send."); return; }

@@ -20,7 +20,7 @@ browser's Back and Forward buttons.
 | `/chat/<conversation-id>/runs/<task-id>` | Run details for one reply, inside the same sidebar shell. "Back to conversation" returns to the thread |
 | `/tasks`, `/tasks/<task-id>` | Standalone task list/detail for work that is not part of a conversation (for example custom-agent tests) |
 | `/plugins`, `/plugins?tab=skills` | Plugins and skills, as two tabs of one page drawn inside the same sidebar shell (the sidebar's **Plugins** button opens it) |
-| `/settings?section=…` | Settings |
+| `/settings?section=…` | Settings (Account, Agent, GitHub, Conversations, Appearance, Custom agents). `?section=plugins` and `?section=skills` redirect to `/plugins` and `/plugins?tab=skills` |
 
 > The `/chat/<id>/runs/<task-id>` and `/tasks…` pages listed above no longer exist: a reply's activity is shown inline in
 > the thread. What the agent did to a repository is reviewed, published and merged from the conversation's **Changes
@@ -140,7 +140,7 @@ details and the live-to-saved hand-off work.
 
 ## Settings
 
-Settings contains Account, Model & limits, GitHub and Custom agents. Account uses
+Settings contains Account, Agent, GitHub, Conversations, Appearance and Custom agents (Plugins and Skills are on their own page, from the sidebar). Account uses
 the actual authenticated identity and logout action. Model/limit information
 comes from the server configuration; no usage totals or live-provider success is
 invented. GitHub retains account connection, installation/access management,

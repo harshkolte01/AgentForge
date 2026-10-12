@@ -108,7 +108,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("GITHUB_TOKEN_ENCRYPTION_KEY", "ENCRYPTION_KEY", "github_token_encryption_key"))
     github_oauth_callback_url: HttpUrl | None = None
     enable_github_writes: bool = False
-    # Plugins: MCP servers a person connects in Settings so the agent can use their tools. Secrets (tokens) are stored
+    # Plugins: MCP servers a person connects on the Plugins page so the agent can use their tools. Secrets (tokens) are stored
     # encrypted with PLUGIN_ENCRYPTION_KEY, or with the GitHub token key when that is set; without either key only
     # plugins that need no credential can be connected.
     plugins_enabled: bool = True
@@ -123,7 +123,7 @@ class Settings(BaseSettings):
     # one (and API_PUBLIC_BASE_URL is https), otherwise through Dynamic Client Registration; "dcr" always uses the latter.
     plugin_oauth_enabled: bool = True
     plugin_oauth_registration: Literal["auto", "dcr"] = "auto"
-    # Skills: written playbooks the agent loads when a request fits (built in, and the person's own, kept in Settings).
+    # Skills: written playbooks the agent loads when a request fits (built in, and the person's own, kept on the Plugins page).
     skills_enabled: bool = True
     skill_max_per_user: int = Field(default=50, ge=1, le=200)
     github_api_version: str = Field(default="2026-03-10", pattern=r"^\d{4}-\d{2}-\d{2}$")

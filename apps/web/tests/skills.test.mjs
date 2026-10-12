@@ -111,8 +111,7 @@ test("loading a skill reads as a step of its own in the timeline", () => {
   assert.equal(describeCall({ tool: "use_skill", outcome: "failed" }).label, "Couldn't load the skill");
 });
 
-test("Skills is a settings section that opens by its own name, before Custom agents", () => {
-  assert.equal(settingsSection("skills"), "skills");
-  const ids = settingsSections.map((item) => item.id);
-  assert.ok(ids.indexOf("skills") > ids.indexOf("plugins") && ids.indexOf("skills") < ids.indexOf("agents"));
+test("Skills lives on the Plugins page, not in Settings", () => {
+  assert.ok(!settingsSections.some((item) => item.id === "skills"));
+  assert.equal(settingsSection("skills"), "account");
 });

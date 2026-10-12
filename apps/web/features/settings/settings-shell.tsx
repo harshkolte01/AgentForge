@@ -3,7 +3,7 @@
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useEffect, useRef, useSyncExternalStore, type ComponentType, type ReactNode } from "react";
-import { Archive, ArrowLeft, BookOpen, Bot, LogOut, Palette, Plug, Sparkles, UserRound } from "lucide-react";
+import { Archive, ArrowLeft, Bot, LogOut, Palette, Sparkles, UserRound } from "lucide-react";
 import { BrandMark } from "@/components/brand-mark";
 import { GitHubMark } from "@/components/github-mark";
 import { Button } from "@/components/ui/button";
@@ -21,8 +21,6 @@ function SectionPlaceholder() {
   return <div role="status" className={`${sectionClass} animate-pulse motion-reduce:animate-none`}><span className="sr-only">Loading…</span><div className="space-y-2" aria-hidden="true"><div className="h-7 w-32 rounded bg-muted" /><div className="h-5 w-72 max-w-full rounded bg-muted" /></div></div>;
 }
 const GitHubConnection = dynamic(() => import("@/features/github/github-connection").then((module) => module.GitHubConnection), { loading: SectionPlaceholder });
-const PluginSettings = dynamic(() => import("@/features/plugins/plugin-settings").then((module) => module.PluginSettings), { loading: SectionPlaceholder });
-const SkillsSettings = dynamic(() => import("@/features/skills/skills-settings").then((module) => module.SkillsSettings), { loading: SectionPlaceholder });
 const AgentManager = dynamic(() => import("@/features/agents/agent-manager").then((module) => module.AgentManager), { loading: SectionPlaceholder });
 
 const noSubscription = () => () => {};
@@ -31,8 +29,6 @@ const sectionIcons: Record<SettingsSection, ComponentType<{ className?: string }
   account: UserRound,
   agent: Sparkles,
   github: GitHubMark,
-  plugins: Plug,
-  skills: BookOpen,
   conversations: Archive,
   appearance: Palette,
   agents: Bot,
@@ -95,8 +91,6 @@ export function SettingsWorkspace({ section, initialCreate = false, agentId }: {
         <div className="min-w-0">{section === "account" ? <AccountSettings />
           : section === "agent" ? <AgentSettings />
               : section === "github" ? <div className={sectionClass}><GitHubConnection embedded /></div>
-                : section === "plugins" ? <PluginSettings />
-                  : section === "skills" ? <SkillsSettings />
                 : section === "conversations" ? <ConversationSettings />
                   : section === "appearance" ? <AppearanceSettings />
                     : <div className={sectionClass}><AgentManager key={`${agentId ?? "list"}-${initialCreate ? "new" : "view"}`} initialCreate={initialCreate} initialAgentId={agentId} embedded /></div>}</div>
