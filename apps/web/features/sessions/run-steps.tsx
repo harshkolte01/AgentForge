@@ -87,7 +87,7 @@ export const EntryRow = memo(function EntryRow({ taskId, entry, current, animate
     // A running command shows what it has printed so far under its row; the finished row opens the saved output instead.
     return <li className={base} {...hooks}>
       <div className="flex items-center gap-2.5">
-        <Glyph icon={meta.icon} tone={meta.tone} current={current} />
+        <Glyph icon={meta.icon} tone={meta.tone} current={current} tool={entry.kind !== "milestone" ? entry.tool : undefined} />
         <Words label={meta.label} detail={meta.detail} shimmer={shimmer} />
       </div>
       {output ? <LiveText text={output} label="Live output" /> : null}
@@ -95,7 +95,7 @@ export const EntryRow = memo(function EntryRow({ taskId, entry, current, animate
   }
   return <li className={base} {...hooks}>
     <button type="button" aria-expanded={open} aria-controls={panelId} data-scroll-anchor-toggle className={rowButton} onClick={toggle}>
-      <Glyph icon={meta.icon} tone={meta.tone} current={current} />
+      <Glyph icon={meta.icon} tone={meta.tone} current={current} tool={entry.tool} />
       <Words label={meta.label} detail={meta.detail} shimmer={shimmer} />
       {chevron(open)}
     </button>
