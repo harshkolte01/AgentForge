@@ -1,0 +1,1 @@
+The hover effect on the card is not good. We need a hover effect on the text only. Remove the card and the right-side dot is not looking good as well. The loading indicator, we don't need it as a scroll indicator that we have. We need to do all of them and make it more premium and clean, perfect for me
