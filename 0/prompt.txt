@@ -1,0 +1,5 @@
+<image name=[Image #1] path="/var/folders/rg/8014vzz55510kyfwgr810wjm0000gn/T/codex-clipboard-36vbSN.png">
+
+</image>
+
+[Image #1] here is the ui refrence and also push all code change to github phase by phase ookay
