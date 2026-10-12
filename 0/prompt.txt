@@ -1,0 +1,5 @@
+<image name=[Image #1] path="/var/folders/rg/8014vzz55510kyfwgr810wjm0000gn/T/codex-clipboard-p0Sup7.png">
+
+</image>
+
+[Image #1] The MCP tools: like these, instead of this, instead of the tick mark, we can show an MCP icon or logo. That can be very cool and premium. Please deeply think about it, think logically, and just change the MCP tools call rendering design to an add-on icon. Please deeply think about it and do it properly for me and do not break any other functionality
