@@ -62,9 +62,9 @@ export function ModelPicker({ models, value, loading, disabled, side = "top", ef
         {effort && effort.options.length ? <div className="mt-1.5 border-t pt-1.5">
           <p className="px-2.5 pb-1 pt-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground" id={effortLabelId}>Effort</p>
           <div role="radiogroup" aria-labelledby={effortLabelId} aria-describedby={hintId} className="flex flex-col gap-px">
-            {effort.options.map((item) => {
+            {effort.options.map((item, index) => {
               const selected = item === chosen;
-              return <button key={item} type="button" role="radio" aria-checked={selected} data-effort-option={item} title={effortInfo[item].hint} className={optionClass}
+              return <button key={item} type="button" role="radio" aria-checked={selected} tabIndex={selected || (!chosen && index === 0) ? 0 : -1} data-effort-option={item} title={effortInfo[item].hint} className={optionClass}
                 onClick={() => { setOpen(false); if (!selected) effort.onChange(item); }}>
                 <span className="min-w-0 flex-1"><span className="block truncate text-[13px] font-medium leading-5">{effortInfo[item].label}</span><span className="block truncate text-xs leading-4 text-muted-foreground">{effortInfo[item].hint}</span></span>
                 <Check className={`size-4 shrink-0 ${selected ? "" : "invisible"}`} aria-hidden="true" />
