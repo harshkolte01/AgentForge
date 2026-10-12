@@ -2,15 +2,57 @@
 
 from collections.abc import Callable
 import hashlib
+import re
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
+import httpx
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from agentforge.database.models import AgentRun, Project, Task
 from agentforge.database.research_models import ResearchArtifact, ResearchEvidence, ResearchSource
 from agentforge.subagents.scope import ScopeDenied, TaskContext
+
+# A web address as people paste it into a message; trailing sentence punctuation is trimmed below.
+_MESSAGE_URL = re.compile(r"https?://[^\s<>\"'`]+", re.IGNORECASE)
+_TRAILING = ".,;:!?*_'\""
+_CLOSERS = {")": "(", "]": "[", "}": "{", ">": "<"}
+MAX_MESSAGE_URLS = 20
+
+
+def normalized_url(url: str) -> str | None:
+    """The form search results are stored in (`str(httpx.URL(...))`), or None for anything that is not a web address."""
+    try:
+        value = str(httpx.URL(url))
+    except (httpx.InvalidURL, TypeError, ValueError):
+        return None
+    parts = urlsplit(value)
+    return value if parts.scheme in ("http", "https") and parts.hostname else None
+
+
+def message_urls(text: str | None) -> frozenset[str]:
+    """The exact web addresses written in a message, normalized, at most MAX_MESSAGE_URLS.
+
+    A closing bracket stays only when the address opened it (Wikipedia-style "(disambiguation)" links), so
+    "(see https://x.dev/a)." yields https://x.dev/a.
+    """
+    found: set[str] = set()
+    for match in _MESSAGE_URL.finditer(text or ""):
+        candidate = match.group(0)
+        while candidate:
+            last = candidate[-1]
+            if last in _TRAILING or (last in _CLOSERS and candidate.count(_CLOSERS[last]) < candidate.count(last)):
+                candidate = candidate[:-1]
+            else:
+                break
+        url = normalized_url(candidate)
+        if url is not None:
+            found.add(url)
+            if len(found) >= MAX_MESSAGE_URLS:
+                break
+    return frozenset(found)
 
 
 def _uuid(value: str | UUID) -> UUID:
@@ -134,6 +176,11 @@ class ResearchRepository:
                 ResearchSource.task_id == ctx.task_id, ResearchSource.url == url,
                 ResearchSource.fetch_status.in_(("SEARCH_ONLY", "FETCHED"))).order_by(ResearchSource.retrieved_at).limit(1000)).mappings()
             return [self._source_preview(row) for row in rows]
+
+    def message_urls(self, ctx: TaskContext) -> frozenset[str]:
+        """The web addresses the person wrote in this task's own message (its goal), never text the model produced."""
+        with self.session_factory() as session:
+            return message_urls(self._owned(session, **self._scope(ctx)).goal)
 
     def verify_references(self, ctx: TaskContext, *, evidence_ids: tuple[str, ...], artifact_ids: tuple[str, ...]) -> None:
         with self.session_factory() as session:

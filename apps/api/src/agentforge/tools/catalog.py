@@ -64,8 +64,9 @@ DESCRIPTIONS = {
         "help, change it rather than repeating it."),
     "fetch_webpage": (
         "Open one public web page by its full https URL and capture its text as a source with a source_id. Returns a preview of the first "
-        "10,000 characters; if content_truncated is true, read the rest with read_research_source. Only pages this task is allowed to "
-        "reach can be fetched, and a failed fetch is recorded as an unavailable source."),
+        "10,000 characters; if content_truncated is true, read the rest with read_research_source. A URL the person wrote in their "
+        "message can be opened directly, exactly as written; any other page must come from a web_search result of this task. A failed "
+        "fetch is recorded as an unavailable source."),
     "read_repo_file": (
         "Read a text file from the selected repository at its pinned commit. Returns up to max_lines lines starting at line_start; if "
         "next_line is not null, call again with line_start=next_line. Use paths from list_repo_files or search_repo. A path that does "
@@ -138,6 +139,9 @@ ERROR_GUIDANCE = {
     "FETCH_REDIRECT_OFF_HOST": "That page redirects to a different site that this task has not discovered. Search for the destination site's own page, "
         "or use another source.",
     "FETCH_NETWORK_ERROR": "The page could not be reached. Try another source, or record the page as inaccessible.",
+    "REPEATED_FAILED_CALL": "You already made this exact call and it failed; it was not sent again. Do not repeat it. "
+        "Work from what you already have (the web_search results and sources of this task, readable with read_research_source), "
+        "or answer now and say which page could not be opened.",
     "SANDBOX_CONFIGURATION_REQUIRED": "The execution environment is not configured. Do not retry; report that tests could not be run.",
     "FILE_NOT_FOUND": "That path does not exist. Use one of the suggested paths, or find the file with list_repo_files or search_repo first.",
     "BINARY_FILE": "That file is not text and cannot be read here. Do not retry it; rely on other files or note the gap.",
@@ -184,6 +188,13 @@ ERROR_GUIDANCE = {
     "INVALID_ARGUMENT": "A value is not acceptable for this tool. Read the detail, correct the arguments, and retry once.",
 }
 GENERIC_ERROR_GUIDANCE = "The call did not succeed. Do not repeat it unchanged; adjust the arguments, try another approach, or record the gap."
+# Many sites refuse automated readers outright (403, sign-in walls), and searching again rarely changes that. The search
+# results already hold each page's text, so the model is pointed at what it has instead of at more searching.
+FETCH_FAILURE_GUIDANCE = (
+    "The page could not be fetched (blocked, missing, too large or not text); fetching it again will fail the same way. Do not "
+    "search for the same page again. Use what you already have: the text of this task's web_search results (open one with "
+    "read_research_source and its source_id) or another result from a different site. If that answers the request, answer now "
+    "and say the page itself could not be opened.")
 
 
 def error_guidance(code: str | None) -> str:
@@ -192,7 +203,7 @@ def error_guidance(code: str | None) -> str:
     if code and code.startswith("PLUGIN_"):
         return "The plugin could not do that. Read the detail; fix the call once if it was at fault, otherwise continue without the plugin and tell the person."
     if code and code.startswith("FETCH_"):
-        return "The page could not be fetched (blocked, missing, too large or not text). Try another source, or record the page as inaccessible."
+        return FETCH_FAILURE_GUIDANCE
     return GENERIC_ERROR_GUIDANCE
 
 

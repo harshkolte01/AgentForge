@@ -1,6 +1,8 @@
 """Tool gateway: bound identifiers, precise error feedback, effect-unknown handling, concurrency and the ledger.
 
-The gateway does not count, cap or deduplicate calls: a model may repeat a call or make as many as it likes."""
+The gateway does not count or cap calls: a model may repeat a call or make as many as it likes. The one exception is an
+identical call that already failed in a way that cannot change (DETERMINISTIC_FAILURES), which is answered from that
+failure instead of being sent again."""
 import asyncio
 import json
 from decimal import Decimal
@@ -232,6 +234,44 @@ class GatewayTests(IsolatedAsyncioTestCase):
         gateway, _, _ = make({"read_repo_file": flaky})
         self.assertEqual((await gateway.execute("read_repo_file", args(path="a.py"), "c1")).status, "error")
         self.assertEqual((await gateway.execute("read_repo_file", args(path="a.py"), "c2")).status, "ok")
+
+    async def test_an_identical_call_that_failed_for_good_is_answered_from_that_failure(self):
+        runs = []
+        async def refused(args, ctx):
+            runs.append(args.path)
+            return ToolOutcome(status="error", cost_usd=Decimal(0), error_code="FETCH_HTTP_ERROR")
+        gateway, calls, budgets = make({"read_repo_file": refused})
+        first = await gateway.execute("read_repo_file", args(path="a.py", line_start=1), "c1")
+        self.assertEqual((first.error_code, calls.last()["status"]), ("FETCH_HTTP_ERROR", "FAILED"))
+        # The same call, with its keys in another order, is not sent again.
+        again = await gateway.execute("read_repo_file", '{"line_start": 1, "path": "a.py"}', "c2")
+        self.assertEqual((again.status, again.error_code, again.cost_usd), ("error", "REPEATED_FAILED_CALL", Decimal(0)))
+        self.assertIn("FETCH_HTTP_ERROR", again.error_detail)
+        self.assertEqual((runs, calls.last()["status"], calls.last()["error_code"]), (["a.py"], "BLOCKED", "REPEATED_FAILED_CALL"))
+        self.assertEqual(len(budgets.usage), 1)  # nothing was claimed for the repeat
+        # Different arguments are a different call and still run.
+        await gateway.execute("read_repo_file", args(path="b.py", line_start=1), "c3")
+        self.assertEqual(runs, ["a.py", "b.py"])
+
+    async def test_failures_that_can_change_are_never_remembered(self):
+        runs = []
+        async def failing(args, ctx):
+            runs.append(1)
+            return ToolOutcome(status="error", cost_usd=Decimal(0), error_code="FETCH_NETWORK_ERROR")
+        gateway, _, _ = make({"read_repo_file": failing})
+        for index in range(3):
+            self.assertEqual((await gateway.execute("read_repo_file", args(path="a.py"), f"c{index}")).error_code,
+                             "FETCH_NETWORK_ERROR")
+        self.assertEqual(len(runs), 3)
+
+    async def test_a_remembered_failure_belongs_to_one_run(self):
+        async def refused(args, ctx):
+            return ToolOutcome(status="error", cost_usd=Decimal(0), error_code="FETCH_CONTENT_TYPE_UNSUPPORTED")
+        first, _, _ = make({"read_repo_file": refused})
+        await first.execute("read_repo_file", args(path="a.py"), "c1")
+        second, _, _ = make({"read_repo_file": refused})
+        self.assertEqual((await second.execute("read_repo_file", args(path="a.py"), "c1")).error_code,
+                         "FETCH_CONTENT_TYPE_UNSUPPORTED")
 
     async def test_independent_reads_overlap_while_effects_run_one_at_a_time(self):
         running = {"now": 0, "peak": 0}

@@ -37,7 +37,11 @@ class DenyUnknownResources:
 
 
 class DatabaseResourceResolver:
-    """Own references and discover fetch URLs only from trusted stored search IDs."""
+    """Own references and allow fetch URLs only from trusted stored search results or the person's own message.
+
+    A URL the person typed is as trusted as one a search returned: it is matched exactly against the stored task
+    goal, so a model (or text it read) cannot add a query string to it, and every network rule still applies.
+    """
 
     def __init__(self, repository: "ResearchRepository", authorizer: "AuthorizationService") -> None:
         self.repository, self.authorizer = repository, authorizer
@@ -63,24 +67,32 @@ class DatabaseResourceResolver:
         await self.authorizer.check_context(ctx)
         if name == "get_test_results":
             raise ScopeDenied("test evidence integration is unavailable")
-        if name == "fetch_webpage" and not self.repository.sources_for_url(ctx, args.source_url):
+        if name == "fetch_webpage" and not self.repository.sources_for_url(ctx, args.source_url) and \
+                not self._typed(ctx, args.source_url):
             raise ScopeDenied("fetch URL must reference an immutable source owned by this task")
+
+    def _typed(self, ctx: TaskContext, url: str) -> bool:
+        from agentforge.repositories.research import normalized_url
+        return normalized_url(url) in self.repository.message_urls(ctx)
 
     async def resolve_web_url(self, ctx: TaskContext, name: str, args: ToolArguments,
                               scope: EffectiveScope) -> tuple["PublicURL", tuple[str, ...]]:
         from urllib.parse import urlsplit
         from agentforge.integrations.safe_fetch import resolve_public_url
+        from agentforge.repositories.research import normalized_url
 
         await self.authorizer.check_context(ctx)
         if name != "fetch_webpage":
             raise ScopeDenied("browser network authorization is unavailable")
         url = args.source_url
         records = self.repository.sources_for_url(ctx, url)
-        if not records:
-            raise ScopeDenied("fetch URL was not discovered for this task")
+        typed = self.repository.message_urls(ctx)
+        if not records and normalized_url(url) not in typed:
+            raise ScopeDenied("fetch URL was neither discovered for this task nor written by the person")
         trusted_hosts = {urlsplit(record["url"]).hostname for record in self.repository.list_sources(
             task_id=ctx.task_id, owner_id=ctx.user_id, project_id=ctx.project_id)
             if record["fetch_status"] in ("SEARCH_ONLY", "FETCHED")}
+        trusted_hosts.update(urlsplit(typed_url).hostname for typed_url in typed)
         explicit = scope.permissions.allowed_web_hosts or ()
         if explicit:
             trusted_hosts.intersection_update(explicit)

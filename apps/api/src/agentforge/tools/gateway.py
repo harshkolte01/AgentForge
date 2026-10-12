@@ -3,7 +3,9 @@
 Beyond authorization the gateway is what makes calls precise: it binds identifiers the task already
 fixes (repository, ref, sandbox), tells the model exactly which field of a call was wrong, and lets
 independent read-only calls and delegations run side by side while other effectful ones stay strictly serial. It does not
-count, cap or deduplicate calls: how many a run makes is the model's decision.
+count or cap calls: how many a run makes is the model's decision. The one thing it remembers is a call that failed in a
+way that cannot change (a page that refused this server, or is not text): the identical call is answered from that
+failure instead of being sent again (`REPEATED_FAILED_CALL`).
 """
 
 import asyncio
@@ -35,6 +37,13 @@ from .errors import ToolError, render_issues, validation_issues
 from .lifecycle import CallLifecycle, LifecycleSink, execution_labels, outcome_from_row
 
 READ_CONCURRENCY = 4
+# Failures the same arguments will meet again within a run (the page answered, and the answer was no). Retrying one is
+# a wasted round trip and a wasted model step, so the identical call is answered from the first failure. Network
+# errors, timeouts and refusals of scope are not here: a later search can make a refused URL reachable.
+DETERMINISTIC_FAILURES = frozenset({
+    "FETCH_HTTP_ERROR", "FETCH_COMPRESSED_CONTENT_REJECTED", "FETCH_CONTENT_TYPE_UNSUPPORTED", "FETCH_RESPONSE_TOO_LARGE",
+    "FETCH_REDIRECT_OFF_HOST", "FETCH_REDIRECT_LIMIT", "FETCH_EMPTY_CONTENT",
+})
 # The most a call's JSON arguments may hold; larger calls are refused before they run (see `_run`).
 MAX_ARGUMENT_BYTES = 131072
 # The tools whose output is shown while they run: a command can take minutes, the others finish at once.
@@ -84,6 +93,8 @@ class ToolGateway:
         self.run_id, self.reservation_id = run_id, reservation_id
         self.strict_tools = strict_tools
         self._attempts = 0
+        # (tool, canonical arguments) -> the code it failed with, for DETERMINISTIC_FAILURES only.
+        self._failed: dict[tuple[str, str], str] = {}
         # Effectful calls are serialized; independent reads may overlap up to READ_CONCURRENCY.
         self._lock = asyncio.Lock()
         self._reads = asyncio.Semaphore(READ_CONCURRENCY)
@@ -228,6 +239,11 @@ class ToolGateway:
                                 "with further edits, or use several smaller files.")
             args = self._parse(name, tool, raw_args)
             arguments = safe_arguments(args)
+            # Parsed, so key order and spacing do not make the same call look new.
+            repeat_key = (name, hashlib.sha256(args.model_dump_json().encode("utf-8")).hexdigest())
+            if repeat_key in self._failed:
+                raise ToolError("REPEATED_FAILED_CALL", f"This exact call already failed in this run with "
+                                f"{self._failed[repeat_key]} and would fail the same way, so it was not sent again.")
             plugin = tool.plugin
             events.detail = activity_detail(name, args) if plugin is None else (plugin.title or plugin.remote_name)[:120]
             web_url, web_hosts = None, ()
@@ -308,6 +324,8 @@ class ToolGateway:
             duration_ms = int((time.monotonic() - started) * 1000)
             labels = execution_labels(name, result.data)
             status = "SUCCEEDED" if result.status == "ok" else "FAILED"
+            if result.status == "error" and result.error_code in DETERMINISTIC_FAILURES:
+                self._failed[repeat_key] = result.error_code
             self.calls.record_outcome(
                 call_id=call_id, status=status,
                 result_json={"status": result.status,
