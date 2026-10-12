@@ -1,0 +1,5 @@
+<image name=[Image #1] path="/var/folders/rg/8014vzz55510kyfwgr810wjm0000gn/T/codex-clipboard-V3IXPt.png">
+
+</image>
+
+[Image #1] why we have this if we already had a auth
