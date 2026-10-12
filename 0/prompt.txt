@@ -1,0 +1,5 @@
+Hey now I just need you to move to the next phase. In the next phase we are going to connect E2B for the building environment but we are going to deploy our project to the AWS instance. You can find it, based on the instance or something related to that.
+
+Instead of using E2B we can use our server as an environment and as a sandbox or something because we are going to deploy things on the AWS servers. Figure out how we should do it and how we can manage the same functionality as it behaves on our server so it can be very good and very flexible to implement a lot of functionality.
+
+Please deeply think about it, do deep research, understand everything, and figure out everything. If you have any type of doubt then just ask me a question about that and then just implement all of the phase and make it more premium and perfect. Just implement the next phase that we are going to work on
