@@ -1,0 +1,61 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "01M4QPS44XJ742AMKX4EQY9P4B",
+  "session_id": "1394cac7-b975-49a2-ac9e-2e4141a6791e",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-12T09:23:27.22921Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "apps/api/src/agentforge/contracts/context.py",
+    "apps/api/src/agentforge/repositories/sessions.py",
+    "apps/api/tests/test_context_status.py",
+    "apps/web/features/sessions/context-status.tsx",
+    "apps/web/features/sessions/run-steps.tsx",
+    "apps/web/features/sessions/task-turn.tsx",
+    "apps/web/features/sessions/timeline-model.ts",
+    "apps/web/lib/activity/presentation.ts",
+    "apps/web/lib/context.ts",
+    "apps/web/tests/context.test.mjs",
+    "docs/context-management.md",
+    "docs/live-activity.md"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5-1",
+  "turn_id": "709ba80254c4",
+  "checkpoint_transcript_start": 847,
+  "transcript_lines_at_start": 847,
+  "compact_transcript_start": 182,
+  "token_usage": {
+    "input_tokens": 98,
+    "cache_creation_tokens": 5974,
+    "cache_read_tokens": 1981999,
+    "output_tokens": 3872,
+    "api_call_count": 4
+  },
+  "session_metrics": {
+    "turn_count": 5
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 95,
+      "user_lines_removed": 0,
+      "agent_lines_added": 454,
+      "agent_lines_removed": 45,
+      "user_added_per_file": {
+        ".claude/settings.local.json": 6,
+        ".codex/hooks.json": 88,
+        ".impeccable/hook.cache.json": 1
+      }
+    }
+  ]
+}
