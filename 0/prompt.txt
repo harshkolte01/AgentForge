@@ -1,0 +1,3 @@
+Hey, now I need you to do deep research on the codebase and understand everything properly. After understanding everything properly I just need you to create a perfect and detailed plan to implement the entire codebase and CFO.ai as well. We need to use this as a perfect production-ready use case as well.
+
+Please deeply think about it, review it, understand it, and do it properly for me. Make it fully production ready and perfect for me and do not break any other functionality And also if you have any type of doubt, then just ask me a question about that and we don't need to break any other functionality. Also do research on the web, find out the best practices for this implementation, and do everything properly. Make it fully production-ready and perfect for me
