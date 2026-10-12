@@ -61,7 +61,7 @@ def main():
             raise SystemExit("Use pnpm 10.34.6 (corepack or npm install --global pnpm@10.34.6).")
         commands.extend((name, [*pnpm, *arguments], ROOT / "apps/web") for name, arguments in (
             ("web-conversation", ["exec", "node", "--experimental-strip-types", "--import", "./tests/alias.mjs", "--test", "tests/conversation.test.mjs", "tests/conversation-outbox.test.mjs", "tests/conversation-status.test.mjs"]),
-            ("web-context", ["test:context"]), ("web-activity", ["test:activity"]), ("web-lint", ["lint"]), ("web-route-types", ["exec", "next", "typegen"]),
+            ("web-context", ["test:context"]), ("web-activity", ["test:activity"]), ("web-all", ["test:web"]), ("web-lint", ["lint"]), ("web-route-types", ["exec", "next", "typegen"]),
             ("web-types", ["exec", "tsc", "--noEmit"]), ("web-build", ["build"])))
     revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()
     dirty = bool(subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, capture_output=True, text=True, check=True).stdout)
