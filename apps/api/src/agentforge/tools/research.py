@@ -9,7 +9,8 @@ import httpx
 from agentforge.integrations.safe_fetch import FetchFailure, SafeWebFetcher, sanitize_text
 from agentforge.integrations.exa_client import ExaClient
 from agentforge.integrations.tavily_client import TavilyClient
-from agentforge.integrations.web_search import PooledClient, SearchFailure, UnbilledSearchFailure, pool_for, split_keys
+from agentforge.integrations.parallel_search import ParallelSearchClient
+from agentforge.integrations.web_search import PooledClient, SearchFailure, UnbilledSearchFailure, pool_for, provider_names, split_keys
 from agentforge.repositories.research import ResearchRepository
 from agentforge.security.policies import AuthorizationService, validate_public_url_syntax
 from agentforge.subagents.resources import DatabaseResourceResolver
@@ -60,12 +61,13 @@ def register_research(catalog: ToolCatalog, sessionmaker, settings) -> DatabaseR
             response, failed_attempts, unbilled = None, [], True
             for name, client in providers:
                 try:
-                    response = await client.search(args.query, args.max_results, allowed_hosts=allowed)
+                    context = {"session_id": repository.search_session_id(execution.task)} if name == "parallel" else {}
+                    response = await client.search(args.query, args.max_results, allowed_hosts=allowed, **context)
                     break
                 except (SearchFailure, httpx.HTTPError, TimeoutError, OSError) as exc:
-                    # Only the provider's own refusal before it searched is known to cost nothing. Any other failure (a
-                    # timeout, a dropped connection, a 5xx) may have consumed credits and keeps the operation cap.
-                    unbilled = unbilled and isinstance(exc, UnbilledSearchFailure)
+                    # Anonymous search costs nothing. For paid providers only a refusal before searching is known to
+                    # be free; a timeout, dropped connection or 5xx may have consumed credits and keeps the cap.
+                    unbilled = unbilled and (client.max_cost_usd == 0 or isinstance(exc, UnbilledSearchFailure))
                     code = exc.args[0] if isinstance(exc, SearchFailure) and exc.args else type(exc).__name__
                     failed_attempts.append(f"{name}:{code}")
                     logger.warning("web search provider failed: provider=%s reason=%s%s", name, code,
@@ -86,7 +88,7 @@ def register_research(catalog: ToolCatalog, sessionmaker, settings) -> DatabaseR
                         continue
                     if not allowed and not execution.task.source_discovery_enabled:
                         continue
-                except (ValueError, ScopeDenied):
+                except (ValueError, httpx.InvalidURL, ScopeDenied):
                     continue
                 title, content = sanitize_text(item["content"])
                 _, safe_title = sanitize_text(item["title"])
@@ -98,6 +100,7 @@ def register_research(catalog: ToolCatalog, sessionmaker, settings) -> DatabaseR
             cost = response.cost_usd if unbilled else None
             return ToolOutcome(status="ok", data={"sources": sources, "provider": response.provider, "observed_credits": response.credits,
                 "billing": "unknown_cap_retained" if cost is None else
+                           "free_anonymous" if response.provider == "parallel" else
                            "provider_reported" if response.provider == "exa" else "configured_credit_conversion",
                 "trust": "Search snippets are unverified. Fetch sources and cite resulting source IDs."},
                 evidence_ids=tuple(source["id"] for source in sources), cost_usd=cost)
@@ -115,18 +118,21 @@ FIRST_PROVIDER_SEC, FALLBACK_PROVIDER_SEC, SOLE_PROVIDER_SEC = 10, 12, 20
 
 
 def search_providers(settings) -> list[tuple[str, object]]:
-    """The configured web search providers in the order a search tries them: Exa, then Tavily. Each stands for all of its keys."""
+    """The resolved providers. Configured Exa/Tavily keep their order and key rotation; no keys selects Parallel."""
+    names = provider_names(settings)
+    if names == ("parallel",):
+        return [("parallel", ParallelSearchClient(timeout_sec=SOLE_PROVIDER_SEC, model_name=getattr(settings, "llm_model", None)))]
     exa = getattr(settings, "exa_api_key", None)
     tavily = getattr(settings, "tavily_api_key", None)
-    both = exa is not None and tavily is not None
+    both = len(names) == 2
     providers: list[tuple[str, object]] = []
-    if exa is not None:
+    if "exa" in names:
         keys = split_keys(exa.get_secret_value())
         providers.append(("exa", PooledClient(pool_for("exa", keys), lambda key: ExaClient(api_key=key,
             max_cost_usd=settings.exa_search_max_cost_usd, search_type=settings.exa_search_type,
             timeout_sec=FIRST_PROVIDER_SEC if both else SOLE_PROVIDER_SEC),
             max_cost_usd=settings.exa_search_max_cost_usd, timeout_sec=FIRST_PROVIDER_SEC if both else SOLE_PROVIDER_SEC)))
-    if tavily is not None:
+    if "tavily" in names:
         keys = split_keys(tavily.get_secret_value())
         providers.append(("tavily", PooledClient(pool_for("tavily", keys), lambda key: TavilyClient(api_key=key,
             max_cost_usd=settings.tavily_search_max_cost_usd, usd_per_credit=settings.tavily_usd_per_credit,

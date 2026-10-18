@@ -22,7 +22,7 @@ the worker.
 
 **Local development** (`.env`): `DATABASE_URL`; `AUTH_MODE`, `LOCAL_USER_ID` and `LOCAL_BOOTSTRAP_TOKEN` (filled by
 `python -m agentforge.auth.bootstrap --write-env`); and the model block (`LLM_MODEL`, `LLM_API_KEY`, `LLM_SUPPORTS_TOOLS`,
-`LLM_SUPPORTS_JSON`, `LLM_CONTEXT_WINDOW_TOKENS`, `LLM_INPUT_USD_PER_MILLION`, `LLM_OUTPUT_USD_PER_MILLION`). Add `EXA_API_KEY` (web search; `TAVILY_API_KEY` as its fallback),
+`LLM_SUPPORTS_JSON`, `LLM_CONTEXT_WINDOW_TOKENS`, `LLM_INPUT_USD_PER_MILLION`, `LLM_OUTPUT_USD_PER_MILLION`). Web search works without a provider key. Add optional `EXA_API_KEY` / `TAVILY_API_KEY`,
 `E2B_API_KEY`, `NEATLOGS_API_KEY` and `PLUGIN_ENCRYPTION_KEY` for the capability each one switches on.
 
 **Production** (`runtime.env`): `APP_ENV=production`, the three https URLs, `DATABASE_URL`, `RESEARCH_STORAGE_PATH`,
@@ -109,10 +109,11 @@ longer to start answering than `LLM_TIMEOUT_SEC` (2x for High, 3x Extra high, 4x
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `EXA_API_KEY` | none | Turns on web search with [Exa](https://exa.ai), the first choice. One key, or several separated by commas (`key1,key2`). |
+| `WEB_SEARCH_PROVIDER` | `auto` | `auto`, `parallel`, `exa`, `tavily` or `none`. Auto uses configured Exa/Tavily, otherwise anonymous Parallel Search MCP. Explicit choices never fall back. `none` disables built-in search. |
+| `EXA_API_KEY` | none | Selects [Exa](https://exa.ai) in auto mode, the first choice. One key, or several separated by commas (`key1,key2`). |
 | `EXA_SEARCH_TYPE` | `auto` | Exa's search type: `instant`, `fast`, `auto`, `deep-lite`, `deep` or `deep-reasoning` (the deep ones are slower and cost more). |
 | `EXA_SEARCH_MAX_COST_USD` | `0.03` | The most one Exa search may cost. Exa reports each request's real cost, and that is what is recorded. |
-| `TAVILY_API_KEY` | none | Turns on web search with Tavily: the fallback when `EXA_API_KEY` is also set, the only provider when it is not. One key or several, separated by commas. |
+| `TAVILY_API_KEY` | none | Selects Tavily in auto mode: the fallback when `EXA_API_KEY` is also set, the only provider when it is not. One key or several, separated by commas. |
 | `TAVILY_USD_PER_CREDIT` | none | Price of one Tavily credit, to account for the cost of a search. |
 | `TAVILY_SEARCH_MAX_COST_USD` | `0.02` | The most one Tavily search may cost. |
 | `RESEARCH_FETCH_TIMEOUT_SEC` | `15` | Page fetch timeout (max 30). |
@@ -124,11 +125,22 @@ longer to start answering than `LLM_TIMEOUT_SEC` (2x for High, 3x Extra high, 4x
 | `E2B_SANDBOX_TTL_SEC` | `3600` | A sandbox is paused after this many idle seconds and resumed on use. |
 | `SANDBOX_ARCHIVE_LOAD` | `true` | The sandbox downloads the selected repository itself from a short-lived GitHub archive link: fast, any size, no request per file. `false`, or any failure, makes the API upload a snapshot instead. |
 
-**How a search picks its provider.** The agent has one `web_search` tool. With `EXA_API_KEY` set it goes to Exa; if Exa cannot
+**How a search picks its provider.** The agent has one `web_search` tool. The default `WEB_SEARCH_PROVIDER=auto`
+uses [Parallel Search MCP](https://docs.parallel.ai/integrations/mcp/search-mcp) at `https://search.parallel.ai/mcp`
+when neither search key is configured. It searches in Fast mode without an account or API key. Anonymous access has lower
+rate limits and suits exploration and light use. Queries and the configured model identifier are sent to Parallel, together
+with a stable conversation identifier for accounting; no plugin token or ambient Parallel key is used. The app stores
+returned snippets as unverified task-owned sources, enforces the existing web permissions and exact host restrictions,
+and fetches pages with its existing public-address and redirect checks.
+
+In auto mode, with `EXA_API_KEY` set it goes to Exa; if Exa cannot
 answer (rate limit, no credit, outage, timeout) and `TAVILY_API_KEY` is also set, the same search goes to Tavily, and the
 failure is logged (`web search provider failed: provider=exa reason=...`) so a bad key does not hide behind the fallback. With
 only one key set, that provider serves every search. When a search falls back after an Exa attempt that may have been charged,
-the search is booked at the combined maximum of both providers rather than guessing the charge.
+the search is booked at the combined maximum of both providers rather than guessing the charge. Parallel is never tried
+after a configured provider fails. Set `WEB_SEARCH_PROVIDER=parallel` to choose it even with keys configured, `exa` or
+`tavily` to select just that provider (its key is required), or `none` to keep built-in search off. These settings do not
+change saved plugin connections or their enabled tools.
 
 **Several keys for one provider.** Put them in the same setting, separated by commas: `EXA_API_KEY=key1,key2,key3` (spaces and
 new lines also work; repeats are dropped; up to 20; a malformed key stops the app at start without printing it). A search uses
