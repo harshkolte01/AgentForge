@@ -16,7 +16,7 @@ class BoundTests(TestCase):
         from agentforge.settings import Settings
         settings = Settings(_env_file=None, app_env="test", auth_mode="disabled", llm_model="fixture/model", llm_api_key="fixture-only",
             llm_supports_tools=True, llm_supports_json=True, llm_context_window_tokens=32000,
-            llm_input_usd_per_million=1, llm_output_usd_per_million=1, tavily_api_key=None)
+            llm_input_usd_per_million=1, llm_output_usd_per_million=1, tavily_api_key=None, web_search_provider="none")
         request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(settings=settings)))
         result = configuration(request, SimpleNamespace(github_user_id=-1))
         self.assertTrue(result["general_configured"])

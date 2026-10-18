@@ -84,14 +84,18 @@ def keys(secret) -> str:
 
 
 def check_optional(settings):
+    from agentforge.integrations.web_search import provider_names
+    search = provider_names(settings)
     results = [
         ("PASS", "e2b", "E2B_API_KEY set (coding sandbox)") if settings.e2b_api_key
         else ("WARN", "e2b", "E2B_API_KEY not set: no coding sandbox (bash, files, search)"),
-        ("PASS", "exa", f"EXA_API_KEY set ({keys(settings.exa_api_key)}; web search, first choice)") if settings.exa_api_key
-        else ("WARN", "exa", "EXA_API_KEY not set: web search falls back to Tavily" if settings.tavily_api_key
-              else "EXA_API_KEY not set: no web search unless TAVILY_API_KEY is set"),
-        ("PASS", "tavily", f"TAVILY_API_KEY set ({keys(settings.tavily_api_key)}; web search" + (", fallback)" if settings.exa_api_key else ")")) if settings.tavily_api_key
-        else ("WARN", "tavily", "TAVILY_API_KEY not set: " + ("no fallback if Exa is unavailable" if settings.exa_api_key else "no web search")),
+        ("PASS", "exa", f"EXA_API_KEY set ({keys(settings.exa_api_key)})") if settings.exa_api_key
+        else ("WARN", "exa", "EXA_API_KEY not set (optional)"),
+        ("PASS", "tavily", f"TAVILY_API_KEY set ({keys(settings.tavily_api_key)})") if settings.tavily_api_key
+        else ("WARN", "tavily", "TAVILY_API_KEY not set (optional)"),
+        ("PASS", "web-search", "Parallel Search MCP (anonymous, no key required)") if search == ("parallel",)
+        else ("PASS", "web-search", " then ".join(search) + (" (fallback)" if len(search) > 1 else "")) if search
+        else ("WARN", "web-search", "Built-in search disabled or selected provider key missing"),
     ]
     if settings.auth_mode == "github_app" or settings.github_app_id:
         missing = [name for name, value in (("GITHUB_APP_ID", settings.github_app_id), ("GITHUB_APP_SLUG", settings.github_app_slug),

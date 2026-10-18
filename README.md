@@ -49,7 +49,7 @@ agent loop and a clear approval model:
 
 | | |
 | --- | --- |
-| **Research** | Web search (Exa, with Tavily as fallback) and page fetching with public-address and redirect checks. |
+| **Research** | Keyless web search (Parallel Search MCP, or configured Exa/Tavily) and page fetching with public-address and redirect checks. |
 | **Code in a sandbox** | `bash`, `read`, `write`, `edit`, `grep`, `find` and `ls` in a per-conversation E2B sandbox; files and installed packages persist between messages. |
 | **Repositories** | Select a GitHub repository per conversation. The agent reads a pinned commit, works on a copy and never sees your credentials. |
 | **Delivery to GitHub** | Review the diff in the Changes panel, publish a branch, open a draft pull request and watch its checks. Merge and close are human-only. |
@@ -130,7 +130,8 @@ never their values.
 | `AUTH_MODE`, `LOCAL_USER_ID`, `LOCAL_BOOTSTRAP_TOKEN` | Local sign-in; filled in by the bootstrap command. |
 | `LLM_MODEL`, `LLM_API_KEY`, `LLM_CONTEXT_WINDOW_TOKENS`, `LLM_*_USD_PER_MILLION` | Your OpenAI-compatible model (required to chat). |
 | `E2B_API_KEY` | Enables the coding sandbox. |
-| `EXA_API_KEY` / `TAVILY_API_KEY` | Enables web search; either works alone. |
+| `WEB_SEARCH_PROVIDER` | `auto`: configured Exa/Tavily, otherwise keyless Parallel Search MCP. Set `none` to disable built-in search. |
+| `EXA_API_KEY` / `TAVILY_API_KEY` | Optional search providers; either works alone, with Exa first when both are set. |
 | `NEATLOGS_API_KEY` | Enables tracing. |
 | `PLUGIN_ENCRYPTION_KEY` | Lets people save plugin tokens and sign in to plugins (32+ random characters). |
 | `ENABLE_GITHUB_WRITES` | Lets the agent open draft pull requests (needs a GitHub App). |

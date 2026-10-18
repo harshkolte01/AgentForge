@@ -94,10 +94,13 @@ class Settings(BaseSettings):
     # Off: traces carry structure, timing, tokens, cost and status only. On: prompts, answers and tool arguments/results are
     # sent too (secrets masked, long values cut), so a private conversation reaches Neatlogs. Choose it deliberately.
     neatlogs_capture_content: bool = False
-    # Web search. Exa is the first choice and Tavily the fallback: with both set a search goes to Exa and only goes to Tavily when
+    # Web search in auto mode: Exa is the first choice and Tavily the fallback. With both set a search only goes to Tavily when
     # Exa cannot answer; with one, that one serves every search (tools/research.py). Each takes one key or several separated
     # by commas, tried in order (see `search_keys`).
     exa_api_key: SecretStr | None = Field(default=None, repr=False)
+    # Auto keeps configured Exa/Tavily choices; with neither key it uses anonymous Parallel Search MCP.
+    # Explicit choices never fall back to a different provider. "none" disables the built-in search tool.
+    web_search_provider: Literal["auto", "parallel", "exa", "tavily", "none"] = "auto"
     exa_search_max_cost_usd: Decimal = Field(default=Decimal("0.03"), gt=0, allow_inf_nan=False)
     exa_search_type: Literal["instant", "fast", "auto", "deep-lite", "deep", "deep-reasoning"] = "auto"
     tavily_api_key: SecretStr | None = Field(default=None, repr=False)

@@ -143,7 +143,7 @@ class ProviderOrderTests(TestCase):
             providers = research.search_providers(self.settings(**keys))
             self.assertEqual([n for n, _ in providers], [name])
             self.assertEqual(providers[0][1].timeout_sec, research.SOLE_PROVIDER_SEC)
-        self.assertEqual(research.search_providers(self.settings()), [])
+        self.assertEqual([name for name, _ in research.search_providers(self.settings())], ["parallel"])
 
     def test_the_defaults_budget_a_search_and_the_key_never_shows_in_the_settings(self):
         settings = self.settings(exa_api_key="exa-private-value")
@@ -269,8 +269,8 @@ class ReportingTests(TestCase):
         settings = NS(**{**fields, **keys})
         return SEARCH_SETTING, configuration(NS(app=NS(state=NS(settings=settings))), NS(github_user_id=1))
 
-    def test_either_key_turns_web_research_on_and_neither_leaves_chat_working(self):
-        for keys, on in (({"exa_api_key": "exa-key-0001"}, True), ({"tavily_api_key": "tavily-key-0001"}, True), ({"exa_api_key": "exa-key-0001", "tavily_api_key": "tavily-key-0001"}, True), ({}, False)):
+    def test_web_research_is_keyless_by_default_and_can_be_disabled(self):
+        for keys, on in (({"exa_api_key": "exa-key-0001"}, True), ({"tavily_api_key": "tavily-key-0001"}, True), ({"exa_api_key": "exa-key-0001", "tavily_api_key": "tavily-key-0001"}, True), ({}, True), ({"web_search_provider": "none"}, False), ({"web_search_provider": "exa"}, False)):
             with self.subTest(keys=keys):
                 setting, result = self.configuration(**keys)
                 self.assertEqual(result["web_research_configured"], on)
@@ -284,11 +284,11 @@ class ReportingTests(TestCase):
         from agentforge import doctor
         def rows(**keys):
             return {name: (level, text) for level, name, text in doctor.check_optional(Settings(_env_file=None, **{k: SecretStr(v) for k, v in keys.items()}))
-                    if name in ("exa", "tavily")}
+                    if name in ("exa", "tavily", "web-search")}
         both = rows(exa_api_key="exa-key-0001", tavily_api_key="tavily-key-0001")
         self.assertEqual((both["exa"][0], both["tavily"][0]), ("PASS", "PASS"))
-        self.assertIn("fallback", both["tavily"][1])
+        self.assertIn("fallback", both["web-search"][1])
         self.assertEqual(rows(exa_api_key="exa-key-0001")["tavily"][0], "WARN")
-        self.assertIn("falls back to Tavily", rows(tavily_api_key="tavily-key-0001")["exa"][1])
+        self.assertEqual(rows(tavily_api_key="tavily-key-0001")["web-search"], ("PASS", "tavily"))
         neither = rows()
         self.assertEqual((neither["exa"][0], neither["tavily"][0]), ("WARN", "WARN"))

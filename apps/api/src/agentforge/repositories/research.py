@@ -69,6 +69,14 @@ class ResearchRepository:
     def __init__(self, session_factory: Callable[[], Session]) -> None:
         self.session_factory = session_factory
 
+    def search_session_id(self, ctx: TaskContext) -> str:
+        """Stable conversation identity for MCP accounting, including repeated turns and delegated research calls."""
+        from agentforge.database.sessions import TurnExecution
+        with self.session_factory() as session:
+            self._owned(session, **self._scope(ctx))
+            conversation = session.scalar(select(TurnExecution.session_id).where(TurnExecution.task_id == ctx.task_id))
+        return str(conversation or ctx.task_id)
+
     @staticmethod
     def _owned(session: Session, *, task_id: UUID, owner_id: UUID, project_id: UUID) -> Task:
         task = session.scalar(select(Task).join(Project, Project.id == Task.project_id).where(

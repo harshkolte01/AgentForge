@@ -27,8 +27,23 @@ class SearchResponse:
     results: tuple[dict[str, str], ...]
     credits: int | None
     cost_usd: Decimal | None
-    # Which provider answered ("exa", "tavily"). Empty for a response built without one.
+    # Which provider answered ("exa", "tavily", "parallel"). Empty for a response built without one.
     provider: str = ""
+
+
+def provider_names(settings) -> tuple[str, ...]:
+    """Resolve search once for both runtime registration and configuration reporting.
+
+    Auto preserves configured Exa/Tavily routing. Only an installation without either key uses Parallel;
+    it is never a fallback after a configured provider fails. An explicit missing-key choice stays unavailable.
+    """
+    selected = getattr(settings, "web_search_provider", "auto")
+    configured = tuple(name for name in ("exa", "tavily") if getattr(settings, f"{name}_api_key", None))
+    if selected == "auto":
+        return configured or ("parallel",)
+    if selected == "parallel":
+        return ("parallel",)
+    return (selected,) if selected in configured else ()
 
 
 # --- several keys for one provider --------------------------------------------------------------------------------------

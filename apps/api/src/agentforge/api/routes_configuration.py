@@ -6,16 +6,16 @@ from agentforge.api.dependencies import sessions
 from agentforge.auth.session import current_user
 from agentforge.database.models import User
 from agentforge.repositories.workers import worker_presence
+from agentforge.integrations.web_search import provider_names
 
 router = APIRouter(prefix="/api/v1/configuration", tags=["configuration"])
 
 
-# Web search needs one of two providers (Exa first, Tavily as the fallback): either key turns it on.
-SEARCH_SETTING = "EXA_API_KEY or TAVILY_API_KEY"
+SEARCH_SETTING = "WEB_SEARCH_PROVIDER (and EXA_API_KEY or TAVILY_API_KEY when selected)"
 
 
 def web_search_configured(settings) -> bool:
-    return bool(getattr(settings, "exa_api_key", None) or getattr(settings, "tavily_api_key", None))
+    return bool(provider_names(settings))
 
 
 @router.get("")
